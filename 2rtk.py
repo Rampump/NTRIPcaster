@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# ===================================
+# 全局配置和初始化
+# - 导入必要的模块
+# - 设置日志配置
+# - 定义全局变量和常量
+# ===================================
 import socketserver
 import base64
 import time
@@ -14,9 +19,8 @@ import sys
 from flask import Flask, request, render_template, redirect, url_for, session, send_from_directory
 import psutil
 
-DEBUG = True  # 是否开启调试模式
+DEBUG = True
 
-# 设置全局日志配置（仅保留一次调用）
 logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.WARNING,
     format='[%(asctime)s] %(levelname)s %(message)s',
@@ -29,7 +33,6 @@ def dbg(*args, **kwargs):
     if DEBUG:
         print(*args, **kwargs)
 
-# 定义版本信息和联系邮箱
 VERSION = '1.9.8'
 CONTACT_EMAIL = 'i@jia.by'
 HOST = '0.0.0.0'
@@ -41,9 +44,8 @@ rtcm_lock = Lock()
 rtcm_buffers = {}
 
 clients_lock = Lock()
-authenticated_clients = []  # 存储字典: socket, user, mount, agent, addr, auth_time, last_refresh
+authenticated_clients = []
 
-# logo
 BANNER = r"""
     ██████╗ ██████╗ ████████╗██╗  ██╗
     ╚════██╗██╔══██╗╚══██╔══╝██║ ██╔╝
@@ -54,16 +56,13 @@ BANNER = r"""
          2RTK Ntrip Caster/{}
 """.format(VERSION)
 
-
 def clear_banner():
     os.system('cls' if os.name == 'nt' else 'clear')
     print(BANNER)
-    # 获取已连接的用户数
     with clients_lock:
         connected_user_count = len(authenticated_clients)
     print(f"已连接的用户数: {connected_user_count}")
 
-    # 获取在线挂载点
     conn = sqlite3.connect('2rtk.db')
     c = conn.cursor()
     c.execute("SELECT mount FROM running_mounts")
@@ -72,18 +71,20 @@ def clear_banner():
 
     print(f"运行中挂载点: {', '.join(online_mounts)}")
 
-    # 下次清屏延迟 100 秒后执行
     t = Timer(100, clear_banner)
     t.daemon = True
     t.start()
 
-# 初始化数据库
+# ===================================
+# 数据库初始化和管理
+# - 创建必要的数据表
+# - 初始化默认管理员账户
+# - 管理运行时挂载点数据
+# ===================================
 def init_db():
-    """初始化NTRIP服务数据库，创建表结构并设置默认管理员"""
     conn = sqlite3.connect('2rtk.db')
     c = conn.cursor()
 
-    # 创建管理员表（用于系统登录）
     c.execute('''
     CREATE TABLE IF NOT EXISTS admins (
         id INTEGER PRIMARY KEY,
@@ -91,7 +92,6 @@ def init_db():
         password TEXT NOT NULL
     )
     ''')
-    # 创建用户表（用于用户认证）
     c.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
@@ -99,7 +99,6 @@ def init_db():
         password TEXT NOT NULL
     )
     ''')
-    # 创建挂载点表（存储可用的数据流挂载点）
     c.execute('''
     CREATE TABLE IF NOT EXISTS mounts (
         id INTEGER PRIMARY KEY,
@@ -107,40 +106,38 @@ def init_db():
         password TEXT NOT NULL
     )
     ''')
-    # 创建运行中挂载点表（记录实时数据流状态）
     c.execute('''
     CREATE TABLE IF NOT EXISTS running_mounts (
         id INTEGER PRIMARY KEY,
-        mount TEXT NOT NULL,                        -- 关联mounts表的挂载点名称
-        start_time INTEGER NOT NULL,                -- 挂载点启动时间（UNIX时间戳格式）
-        identifier TEXT,                            -- 源标识符（通常为最近城市名或描述性名称）
-        format TEXT,                                -- 数据格式（如RTCM 3.2、RTCM 3.3等）
-        format_details TEXT,                        -- 数据格式详情（包含具体消息类型和发送速率）
-        carrier INTEGER DEFAULT 0,                  -- 载波相位信息：0=无相位，1=L1，2=L1+L2
-        nav_system TEXT,                            -- 支持的导航系统（多个系统用+连接，如GPS+GLO+BDS）
-        network TEXT,                               -- 所属网络名称
-        country TEXT,                               -- ISO 3166国家代码（3字符）
-        latitude REAL,                              -- 纬度（高精度浮点数）
-        longitude REAL,                             -- 经度（高精度浮点数）
-        nmea INTEGER DEFAULT 0,                     -- 是否需要NMEA输入：0=否，1=是
-        solution INTEGER DEFAULT 0,                 -- 解算类型：0=单基站，1=网络解算
-        generator TEXT,                             -- 生成数据的软硬件名称
-        compression TEXT,                           -- 压缩算法
-        authentication TEXT,                        -- 认证方式：N=无，B=Basic，D=Digest等
-        fee TEXT DEFAULT 'N',                       -- 是否收费：Y=是，N=否
-        bitrate INTEGER,                            -- 数据速率（bps）
-        misc TEXT,                                  -- 其他杂项信息
-        update_time INTEGER,                  -- 记录更新时间（自动更新）
-        UNIQUE (mount),                             -- 确保每个挂载点只记录一次
-        FOREIGN KEY (mount) REFERENCES mounts(mount) -- 外键约束：关联mounts表的mount字段
-            ON DELETE CASCADE                       -- 级联删除：当mounts表记录删除时自动删除关联记录
-            ON UPDATE CASCADE                       -- 级联更新：当mounts表记录更新时自动更新关联记录
+        mount TEXT NOT NULL,
+        start_time INTEGER NOT NULL,
+        identifier TEXT,
+        format TEXT,
+        format_details TEXT,
+        carrier INTEGER DEFAULT 0,
+        nav_system TEXT,
+        network TEXT,
+        country TEXT,
+        latitude REAL,
+        longitude REAL,
+        nmea INTEGER DEFAULT 0,
+        solution INTEGER DEFAULT 0,
+        generator TEXT,
+        compression TEXT,
+        authentication TEXT,
+        fee TEXT DEFAULT 'N',
+        bitrate INTEGER,
+        misc TEXT,
+        update_time INTEGER,
+        UNIQUE (mount),
+        FOREIGN KEY (mount) REFERENCES mounts(mount)
+            ON DELETE CASCADE
+            ON UPDATE CASCADE
     )
     ''')
     c.execute("DELETE FROM running_mounts")
     conn.commit()
     print("运行中的挂载点列表已清空")
-    # 如果没有管理员，创建默认管理员
     c.execute("SELECT * FROM admins")
     if not c.fetchone():
         c.execute("INSERT INTO admins (username, password) VALUES ('admin', 'admin')")
@@ -150,25 +147,30 @@ def init_db():
     conn.close()
     print("数据库初始化完成")
 
-# 处理 NTRIP 请求的处理器
+# ===================================
+# NTRIP服务器处理类
+# - 处理客户端连接请求
+# - 管理数据流上传和下载
+# - 实现NTRIP协议的认证和数据传输
+# ===================================
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
         dbg(f"连接: {self.client_address}")
         try:
             raw = self.request.recv(1024).decode(errors='ignore')
         except Exception as e:
-            logger.error(f"接收失败: {e}")
+            logger.error(f"Reception failed: {e}")
             return
         if not raw:
             return
         req, hdrs = self._parse(raw)
-        protocol_version = self.get_protocol_version(req)  # 获取协议版本
+        protocol_version = self.get_protocol_version(req)
         if req.startswith('SOURCE'):
             self._source(req, hdrs, protocol_version)
         elif req.startswith('GET'):
             self._get(req, hdrs, protocol_version)
         else:
-            logger.warning(f"未知请求: {req}")
+            logger.warning(f"Unknown request: {req}")
 
     def get_client_model(self, agent):
         if agent and 'NTRIP' in agent:
@@ -196,7 +198,7 @@ class Handler(socketserver.BaseRequestHandler):
         return req, h
 
     def _source(self, req: str, hdrs: dict, protocol_version):
-        dbg("SOURCE 上传请求验证")
+        dbg("SOURCE upload request verification")
         p = req.split()
         if len(p) < 3:
             self.request.sendall(b'ERROR - Bad Password\r\n')
@@ -229,32 +231,31 @@ class Handler(socketserver.BaseRequestHandler):
                 authentication, fee, bitrate, misc, update_time
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            mount,                      # mount
-            current_time,               # start_time
-            'none',                     # identifier
-            'RTCM 3.3',                 # format
-            '1005(10)',                 # format_details
-            0,                          # carrier
-            'GPS',                      # nav_system
-            '2RTK',                     # network
-            'CHN',                      # country
-            25.2034,                    # latitude
-            110.2777,                   # longitude
-            0,                          # nmea
-            0,                          # solution
-            agent,                      # generator
-            'none',                     # compression
-            'B',                        # authentication
-            'N',                        # fee
-            500,                        # bitrate
-            'NO',                       # misc
-            current_time                # update_time
+            mount,
+            current_time,
+            'none',
+            'RTCM 3.3',
+            '1005(10)',
+            0,
+            'GPS',
+            '2RTK',
+            'CHN',
+            25.2034,
+            110.2777,
+            0,
+            0,
+            agent,
+            'none',
+            'B',
+            'N',
+            500,
+            'NO',
+            current_time
         ))
         conn.commit()
         self._generate_mount_list()
         print(f"⟳ {mount} 挂载点已导入运行数据库中，数据上传中...")
 
-        # 为该挂载点创建一个新的 rtcm_buffer
         with rtcm_lock:
             if mount not in rtcm_buffers:
                 rtcm_buffers[mount] = deque(maxlen=BUFFER_MAXLEN)
@@ -282,7 +283,6 @@ class Handler(socketserver.BaseRequestHandler):
         print(f"⟳ {mount} 已从运行数据库中移除...{agent}, {self.client_address}")
         self._generate_mount_list()
 
-        # 移除该挂载点的 rtcm_buffer
         with rtcm_lock:
             if mount in rtcm_buffers:
                 del rtcm_buffers[mount]
@@ -424,7 +424,7 @@ class Handler(socketserver.BaseRequestHandler):
                 try:
                     c['socket'].sendall(chunk)
                 except Exception as e:
-                    logger.warning(f"通信关闭移除连接数据: addr={c['addr']}, err={e}")
+                    logger.warning(f"Communication closed, removing connection: addr={c['addr']}, err={e}")
                     to_remove.append(c)
                     break
         if to_remove:
@@ -433,10 +433,15 @@ class Handler(socketserver.BaseRequestHandler):
                     if c in authenticated_clients:
                         authenticated_clients.remove(c)
 
+# ===================================
+# 服务器关闭处理
+# - 清理数据库中的运行时数据
+# - 关闭所有客户端连接
+# - 安全关闭NTRIP和Web服务器
+# ===================================
 def shutdown(sig, frame):
     print("\n正在关闭caster服务器…")
 
-    # 清空运行中的挂载点数据
     try:
         conn = sqlite3.connect('2rtk.db')
         c = conn.cursor()
@@ -447,55 +452,42 @@ def shutdown(sig, frame):
     except Exception as e:
         logger.error(f"清空运行中挂载点数据时出错: {e}")
 
-    # 强制关闭所有已认证客户端的套接字
     global authenticated_clients
     with clients_lock:
         for client in authenticated_clients:
             try:
-                # 禁用发送和接收操作，强制关闭连接
                 client['socket'].shutdown(socketserver.socket.SHUT_RDWR)
                 client['socket'].close()
             except Exception as e:
                 logger.warning(f"关闭客户端套接字时出错: addr={client['addr']}, err={e}")
         authenticated_clients = []
 
-    # 强制关闭socketserver实例
     try:
-        # 先停止接受新的请求
         server.shutdown()
-        # 关闭底层的服务器套接字，释放占用的端口
         server.server_close()
         print("NTRIP服务器已成功关闭")
     except Exception as e:
         logger.error(f"关闭NTRIP服务器时出错: err={e}")
 
-    # 关闭数据库连接
     try:
-        # 不需要再次连接和关闭，上面已经处理过
-        pass
-    except Exception as e:
-        logger.error(f"关闭数据库连接时出错: err={e}")
-
-    # 终止Web服务器线程
-    try:
-        # 由于Flask没有提供优雅的关闭方法，我们可以通过退出Python进程来强制关闭
         sys.exit(0)
     except Exception as e:
         logger.error(f"关闭Web服务器时出错: err={e}")
 
-## Web 应用
+# ===================================
+# Flask Web应用
+# - 提供Web管理界面
+# - 处理用户认证和会话管理
+# - 管理挂载点和用户配置
+# ===================================
 app = Flask(__name__)
 app.secret_key = '9#*&K47g@U2xR6!8pX3m$yQ0%z5L1cV7bW9dF3hJ6n2r'
 
 ALIPAY_QR_URL = 'https://2rtk.rampump.cn/alipay.jpg'
 WECHAT_QR_URL = 'https://2rtk.rampump.cn/wechat.jpg'
 
+# 工具函数：将秒数转换为可读的时间格式
 def format_time_duration(seconds):
-    """
-    将秒数转换为更易读的时间格式
-    :param seconds: 秒数
-    :return: 格式化后的时间字符串
-    """
     days = int(seconds // 86400)
     seconds %= 86400
     hours = int(seconds // 3600)
@@ -517,14 +509,12 @@ def format_time_duration(seconds):
 def require_login(func):
     def wrapper(*args, **kwargs):
         if 'admin' not in session:
-            # 存储当前URL作为登录后的跳转目标
             next_url = request.url
             return redirect(url_for('login', next=next_url))
         return func(*args, **kwargs)
     wrapper.__name__ = func.__name__
     return wrapper
 
-# 添加获取二维码图片的路由
 @app.route('/alipay_qr')
 def get_alipay_qr():
     return redirect(ALIPAY_QR_URL)
@@ -535,10 +525,8 @@ def get_wechat_qr():
 
 @app.route('/static/<path:filename>')
 def serve_static(filename):
-    # 为图标和背景图设置较长的缓存时间
-    cache_timeout = 2592000  # 30天（以秒为单位）
+    cache_timeout = 2592000
     
-    # 为favicon.ico设置特定的MIME类型
     if filename == 'favicon.ico':
         return send_from_directory(
             os.path.join(app.root_path, 'static'),
@@ -547,24 +535,27 @@ def serve_static(filename):
             cache_timeout=cache_timeout
         )
     
-    # 其他静态文件使用默认MIME类型检测
     return send_from_directory(
         os.path.join(app.root_path, 'static'),
         filename,
         cache_timeout=cache_timeout
     )
 
+# ===================================
+# Web路由处理
+# - 系统状态监控
+# - 运行状态展示
+# - 用户和挂载点统计
+# ===================================
 @app.route('/')
 def index():
-    # 获取系统信息
+    # 获取系统资源使用情况
     cpu_percent = psutil.cpu_percent(interval=1)
     mem_percent = psutil.virtual_memory().percent
-    # 计算程序运行时长
     start_datetime = datetime.datetime.fromtimestamp(START_TIME)
     formatted_start_time = start_datetime.strftime('%Y-%m-%d %H:%M:%S')
     now = datetime.datetime.now()
 
-    # 获取运行中的挂载点
     running_mounts = []
     with sqlite3.connect('2rtk.db') as conn:
         c = conn.cursor()
@@ -574,7 +565,6 @@ def index():
             start_time = datetime.datetime.fromtimestamp(row[1])
             running_mounts.append((mount, start_time))
 
-    # 直接从全局列表中获取在线用户信息
     running_users = []
     with clients_lock:
         for client in authenticated_clients:
@@ -601,18 +591,16 @@ def index():
 def login():
     logout = request.args.get('logout')
     if logout:
-        session.pop('admin', None)  # 清除会话中的管理员标识
-        return redirect(url_for('index'))  # 退出后返回到首页
+        session.pop('admin', None)
+        return redirect(url_for('index'))
 
-    # 存储目标URL（如果有的话）
     next_url = request.args.get('next') or request.referrer
     if next_url and url_for('login') in next_url:
-        next_url = None  # 避免循环重定向到登录页面
+        next_url = None
     
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
-        # 检测空白表单提交
         if not username or not password:
             return render_template('login.html', error='用户名和密码不能为空。')
 
@@ -621,12 +609,10 @@ def login():
             c.execute("SELECT * FROM admins WHERE username =? AND password =?", (username, password))
             if c.fetchone():
                 session['admin'] = username
-                # 登录成功后重定向到目标URL或首页
                 return redirect(next_url or url_for('index'))
             else:
                 return render_template('login.html', error='用户名或密码错误')
     
-    # 存储目标URL到会话中
     session['next_url'] = next_url
     
     return render_template('login.html')
@@ -645,6 +631,12 @@ def get_mount_by_id(mount_id):
         result = c.fetchone()
     return result[0] if result else None
 
+# ===================================
+# 用户管理功能
+# - 添加/删除/修改用户
+# - 管理用户状态和权限
+# - 处理在线用户连接
+# ===================================
 @app.route('/user_management', methods=['GET', 'POST'])
 @require_login
 def user_management():
@@ -655,68 +647,60 @@ def user_management():
             if 'add_user' in request.form:
                 username = request.form.get('username')
                 password = request.form.get('password')
-                # 检测空白表单提交
                 if not username or not password:
                     error = '用户名和密码不能为空。'
                 else:
-                    # 检查用户名是否已存在
                     c.execute("SELECT * FROM users WHERE username =?", (username,))
                     if c.fetchone():
                         error = '用户名已存在，请选择其他用户名。'
                     else:
                         c.execute("INSERT INTO users (username, password) VALUES (?,?)", (username, password))
                         conn.commit()
-                        return redirect(url_for('user_management'))  # PRG 模式
+                        return redirect(url_for('user_management'))
             elif 'delete_user' in request.form:
                 user_id = request.form.get('delete_user')
                 c.execute("DELETE FROM users WHERE id =?", (user_id,))
                 conn.commit()
-                # 通知相关客户端重新验证或断开连接
                 with clients_lock:
                     for client in authenticated_clients:
                         if client['user'] == get_username_by_id(user_id):
                             try:
-                                client['socket'].sendall(b'REAUTH')  # 发送重新验证信号
+                                client['socket'].sendall(b'REAUTH')
                             except Exception as e:
                                 logger.warning(f"通知客户端重新验证失败: {e}")
                             authenticated_clients.remove(client)
-                return redirect(url_for('user_management'))  # PRG 模式
+                return redirect(url_for('user_management'))
             elif 'update_user' in request.form:
                 user_id = request.form.get('update_user')
                 username = request.form.get('username')
                 password = request.form.get('password')
-                # 检测空白表单提交
                 if not username or not password:
                     error = '用户名和密码不能为空。'
                 else:
-                    # 检查新用户名是否已存在（排除当前用户）
                     c.execute("SELECT * FROM users WHERE username =? AND id !=?", (username, user_id))
                     if c.fetchone():
                         error = '用户名已存在，请选择其他用户名。'
                     else:
                         c.execute("UPDATE users SET username =?, password =? WHERE id =?", (username, password, user_id))
                         conn.commit()
-                        # 通知相关客户端重新验证或断开连接
                         with clients_lock:
                             for client in authenticated_clients:
                                 if client['user'] == get_username_by_id(user_id):
                                     try:
-                                        client['socket'].sendall(b'REAUTH')  # 发送重新验证信号
+                                        client['socket'].sendall(b'REAUTH')
                                     except Exception as e:
                                         logger.warning(f"通知客户端重新验证失败: {e}")
                                     authenticated_clients.remove(client)
-                        return redirect(url_for('user_management'))  # PRG 模式
+                        return redirect(url_for('user_management'))
     
     with sqlite3.connect('2rtk.db') as conn:
         c = conn.cursor()
         c.execute("SELECT id, username, password FROM users")
         users = c.fetchall()
 
-    # 获取在线用户列表
     with clients_lock:
         online_usernames = [client['user'] for client in authenticated_clients]
 
-    # 创建一个包含用户在线状态的列表
     users_with_status = []
     for user_id, username, password in users:
         status = "在线" if username in online_usernames else "离线"
@@ -725,6 +709,12 @@ def user_management():
     return render_template('user_management.html', users=users_with_status, VERSION=VERSION,
                            CONTACT_EMAIL=CONTACT_EMAIL, online_usernames=online_usernames, error=error)
 
+# ===================================
+# 挂载点管理功能
+# - 添加/删除/修改挂载点
+# - 监控挂载点运行状态
+# - 管理挂载点连接和认证
+# ===================================
 @app.route('/mount_management', methods=['GET', 'POST'])
 @require_login
 def mount_management():
@@ -735,57 +725,51 @@ def mount_management():
             if 'add_mount' in request.form:
                 mount = request.form.get('mount')
                 password = request.form.get('password')
-                # 检测空白表单提交
                 if not mount or not password:
                     error = '挂载点名称和密码不能为空。'
                 else:
-                    # 检查挂载点名称是否已存在
                     c.execute("SELECT * FROM mounts WHERE mount =?", (mount,))
                     if c.fetchone():
                         error = '挂载点名称已存在，请选择其他名称。'
                     else:
                         c.execute("INSERT INTO mounts (mount, password) VALUES (?,?)", (mount, password))
                         conn.commit()
-                        return redirect(url_for('mount_management'))  # PRG 模式
+                        return redirect(url_for('mount_management'))
             elif 'delete_mount' in request.form:
                 mount_id = request.form.get('delete_mount')
                 c.execute("DELETE FROM mounts WHERE id =?", (mount_id,))
                 conn.commit()
-                # 通知相关客户端重新验证或断开连接
                 with clients_lock:
                     for client in authenticated_clients:
                         if client['mount'] == get_mount_by_id(mount_id):
                             try:
-                                client['socket'].sendall(b'REAUTH')  # 发送重新验证信号
+                                client['socket'].sendall(b'REAUTH')
                             except Exception as e:
                                 logger.warning(f"通知客户端重新验证失败: {e}")
                             authenticated_clients.remove(client)
-                return redirect(url_for('mount_management'))  # PRG 模式
+                return redirect(url_for('mount_management'))
             elif 'update_mount' in request.form:
                 mount_id = request.form.get('update_mount')
                 mount = request.form.get('mount')
                 password = request.form.get('password')
-                # 检测空白表单提交
                 if not mount or not password:
                     error = '挂载点名称和密码不能为空。'
                 else:
-                    # 检查新挂载点名称是否已存在（排除当前挂载点）
                     c.execute("SELECT * FROM mounts WHERE mount =? AND id !=?", (mount, mount_id))
                     if c.fetchone():
                         error = '挂载点名称已存在，请选择其他名称。'
                     else:
                         c.execute("UPDATE mounts SET mount =?, password =? WHERE id =?", (mount, password, mount_id))
                         conn.commit()
-                        # 通知相关客户端重新验证或断开连接
                         with clients_lock:
                             for client in authenticated_clients:
                                 if client['mount'] == get_mount_by_id(mount_id):
                                     try:
-                                        client['socket'].sendall(b'REAUTH')  # 发送重新验证信号
+                                        client['socket'].sendall(b'REAUTH')
                                     except Exception as e:
                                         logger.warning(f"通知客户端重新验证失败: {e}")
                                     authenticated_clients.remove(client)
-                        return redirect(url_for('mount_management'))  # PRG 模式
+                        return redirect(url_for('mount_management'))
     
     with sqlite3.connect('2rtk.db') as conn:
         c = conn.cursor()
@@ -804,7 +788,6 @@ def change_admin_password():
         old_password = request.form.get('old_password')
         new_password = request.form.get('new_password')
         confirm_password = request.form.get('confirm_password')
-        # 检测空白表单提交
         if not old_password or not new_password or not confirm_password:
             return "旧密码、新密码和确认新密码不能为空。"
         if new_password != confirm_password:
@@ -817,21 +800,25 @@ def change_admin_password():
             if result and result[0] == old_password:
                 c.execute("UPDATE admins SET password =? WHERE id = 1", (new_password,))
                 conn.commit()
-                session.pop('admin', None)  # 移除管理员会话
-                return redirect(url_for('login'))  # PRG 模式
+                session.pop('admin', None)
+                return redirect(url_for('login'))
             else:
                 return "旧密码错误"
     
     return render_template('change_admin_password.html', VERSION=VERSION,
                            CONTACT_EMAIL=CONTACT_EMAIL)
 
+# ===================================
+# 主程序入口
+# - 初始化数据库
+# - 启动NTRIP服务器
+# - 启动Web管理界面
+# - 设置信号处理
+# ===================================
 if __name__ == '__main__':
-    # 初始化数据库
     init_db()
     socketserver.ThreadingTCPServer.allow_reuse_address = True
-    # 初启动定时清屏
     clear_banner()
-    # 启动 caster 服务器
     try:
         server = socketserver.ThreadingTCPServer((HOST, NTRIP_PORT), Handler)
     except OSError as e:
@@ -839,7 +826,6 @@ if __name__ == '__main__':
         sys.exit(1)
     print(f"2RTK NTRIP Caster {VERSION}已启动:{HOST}:{NTRIP_PORT}")
     logger.info(f"启动 2RTK Caster {HOST}:{NTRIP_PORT}")
-    # 启动 Web 服务器
     import threading
     web_thread = threading.Thread(target=app.run, kwargs={'host': HOST, 'port': WEB_PORT})
     print (f"2RTK Caster Web 管理界面已启动:{HOST}:{WEB_PORT}")
