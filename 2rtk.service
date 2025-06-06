@@ -1,0 +1,27 @@
+[Unit]
+Description=2RTK NTRIP Caster Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=2rtk
+Group=2rtk
+WorkingDirectory=/opt/2rtk
+ExecStart=/usr/bin/python3 2rtk.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/2rtk/output.log
+StandardError=append:/var/log/2rtk/error.log
+
+# 安全设置
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

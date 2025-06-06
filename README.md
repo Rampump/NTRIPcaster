@@ -1,70 +1,66 @@
 # 2RTK NTRIP Caster
 
-2RTK是一个基于Python实现的NTRIP Caster服务器，提供RTK差分数据的转发服务和Web管理界面。
+2RTK是一个功能完整的NTRIP Caster服务器实现，支持NTRIP v1.0和v2.0协议，提供基准站数据流转发服务，并包含Web管理界面。
 
-## 功能特性
+## 主要特性
 
-### NTRIP服务
-- 支持NTRIP v1.0和v2.0协议
-- 支持多挂载点管理
-- 实时数据流转发
-- 用户认证和访问控制
-- 支持多客户端并发连接
+### NTRIP服务器
+- 完整支持NTRIP v1.0和v2.0协议
+- 多基准站数据流并发转发
+- 实时用户连接状态监控
+- 高效的数据流缓存管理
 
 ### Web管理界面
-- 系统状态监控（CPU、内存使用率）
-- 用户管理（添加/删除/修改）
-- 挂载点管理（添加/删除/修改）
-- 在线用户和活动挂载点监控
-- 管理员密码修改
+- 用户账户管理
+- 挂载点配置
+- 系统状态监控
+- 实时连接信息查看
+
+### 系统特性
+- 基于Python开发
+- 使用SQLite数据库存储配置
+- 支持多线程并发处理
+- 提供完整的日志记录
 
 ## 系统要求
 
 - Python 3.x
-- 依赖包：
-  - Flask
-  - psutil
-  - sqlite3
+- 所需Python包：
+  ```
+  flask
+  psutil
+  ```
 
-## 安装说明
+## 快速开始
 
-1. 克隆项目代码
-2. 安装依赖：
-```bash
-pip install flask psutil
-```
+1. 安装依赖：
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. 启动服务器：
+   ```bash
+   python 2rtk.py
+   ```
+
+3. 访问Web管理界面：
+   ```
+   http://localhost:5757
+   ```
+   默认管理员账户：admin/admin
 
 ## 配置说明
 
 主要配置参数（在2rtk.py中）：
-- `HOST`: 服务器监听地址（默认：0.0.0.0）
-- `NTRIP_PORT`: NTRIP服务端口（默认：2101）
-- `WEB_PORT`: Web管理界面端口（默认：5757）
-- `DEBUG`: 调试模式开关
+- `NTRIP_PORT`: NTRIP服务器端口（默认2101）
+- `WEB_PORT`: Web管理界面端口（默认5757）
+- `HOST`: 监听地址（默认0.0.0.0）
 
-## 使用说明
+## 安全说明
 
-### 启动服务器
-```bash
-python 2rtk.py
-```
-
-### Web管理界面
-1. 访问 `http://your-server-ip:5757`
-2. 默认管理员账号：
-   - 用户名：admin
-   - 密码：admin
-   
-### NTRIP服务
-- 基准站连接：`your-server-ip:2101`
-- 移动站连接：`your-server-ip:2101/mount-point`
-
-## 安全建议
-
-1. 首次登录后立即修改默认管理员密码
-2. 定期更新用户密码
-3. 使用强密码策略
-4. 及时更新系统和依赖包
+- 首次登录后请立即修改默认管理员密码
+- 所有密码均以明文存储，建议在可信网络环境中使用
+- 支持基本的用户认证机制
 
 ## 版本信息
 
@@ -74,26 +70,6 @@ python 2rtk.py
 
 邮箱：i@jia.by
 
-## 许可证
+## 许可说明
 
-MIT License
-
-Copyright (c) 2024 2RTK
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+本项目仅用于学习和研究目的，使用前请确保符合当地法律法规。
