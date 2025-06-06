@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>2RTK NTRIP Caster</title>
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600&display=swap');
+
+        body {
+            margin: 0;
+            font-family: 'Orbitron', sans-serif;
+            background: url('{{ url_for('static', filename='background.jpg') }}') no-repeat center center fixed;
+            background-size: cover;
+            color: #00eaff;
+            animation: bgScroll 100s linear infinite;
+            position: relative;
+        }
+
+        @keyframes bgScroll {
+            from {
+                background-position: 0 0;
+            }
+            to {
+                background-position: 100% 100%;
+            }
+        }
+
+        /* 页头和导航栏容器 */
+        .header-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            text-align: center;
+            padding: 0 20px;
+            background-color: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(5px);
+            box-shadow: 0 0 20px rgba(0, 234, 255, 0.4);
+            position: relative;
+        }
+
+        .header-content {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            padding: 20px 0;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            text-shadow: 0 0 10px #00eaff;
+            transition: font-size 0.3s ease;
+        }
+
+        .header p {
+            font-size: 0.95em;
+            color: #aefcfb;
+        }
+
+        .header a {
+            color: #00eaff;
+            text-decoration: none;
+        }
+
+        .menu {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-top: 1px solid #00eaff22;
+            border-bottom: 1px solid #00eaff22;
+            flex-wrap: wrap;
+            position: relative;
+            top: 0;
+        }
+
+        .menu a {
+            color: #ffffff;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 1.1em;
+            transition: color 0.3s ease;
+        }
+
+        .menu a:hover {
+            color: #00eaff;
+        }
+
+        .content {
+            background-color: rgba(0, 0, 0, 0.5);
+            margin: 135px auto 100px; /* 调整为132px，确保与导航栏保持2px间距 */
+            padding: 30px;
+            border-radius: 12px;
+            max-width: 960px;
+            box-shadow: 0 0 40px rgba(0, 234, 255, 0.3);
+            animation: fadeInUp 1.2s ease-out;
+            overflow-y: auto;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        h2 {
+            color: #00eaff;
+            border-bottom: 1px solid #00eaff55;
+            padding-bottom: 5px;
+        }
+
+        ul li {
+            margin-bottom: 6px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #00eaff;
+        }
+
+        .form-group input {
+            width: 300px;
+            padding: 10px;
+            border: 1px solid #00eaff;
+            border-radius: 4px;
+            font-size: 14px;
+            background-color: rgba(0, 0, 0, 0.3);
+            color: #00eaff;
+        }
+
+        button {
+            background-color: #00eaff;
+            color: black;
+            padding: 10px 25px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-family: 'Orbitron', sans-serif;
+        }
+
+        button:hover {
+            background-color: #00c1ff;
+        }
+
+        .cancel-btn {
+            background-color: #ff4d4d;
+            color: white;
+        }
+
+        .cancel-btn:hover {
+            background-color: #ff1a1a;
+        }
+
+        @keyframes starBlink {
+            0%,
+            100% {
+                opacity: 0.6;
+                transform: scale(0.8);
+            }
+            50% {
+                opacity: 1;
+                transform: scale(1.2);
+                box-shadow: 0 0 15px rgba(255, 255, 255, 0.9);
+            }
+        }
+
+        .star {
+            position: absolute;
+            border-radius: 50%;
+            animation: starBlink 2s ease-in-out infinite;
+        }
+
+        .star-blue {
+            background-color: #00eaff;
+        }
+
+        .star-white {
+            background-color: white;
+        }
+
+        .star-yellow {
+            background-color: #ffffaa;
+        }
+
+        .star-purple {
+            background-color: #cc99ff;
+        }
+
+        .user-info {
+            color: #ff9900;
+            position: absolute;
+            right: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .user-info a {
+            color: #ff9900;
+            text-decoration: none;
+            margin-left: 10px;
+        }
+
+        .user-info a:hover {
+            text-decoration: underline;
+        }
+
+        .footer {
+            background-color: rgba(0, 0, 0, 0.7);
+            text-align: center;
+            padding: 15px;
+            font-size: 0.9em;
+            color: #aefcfb;
+            border-top: 1px solid #00eaff22;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 2;
+        }
+
+        .footer a {
+            color: #00eaff;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        .heart-symbol {
+            color: #ff4d4d;
+            font-size: 1.2em;
+        }
+
+        .footer-donate {
+            margin-top: 15px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .footer-donate-button {
+            position: relative;
+            cursor: pointer;
+        }
+
+        .footer-qr-code {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            height: 200px;
+            z-index: 1;
+            border: 2px solid #00eaff;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .header {
+                padding: 0 10px;
+            }
+            
+            .header-content {
+                padding: 15px 0;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .menu {
+                padding: 10px;
+                gap: 15px;
+            }
+            
+            .menu a {
+                font-size: 1em;
+            }
+            
+            .content {
+                margin: 112px auto 80px; /* 移动设备上保持2px间距 */
+                padding: 20px;
+            }
+            
+            .user-info {
+                font-size: 0.9em;
+                right: 10px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 页头和导航栏容器 -->
+    <div class="header-container">
+        <div class="header">
+            <div class="header-content">
+                <h1>2RTK NTRIP Caster</h1>
+                <div class="user-info">
+                    {% if session.admin %}
+                    <span>管理员：{{ session.admin }}</span>
+                    <a href="{{ url_for('change_admin_password') }}">修改管理密码</a>
+                    <a href="{{ url_for('login', logout=1) }}">退出</a>
+                    {% else %}
+                    <a href="{{ url_for('login') }}">登录</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="menu">
+            <a href="{{ url_for('index') }}">首页</a>
+            <a href="{{ url_for('user_management') }}">用户管理</a>
+            <a href="{{ url_for('mount_management') }}">挂载点管理</a>
+        </div>
+    </div>
+
+    <div class="content">
+        {% block content %}
+        {% endblock %}
+    </div>
+
+    <div class="footer">
+        访问 <a href="https://www.2rtk.com" target="_blank">2RTK.com</a> 获取更多信息 |
+        若您在使用过程中遇到问题或有任何反馈，请联系作者  <a href="mailto:{{ CONTACT_EMAIL }}">{{ CONTACT_EMAIL }}</a>
+        
+        <div class="footer-donate">
+            <span>赏一杯咖啡鼓励作者<span class="heart-symbol">♥</span></span>
+            <div class="footer-donate-button" onmouseover="showFooterQrCode('alipay')" onmouseout="hideFooterQrCode('alipay')">
+                <i class="fa fa-coffee"></i> 支付宝赏
+                <img id="footer-alipay-qr" src="{{ url_for('get_alipay_qr') }}" alt="支付宝二维码" class="footer-qr-code">
+            </div>
+            <span class="heart-symbol">♥</span>
+            <div class="footer-donate-button" onmouseover="showFooterQrCode('wechat')" onmouseout="hideFooterQrCode('wechat')">
+                微信赞赏 
+                <img id="footer-wechat-qr" src="{{ url_for('get_wechat_qr') }}" alt="微信二维码" class="footer-qr-code">
+            </div>
+        </div>
+        
+        <span style="color: #ff9900;">程序终身免费使用，功能全部开放。源码暂未公开。如果您觉得好用，不妨请作者喝杯咖啡，每一行代码均是作者头顶掉落的青丝，您的支持是我们前进的动力，感谢您的慷慨！</span>
+    </div>
+
+    <script>
+        const starColors = ['star-blue', 'star-white', 'star-yellow', 'star-purple'];
+
+        function createStar() {
+            const star = document.createElement('div');
+            const size = Math.floor(Math.random() * 4) + 2;
+            const colorClass = starColors[Math.floor(Math.random() * starColors.length)];
+            const duration = Math.random() * 2 + 1;
+
+            star.classList.add('star', colorClass);
+            star.style.width = `${size}px`;
+            star.style.height = `${size}px`;
+            star.style.left = `${Math.random() * window.innerWidth}px`;
+            star.style.top = `${Math.random() * window.innerHeight}px`;
+            star.style.animationDuration = `${duration}s`;
+
+            document.body.appendChild(star);
+
+            setTimeout(() => {
+                star.style.transition = 'opacity 0.5s ease-out';
+                star.style.opacity = '0';
+                setTimeout(() => star.remove(), 500);
+            }, duration * 1000 + 1000);
+        }
+
+        for (let i = 0; i < 10; i++) {
+            setTimeout(createStar, i * 500);
+        }
+
+        setInterval(createStar, 5000);
+
+        function showFooterQrCode(type) {
+            document.getElementById(`footer-${type}-qr`).style.display = 'block';
+        }
+
+        function hideFooterQrCode(type) {
+            document.getElementById(`footer-${type}-qr`).style.display = 'none';
+        }
+    </script>
+</body>
+
+</html>
