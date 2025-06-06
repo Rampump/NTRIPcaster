@@ -1,75 +1,194 @@
 # 2RTK NTRIP Caster
 
-2RTK是一个功能完整的NTRIP Caster服务器实现，支持NTRIP v1.0和v2.0协议，提供基准站数据流转发服务，并包含Web管理界面。
+2RTK是一个基于Python开发的NTRIP Caster服务器实现，支持RTK基准站数据的转发和管理。
 
-## 主要特性
+## 功能特点
 
-### NTRIP服务器
-- 完整支持NTRIP v1.0和v2.0协议
-- 多基准站数据流并发转发
-- 实时用户连接状态监控
-- 高效的数据流缓存管理
+- NTRIP协议支持
+  - 基准站数据上传
+  - 用户数据下载
+  - 挂载点管理
+  - 用户认证
 
-### Web管理界面
-- 用户账户管理
-- 挂载点配置
-- 系统状态监控
-- 实时连接信息查看
+- Web管理界面
+  - 用户管理
+  - 挂载点管理
+  - 系统监控
+  - 管理员密码修改
 
-### 系统特性
-- 基于Python开发
-- 使用SQLite数据库存储配置
-- 支持多线程并发处理
-- 提供完整的日志记录
+- 系统集成
+  - Systemd服务支持
+  - 开机自启动
+  - 日志管理
+  - 权限控制
 
 ## 系统要求
 
-- Python 3.x
-- 所需Python包：
-  ```
-  flask
-  psutil
-  ```
+- Ubuntu 18.04 或更高版本
+- Python 3.6 或更高版本
+- 2101端口（NTRIP服务）
+- 5757端口（Web管理界面）
 
-## 快速开始
+## 快速安装
 
-1. 安装依赖：
-   ```bash
-   pip install -r requirements.txt
-   ```
+1. 克隆仓库：
+```bash
+git clone https://gitcode.com/your-username/2rtk.git
+cd 2rtk
+```
 
-2. 启动服务器：
-   ```bash
-   python 2rtk.py
-   ```
+2. 运行安装脚本：
+```bash
+sudo chmod +x install.sh
+sudo ./install.sh
+```
 
-3. 访问Web管理界面：
-   ```
-   http://localhost:5757
-   ```
-   默认管理员账户：admin/admin
+安装脚本会自动完成以下操作：
+- 安装系统依赖
+- 创建服务用户和必要目录
+- 安装Python依赖
+- 配置系统服务
+- 设置防火墙规则
+- 启动服务
+
+## 手动安装
+
+如果你不想使用自动安装脚本，也可以按照以下步骤手动安装：
+
+1. 安装系统依赖：
+```bash
+sudo apt update
+sudo apt install python3 python3-pip git
+```
+
+2. 创建服务用户和目录：
+```bash
+sudo useradd -r -s /bin/false 2rtk
+sudo mkdir -p /opt/2rtk
+sudo mkdir -p /var/log/2rtk
+```
+
+3. 复制项目文件：
+```bash
+sudo cp -r ./* /opt/2rtk/
+```
+
+4. 设置权限：
+```bash
+sudo chown -R 2rtk:2rtk /opt/2rtk
+sudo chown -R 2rtk:2rtk /var/log/2rtk
+sudo chmod 755 /opt/2rtk
+sudo chmod 755 /var/log/2rtk
+```
+
+5. 安装Python依赖：
+```bash
+sudo pip3 install -r requirements.txt
+```
+
+6. 配置系统服务：
+```bash
+sudo cp 2rtk.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable 2rtk
+sudo systemctl start 2rtk
+```
+
+## 服务管理
+
+使用以下命令管理2RTK服务：
+
+```bash
+# 启动服务
+sudo systemctl start 2rtk
+
+# 停止服务
+sudo systemctl stop 2rtk
+
+# 重启服务
+sudo systemctl restart 2rtk
+
+# 查看服务状态
+sudo systemctl status 2rtk
+
+# 启用开机自启
+sudo systemctl enable 2rtk
+
+# 禁用开机自启
+sudo systemctl disable 2rtk
+```
 
 ## 配置说明
 
-主要配置参数（在2rtk.py中）：
-- `NTRIP_PORT`: NTRIP服务器端口（默认2101）
-- `WEB_PORT`: Web管理界面端口（默认5757）
-- `HOST`: 监听地址（默认0.0.0.0）
+### 端口配置
+- NTRIP服务端口：2101
+- Web管理界面端口：5757
 
-## 安全说明
+### 防火墙配置
+确保以下端口已开放：
+```bash
+sudo ufw allow 2101/tcp
+sudo ufw allow 5757/tcp
+```
 
-- 首次登录后请立即修改默认管理员密码
-- 所有密码均以明文存储，建议在可信网络环境中使用
-- 支持基本的用户认证机制
+### 日志文件
+- 服务日志：/var/log/2rtk/2rtk.log
+- 日志自动轮转：每日轮转，保留7天
 
-## 版本信息
+## Web管理界面
 
-当前版本：1.9.8
+访问 http://your-server-ip:5757 进入Web管理界面。
+
+默认管理员账户：
+- 用户名：admin
+- 密码：admin
+
+首次登录后请立即修改密码。
+
+## 故障排除
+
+1. 服务无法启动
+   - 检查日志文件：`sudo journalctl -u 2rtk`
+   - 确认Python依赖已正确安装
+   - 验证端口未被占用：`sudo lsof -i :2101` 和 `sudo lsof -i :5757`
+
+2. 无法访问Web界面
+   - 检查防火墙配置
+   - 确认服务正在运行：`sudo systemctl status 2rtk`
+   - 验证IP和端口配置正确
+
+3. 基准站无法连接
+   - 确认NTRIP端口(2101)已开放
+   - 检查用户名和密码配置
+   - 查看服务日志中的连接错误
+
+4. 权限问题
+   - 检查目录权限：`ls -l /opt/2rtk /var/log/2rtk`
+   - 确认服务用户(2rtk)对相关目录有正确权限
+   - 验证日志文件权限
+
+## 安全建议
+
+1. 更改默认管理员密码
+2. 使用强密码策略
+3. 定期更新系统和依赖包
+4. 限制管理界面访问IP
+5. 配置SSL/TLS（如需要）
+
+## 贡献指南
+
+欢迎提交问题报告和改进建议。请遵循以下步骤：
+
+1. Fork 项目
+2. 创建特性分支
+3. 提交更改
+4. 推送到分支
+5. 创建 Pull Request
+
+## 许可证
+
+[MIT License](LICENSE)
 
 ## 联系方式
 
-邮箱：i@jia.by
-
-## 许可说明
-
-本项目仅用于学习和研究目的，使用前请确保符合当地法律法规。
+如有问题或建议，请提交 Issue 或联系项目维护者。
