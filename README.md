@@ -1,7 +1,7 @@
 
 
 # 2RTK NTRIP Caster  
-**基于Python的高性能NTRIP基准站数据转发与管理平台**  
+**这是一个使用python编写的NTRIP caster程序，它可以使用web管理挂载点和用户管理功能，支持NTRIP V1.0/V2.0协议。******  
 
 
 ## 🚀 核心功能  
