@@ -35,7 +35,8 @@
 ### 一键自动化安装（推荐）  
 ```bash  
 # 克隆项目仓库  
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster  
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster  地址1
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster   地址2
 
 # 赋予安装脚本执行权限并运行  
 sudo chmod +x install.sh  
