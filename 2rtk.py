@@ -6,11 +6,12 @@ import sqlite3
 import logging
 from threading import Lock, Timer
 from collections import deque
+import socket
 import os
+import sys
 import datetime
 import signal
 import sys
-import socket
 from flask import Flask, request, render_template, redirect, url_for, session, send_from_directory
 import psutil
 
@@ -70,7 +71,12 @@ def clear_banner():
     t.daemon = True
     t.start()
 
-
+# ===================================
+# 数据库初始化和管理
+# - 创建必要的数据表
+# - 初始化默认管理员账户
+# - 管理运行时挂载点数据
+# ===================================
 def init_db():
     conn = sqlite3.connect('2rtk.db')
     c = conn.cursor()
@@ -136,29 +142,13 @@ def init_db():
     conn.commit()
     conn.close()
     print("数据库初始化完成")
-def generate_mount_list():
-    conn = sqlite3.connect('2rtk.db')
-    c = conn.cursor()
-    try:
-        c.execute("SELECT mount, identifier, format, format_details, carrier, nav_system, network, country, latitude, longitude, nmea, solution, generator, compression, authentication, fee, bitrate, misc FROM running_mounts")
-        rows = c.fetchall()
-        mount_list = []
-        for row in rows:
-            mount_info = ';'.join([str(item) if item is not None else '' for item in ['STR'] + list(row)])
-            mount_list.append(mount_info)
-        mount_list.append(f'NET;2RTK;2RTK;N;N;2rtk.com;{HOST}:{NTRIP_PORT};{CONTACT_EMAIL};;')
-        mount_list.append('ENDSOURCETABLE;')
-        tbl = '\n'.join(mount_list)
-        print("生成挂载点列表成功")
-        logger.info("生成挂载点列表成功")
-        with open('mount_list.txt', 'w') as f:
-            f.write(tbl)
-        print("挂载点列表已更新 mount_list.txt")
-    except Exception as e:
-        logger.error(f"生成挂载点列表失败: {e}")
-    finally:
-        conn.close()
 
+# ===================================
+# NTRIP服务器处理类
+# - 处理客户端连接请求
+# - 管理数据流上传和下载
+# - 实现NTRIP协议的认证和数据传输
+# ===================================
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
         dbg(f"连接: {self.client_address}")
@@ -259,7 +249,7 @@ class Handler(socketserver.BaseRequestHandler):
             current_time
         ))
         conn.commit()
-        generate_mount_list()
+        self._generate_mount_list()
         print(f"⟳ {mount} 挂载点已导入运行数据库中，数据上传中...")
 
         with rtcm_lock:
@@ -287,11 +277,34 @@ class Handler(socketserver.BaseRequestHandler):
         logger.info(f"基准站连接断开:{agent}, {self.client_address}")
         dbg(f"⟳{mount}连接断开已从运行数据库中移除..{agent}, {self.client_address}.")
         print(f"⟳ {mount} 已从运行数据库中移除...{agent}, {self.client_address}")
-        generate_mount_list()
+        self._generate_mount_list()
 
         with rtcm_lock:
             if mount in rtcm_buffers:
                 del rtcm_buffers[mount]
+
+    def _generate_mount_list(self):
+        conn = sqlite3.connect('2rtk.db')
+        c = conn.cursor()
+        try:
+            c.execute("SELECT mount, identifier, format, format_details, carrier, nav_system, network, country, latitude, longitude, nmea, solution, generator, compression, authentication, fee, bitrate, misc FROM running_mounts")
+            rows = c.fetchall()
+            mount_list = []
+            for row in rows:
+                mount_info = ';'.join([str(item) if item is not None else '' for item in ['STR'] + list(row)])
+                mount_list.append(mount_info)
+            mount_list.append(f'NET;2RTK;2RTK;N;N;2rtk.com;{HOST}:{NTRIP_PORT};{CONTACT_EMAIL};;')
+            mount_list.append('ENDSOURCETABLE;')
+            tbl = '\n'.join(mount_list)
+            print("生成挂载点列表成功")
+            logger.info("生成挂载点列表成功")
+            with open('mount_list.txt', 'w') as f:
+                f.write(tbl)
+            print("挂载点列表已更新 mount_list.txt")
+        except Exception as e:
+            logger.error(f"生成挂载点列表失败: {e}")
+        finally:
+            conn.close()
 
     def _get(self, req: str, hdrs: dict, protocol_version):
         dbg("用户端请求验证中")
@@ -416,9 +429,38 @@ class Handler(socketserver.BaseRequestHandler):
                     if c in authenticated_clients:
                         authenticated_clients.remove(c)
 
+# ===================================
+# 服务器关闭处理
+# - 清理数据库中的运行时数据
+# - 关闭所有客户端连接
+# - 安全关闭NTRIP和Web服务器
+# ===================================
 def shutdown(sig, frame):
     print("\n正在关闭caster服务器…")
+    
+    # 1. 首先停止接受新的连接
+    try:
+        server.shutdown()
+        print("已停止接受新的连接")
+    except Exception as e:
+        logger.error(f"停止接受新连接时出错: err={e}")
 
+    # 2. 关闭所有客户端连接
+    global authenticated_clients
+    with clients_lock:
+        for client in authenticated_clients:
+            try:
+                # 设置socket超时
+                client['socket'].settimeout(5)
+                # 尝试优雅关闭
+                client['socket'].shutdown(socket.SHUT_RDWR)
+                client['socket'].close()
+            except Exception as e:
+                logger.warning(f"关闭客户端套接字时出错: addr={client['addr']}, err={e}")
+        authenticated_clients = []
+    print("已关闭所有客户端连接")
+
+    # 3. 清理数据库
     try:
         conn = sqlite3.connect('2rtk.db')
         c = conn.cursor()
@@ -429,28 +471,29 @@ def shutdown(sig, frame):
     except Exception as e:
         logger.error(f"清空运行中挂载点数据时出错: {e}")
 
-    global authenticated_clients
-    with clients_lock:
-        for client in authenticated_clients:
-            try:
-                client['socket'].shutdown(socket.SHUT_RDWR)
-                client['socket'].close()
-            except Exception as e:
-                logger.warning(f"关闭客户端套接字时出错: addr={client['addr']}, err={e}")
-        authenticated_clients = []
-
+    # 4. 完全关闭服务器
     try:
-        server.shutdown()
         server.server_close()
-        print("NTRIP服务器已成功关闭")
+        print("NTRIP服务器已完全关闭")
     except Exception as e:
         logger.error(f"关闭NTRIP服务器时出错: err={e}")
-
     try:
-        sys.exit(0)
+        func = request.environ.get('werkzeug.server.shutdown')
+        if func is not None:
+            func()
+            print("已关闭Web服务器")
     except Exception as e:
-        logger.error(f"关闭Web服务器时出错: err={e}")
+        logger.error(f"关闭Web服务器时出错: {e}")
+    # 强制退出程序
+    print("服务器关闭完成，正在退出...")
+    sys.exit(0)  
 
+# ===================================
+# Flask Web应用
+# - 提供Web管理界面
+# - 处理用户认证和会话管理
+# - 管理挂载点和用户配置
+# ===================================
 app = Flask(__name__)
 app.secret_key = '9#*&K47g@U2xR6!8pX3m$yQ0%z5L1cV7bW9dF3hJ6n2r'
 
@@ -512,6 +555,12 @@ def serve_static(filename):
         cache_timeout=cache_timeout
     )
 
+# ===================================
+# Web路由处理
+# - 系统状态监控
+# - 运行状态展示
+# - 用户和挂载点统计
+# ===================================
 @app.route('/')
 def index():
     # 获取系统资源使用情况
@@ -596,6 +645,12 @@ def get_mount_by_id(mount_id):
         result = c.fetchone()
     return result[0] if result else None
 
+# ===================================
+# 用户管理功能
+# - 添加/删除/修改用户
+# - 管理用户状态和权限
+# - 处理在线用户连接
+# ===================================
 @app.route('/user_management', methods=['GET', 'POST'])
 @require_login
 def user_management():
@@ -668,6 +723,12 @@ def user_management():
     return render_template('user_management.html', users=users_with_status, VERSION=VERSION,
                            CONTACT_EMAIL=CONTACT_EMAIL, online_usernames=online_usernames, error=error)
 
+# ===================================
+# 挂载点管理功能
+# - 添加/删除/修改挂载点
+# - 监控挂载点运行状态
+# - 管理挂载点连接和认证
+# ===================================
 @app.route('/mount_management', methods=['GET', 'POST'])
 @require_login
 def mount_management():
@@ -761,66 +822,17 @@ def change_admin_password():
     return render_template('change_admin_password.html', VERSION=VERSION,
                            CONTACT_EMAIL=CONTACT_EMAIL)
 
-def clean_dead_connections():
-    now = time.time()
-    stale_uploads = []
-
-    # 清理上传端（基站）
-    with rtcm_lock:
-        for mount, buffer in list(rtcm_buffers.items()):
-            if not buffer:
-                continue
-            last_time = buffer[-1][0]
-            if now - last_time > 180:
-                stale_uploads.append(mount)
-
-    for mount in stale_uploads:
-        logger.warning(f"上传端 {mount} 超过3分钟无数据，自动清理")
-        with rtcm_lock:
-            if mount in rtcm_buffers:
-                del rtcm_buffers[mount]
-        try:
-            conn = sqlite3.connect('2rtk.db')
-            c = conn.cursor()
-            c.execute("DELETE FROM running_mounts WHERE mount =?", (mount,))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"清理挂载点 {mount} 时出错: {e}")
-        try:
-            generate_mount_list()
-        except Exception as e:
-            logger.error(f"自动刷新 sourcetable 时出错: {e}")
-
-    # 清理下载端（用户）
-    to_remove = []
-    with clients_lock:
-        for client in authenticated_clients:
-            if now - client['last_refresh'] > 180:
-                to_remove.append(client)
-    
-    with clients_lock:
-        for client in to_remove:
-            logger.warning(f"下载端连接超时断开: {client['user']} {client['addr']}")
-            try:
-                client['socket'].shutdown(socket.SHUT_RDWR)
-                client['socket'].close()
-            except:
-                pass
-            authenticated_clients.remove(client)
-
-    # 定时再次执行
-    t = Timer(60, clean_dead_connections)
-    t.daemon = True
-    t.start()
-
-
-
+# ===================================
+# 主程序入口
+# - 初始化数据库
+# - 启动NTRIP服务器
+# - 启动Web管理界面
+# - 设置信号处理
+# ===================================
 if __name__ == '__main__':
     init_db()
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     clear_banner()
-    clean_dead_connections() 
     try:
         server = socketserver.ThreadingTCPServer((HOST, NTRIP_PORT), Handler)
     except OSError as e:
