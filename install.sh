@@ -6,6 +6,23 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# 检查是否为Debian系统
+if ! grep -q "Debian" /etc/os-release; then
+    echo "此脚本仅适用于Debian系统"
+    exit 1
+fi
+
+# 检查Debian版本是否为12
+DEBIAN_VERSION=$(grep -oP 'VERSION_ID="\K[^"]+' /etc/os-release)
+if [ "$DEBIAN_VERSION" != "12" ]; then
+    echo "此脚本仅测试于Debian 12，当前系统版本为Debian $DEBIAN_VERSION"
+    read -p "是否继续安装？(y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
 # 设置颜色输出
 GREEN='\033[0;32m'
 RED='\033[0;31m'
