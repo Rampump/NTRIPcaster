@@ -11,7 +11,6 @@ import os
 import sys
 import datetime
 import signal
-import sys
 from flask import Flask, request, render_template, redirect, url_for, session, send_from_directory
 import psutil
 
@@ -73,9 +72,6 @@ def clear_banner():
 
 # ===================================
 # 数据库初始化和管理
-# - 创建必要的数据表
-# - 初始化默认管理员账户
-# - 管理运行时挂载点数据
 # ===================================
 def init_db():
     conn = sqlite3.connect('2rtk.db')
@@ -138,16 +134,13 @@ def init_db():
     if not c.fetchone():
         c.execute("INSERT INTO admins (username, password) VALUES ('admin', 'admin')")
         print("已创建默认管理员: admin/admin")
-        print("⚠️ 请务必在首次登录后修改默认密码！")
+        print(" 请务必在首次登录后修改默认密码！")
     conn.commit()
     conn.close()
     print("数据库初始化完成")
 
 # ===================================
 # NTRIP服务器处理类
-# - 处理客户端连接请求
-# - 管理数据流上传和下载
-# - 实现NTRIP协议的认证和数据传输
 # ===================================
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -160,26 +153,35 @@ class Handler(socketserver.BaseRequestHandler):
         if not raw:
             return
         req, hdrs = self._parse(raw)
-        protocol_version = self.get_protocol_version(req)
+        protocol_version = self.get_protocol_version(req, hdrs)
+        
         if req.startswith('SOURCE'):
             self._source(req, hdrs, protocol_version)
         elif req.startswith('GET'):
             self._get(req, hdrs, protocol_version)
         else:
             logger.warning(f"Unknown request: {req}")
+            # 返回标准400错误响应
+            if protocol_version == 'NTRIP v2.0':
+                self.request.sendall(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+            else:
+                self.request.sendall(b'ICY 400 Bad Request\r\n')
 
     def get_client_model(self, agent):
         if agent and 'NTRIP' in agent:
             return agent.split('NTRIP', 1)[1].strip()
         return 'N/A'
 
-    def get_protocol_version(self, req):
+    def get_protocol_version(self, req, hdrs):
+        """修复协议版本判断，结合请求行和Ntrip-Version头"""
         parts = req.split()
         if len(parts) >= 3:
             protocol = parts[-1]
-            if protocol == 'HTTP/1.1':
+            # NTRIP v2.0必须同时满足HTTP/1.1和Ntrip-Version头
+            if protocol == 'HTTP/1.1' and hdrs.get('Ntrip-Version') == 'Ntrip/2.0':
                 return 'NTRIP v2.0'
-            elif protocol == 'HTTP/1.0':
+            # NTRIP v1.0使用HTTP/1.0或没有Ntrip-Version头的HTTP/1.1
+            elif protocol == 'HTTP/1.0' or (protocol == 'HTTP/1.1' and 'Ntrip-Version' not in hdrs):
                 return 'NTRIP v1.0'
         return 'N/A'
 
@@ -193,95 +195,156 @@ class Handler(socketserver.BaseRequestHandler):
                 h[k.strip()] = v.strip()
         return req, h
 
-    def _source(self, req: str, hdrs: dict, protocol_version):
-        dbg("SOURCE upload request verification")
-        p = req.split()
-        if len(p) < 3:
-            self.request.sendall(b'ERROR - Bad Password\r\n')
-            return
-        mount = p[2]
+    def _send_error_response(self, protocol_version, status_code):
+        """根据协议版本发送对应的错误响应"""
+        if protocol_version == 'NTRIP v2.0':
+            responses = {
+                400: b'HTTP/1.1 400 Bad Request\r\n\r\n',
+                401: b'HTTP/1.1 401 Unauthorized\r\n\r\n',
+                404: b'HTTP/1.1 404 Not Found\r\n\r\n',
+                500: b'HTTP/1.1 500 Internal Server Error\r\n\r\n'
+            }
+        else:  # NTRIP v1.0 或未知版本
+            responses = {
+                400: b'ICY 400 Bad Request\r\n',
+                401: b'ICY 401 Unauthorized\r\n',
+                404: b'ICY 404 Not Found\r\n',
+                500: b'ICY 500 Internal Server Error\r\n'
+            }
+        # 发送对应状态码的响应，如果不存在则使用500
+        self.request.sendall(responses.get(status_code, responses[500]))
 
+    def _source(self, req: str, hdrs: dict, protocol_version):
+        """支持标准和非标准SOURCE请求格式的处理逻辑"""
+        dbg("SOURCE upload request verification")
+        p = req.strip().split()
+
+        # 初始化
+        mount = None
+        password = None
+        auth_mode = None  # 'standard', 'legacy'
+
+        # ===== 检测请求格式 =====
+        if len(p) >= 3:
+            # 标准格式：SOURCE /mount HTTP/1.0 or HTTP/1.1
+            if p[0].upper() == 'SOURCE' and p[1].startswith('/') and p[2].startswith('HTTP/'):
+                auth_mode = 'standard'
+                mount = p[1].lstrip('/')
+            # RTKLIB / 非标准简化模式：SOURCE <password> <mount>
+            elif p[0].upper() == 'SOURCE' and not p[2].startswith('HTTP/'):
+                auth_mode = 'legacy'
+                password = p[1]
+                mount = p[2]
+
+        if not auth_mode or not mount or (not password and auth_mode != 'standard'):
+            self._send_error_response(protocol_version, 400)
+            logger.warning(f"无法解析上传请求格式: {req}")
+            return
+
+        # ===== 标准认证模式（Authorization: Basic） =====
+        if auth_mode == 'standard':
+            auth_header = hdrs.get('Authorization')
+            if not auth_header or not auth_header.startswith('Basic '):
+                self._challenge(protocol_version)
+                return
+            try:
+                b64data = auth_header.split()[1]
+                username, password = base64.b64decode(b64data).decode().split(':', 1)
+            except Exception as e:
+                self._send_auth_failure(protocol_version)
+                logger.warning(f"Base64解析失败: {e}")
+                return
+
+        # ===== 验证挂载点密码 =====
         conn = sqlite3.connect('2rtk.db')
         c = conn.cursor()
-        c.execute("SELECT password FROM mounts WHERE mount =?", (mount,))
+        c.execute("SELECT password FROM mounts WHERE mount = ?", (mount,))
         result = c.fetchone()
-
-        if not result or result[0] != p[1]:
-            self.request.sendall(b'ERROR - Bad Password\r\n')
-            dbg(f"上传认证失败，密码错误: mount={mount}, addr={self.client_address}")
+        if not result or result[0] != password:
             conn.close()
+            self._send_auth_failure(protocol_version)
+            dbg(f"上传认证失败，密码错误: mount={mount}, addr={self.client_address}")
             return
 
-        self.request.sendall(b'ICY 200 OK\r\n')
-        agent = self.get_client_model(hdrs.get('Source-Agent', ''))
-        logger.info(f"上传认证成功: mount={mount}, {agent}, addr={self.client_address}")
-        print(f"⟳ {mount} 上传认证成功... 来自{self.client_address}, 基准站端:{agent}, 数据上传中")
+        # ===== 成功响应 =====
+        if protocol_version == 'NTRIP v2.0':
+            self.request.sendall(b'HTTP/1.1 200 OK\r\nNtrip-Version: Ntrip/2.0\r\n\r\n')
+        else:
+            self.request.sendall(b'ICY 200 OK\r\n')
 
+        agent = self.get_client_model(hdrs.get('Source-Agent', ''))
+        logger.info(f"上传认证成功: mount={mount}, agent={agent}, addr={self.client_address}, 模式={auth_mode}")
+        print(f"⟳ {mount} 上传认证成功 来自{self.client_address}, 基准站:{agent}, 模式={auth_mode}")
+
+        # ===== 运行数据库记录 =====
         current_time = time.time()
-        
-        c.execute('''
-            INSERT INTO running_mounts (
-                mount, start_time, identifier, format, format_details, 
-                carrier, nav_system, network, country, latitude, 
-                longitude, nmea, solution, generator, compression, 
+        try:
+            c.execute('''INSERT OR REPLACE INTO running_mounts (
+                mount, start_time, identifier, format, format_details,
+                carrier, nav_system, network, country, latitude,
+                longitude, nmea, solution, generator, compression,
                 authentication, fee, bitrate, misc, update_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            mount,
-            current_time,
-            'none',
-            'RTCM 3.3',
-            '1005(10)',
-            0,
-            'GPS',
-            '2RTK',
-            'CHN',
-            25.2034,
-            110.2777,
-            0,
-            0,
-            agent,
-            'none',
-            'B',
-            'N',
-            500,
-            'NO',
-            current_time
-        ))
-        conn.commit()
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                mount,
+                current_time,
+                'none',
+                'RTCM 3.3',
+                '1005(10)',
+                0,
+                'GPS',
+                '2RTK',
+                'CHN',
+                00.000,
+                00.000,
+                0,
+                0,
+                agent,
+                'none',
+                'B',
+                'N',
+                500,
+                'NO',
+                current_time
+            ))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"挂载点运行数据库插入失败: {e}")
+        conn.close()
+
         self._generate_mount_list()
-        print(f"⟳ {mount} 挂载点已导入运行数据库中，数据上传中...")
+        print(f"⟳ {mount} 运行中挂载点已更新")
 
         with rtcm_lock:
             if mount not in rtcm_buffers:
                 rtcm_buffers[mount] = deque(maxlen=BUFFER_MAXLEN)
-        print(f"⟳ {mount} 挂载点的 rtcm_buffer 已创建，最大长度为 {BUFFER_MAXLEN} 条")
 
+        # ===== 接收数据并广播 =====
         while True:
             try:
                 chunk = self.request.recv(4096)
+                if not chunk:
+                    break
+                ts = time.time()
+                with rtcm_lock:
+                    rtcm_buffers[mount].append((ts, mount, chunk))
+                self._broadcast(mount)
             except Exception as e:
-                logger.error(f"⟳{mount}基准站连接异常: {e}")
+                logger.warning(f"基站上传断开: {e}")
                 break
-            if not chunk:
-                dbg(f"⟳{mount}基准站连接断开: {agent}, {self.client_address}")
-                break
-            ts = time.time()
-            with rtcm_lock:
-                rtcm_buffers[mount].append((ts, mount, chunk))
-            self._broadcast(mount)
 
-        c.execute("DELETE FROM running_mounts WHERE mount =?", (mount,))
+        # ===== 断开清理 =====
+        conn = sqlite3.connect('2rtk.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM running_mounts WHERE mount = ?", (mount,))
         conn.commit()
         conn.close()
-        logger.info(f"基准站连接断开:{agent}, {self.client_address}")
-        dbg(f"⟳{mount}连接断开已从运行数据库中移除..{agent}, {self.client_address}.")
-        print(f"⟳ {mount} 已从运行数据库中移除...{agent}, {self.client_address}")
-        self._generate_mount_list()
 
         with rtcm_lock:
             if mount in rtcm_buffers:
                 del rtcm_buffers[mount]
+
+        logger.info(f"上传连接断开: {mount}, addr={self.client_address}")
+        self._generate_mount_list()
 
     def _generate_mount_list(self):
         conn = sqlite3.connect('2rtk.db')
@@ -319,20 +382,27 @@ class Handler(socketserver.BaseRequestHandler):
             print(f"请求挂载点列表，客户端: {agent}, 来自：{self.client_address}")
             print(f"已向{self.client_address}, {agent}发送挂载点列表")
             return self._send_list()
+        
         agent = self.get_client_model(hdrs.get('User-Agent', ''))
         logger.info(f"请求挂载点 {mount} 下载认证，客户端: {agent}, 来自：{self.client_address}, 协议版本: {protocol_version}")
         print(f"请求挂载点 {mount} 下载认证，客户端: {agent}, 来自：{self.client_address}, 协议版本: {protocol_version}")
+        
         conn = sqlite3.connect('2rtk.db')
         c = conn.cursor()
         c.execute("SELECT mount FROM mounts WHERE mount =?", (mount,))
         if not c.fetchone():
-            self.request.sendall(b'HTTP/1.1 404 Not Found\r\n\r\n')
+            if protocol_version == 'NTRIP v2.0':
+                self.request.sendall(b'HTTP/1.1 404 Not Found\r\n\r\n')
+            else:
+                self.request.sendall(b'ICY 404 Not Found\r\n')
             conn.close()
             return
+        
         auth = hdrs.get('Authorization')
         if not auth:
             conn.close()
-            return self._challenge()
+            return self._challenge(protocol_version)
+        
         try:
             m, cred = auth.split(' ', 1)
             if m.upper() != 'BASIC':
@@ -343,41 +413,69 @@ class Handler(socketserver.BaseRequestHandler):
             if not result or result[0] != pw:
                 raise
         except:
-            self.request.sendall(b'HTTP/1.1 401 Unauthorized\r\n\r\n')
+            self._send_auth_failure(protocol_version)
             conn.close()
             return
+        
         now = time.time()
         with clients_lock:
+            # 检查是否已有相同连接
             for client in authenticated_clients:
                 if client['user'] == u and client['mount'] == mount and client['agent'] == agent:
                     client['last_refresh'] = now
                     conn.close()
                     return
+            
+            # 限制同用户同挂载点的连接数
             sess = [client for client in authenticated_clients if client['user'] == u and client['mount'] == mount]
             if len(sess) >= 3:
                 old = min(sess, key=lambda x: x['auth_time'])
                 authenticated_clients.remove(old)
-            client = {'socket': self.request, 'user': u, 'mount': mount, 'agent': agent, 'addr': self.client_address, 'auth_time': now - 5, 'last_refresh': now}
+            
+            # 添加新客户端
+            client = {
+                'socket': self.request, 
+                'user': u, 
+                'mount': mount, 
+                'agent': agent, 
+                'addr': self.client_address, 
+                'auth_time': now - 5, 
+                'last_refresh': now,
+                'protocol_version': protocol_version  
+            }
             authenticated_clients.append(client)
+        
         logger.info(f"下载认证通过，用户: {u}来自{self.client_address}使用客户端: {agent}, 协议 {protocol_version}至挂载点 {mount}")
-        dbg(f"下载认证通过，用户: {u}来自{self.client_address}使用客户端: {agent}, 协议 {protocol_version}至挂载点 {mount}")
         print(f"下载认证通过，用户: {u}来自{self.client_address}使用客户端: {agent}, 协议 {protocol_version}挂载点 {mount}")
+        
+        # 发送响应头
         ver, date = parts[2], datetime.datetime.now(datetime.timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
-        if ver == 'HTTP/1.1' and hdrs.get('Ntrip-Version') == 'Ntrip/2.0':
+        if protocol_version == 'NTRIP v2.0':
             hdr = '\r\n'.join([
-                'HTTP/1.1 200 OK', 'Ntrip-Version: Ntrip/2.0', f'Server: 2RTK Caster/{VERSION}',
-                f'Date: {date}', 'Cache-Control: no-store,max-age=0', 'Pragma: no-cache',
-                'Connection: close', 'Content-Type: gnss/data', 'Transfer-Encoding: chunked', ''
+                'HTTP/1.1 200 OK', 
+                'Ntrip-Version: Ntrip/2.0', 
+                f'Server: 2RTK Caster/{VERSION}',
+                f'Date: {date}', 
+                'Cache-Control: no-store,max-age=0', 
+                'Pragma: no-cache',
+                'Connection: close', 
+                'Content-Type: gnss/data', 
+                'Transfer-Encoding: chunked', 
+                ''
             ])
         else:
             hdr = 'ICY 200 OK\r\n'
         self.request.sendall(hdr.encode())
         print(f"开始从 {mount} 向{self.client_address}{agent}用户: {u}发送数据流...")
+
+        
         try:
+            self.request.setblocking(0)  
             while True:
-                time.sleep(0.1)
-        except:
-            pass
+                
+                time.sleep(0.01)
+        except Exception as e:
+            logger.debug(f"客户端连接中断: {e}")
         finally:
             with clients_lock:
                 if client in authenticated_clients:
@@ -399,30 +497,53 @@ class Handler(socketserver.BaseRequestHandler):
         ])
         self.request.sendall(resp.encode())
 
-    def _challenge(self):
-        self.request.sendall(b'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="NTRIP"\r\nContent-Length: 0\r\n\r\n')
+    def _challenge(self, protocol_version):
+        """根据协议版本发送对应的认证挑战"""
+        if protocol_version == 'NTRIP v2.0':
+            self.request.sendall(b'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="NTRIP"\r\nContent-Length: 0\r\n\r\n')
+        else:
+            self.request.sendall(b'ICY 401 Unauthorized\r\nWWW-Authenticate: Basic realm="NTRIP"\r\n\r\n')
+
+    def _send_auth_failure(self, protocol_version):
+        """根据协议版本发送对应的认证失败响应"""
+        if protocol_version == 'NTRIP v2.0':
+            self.request.sendall(b'HTTP/1.1 401 Unauthorized\r\n\r\n')
+        else:
+            self.request.sendall(b'ICY 401 Unauthorized\r\n')
 
     def _broadcast(self, mount):
+        """修复数据传输模式，对v2.0使用分块编码"""
         with rtcm_lock:
             if mount in rtcm_buffers:
                 data = [(ts, chunk) for ts, mp, chunk in rtcm_buffers[mount] if mp == mount]
             else:
                 data = []
+        
         to_remove = []
         with clients_lock:
             clients = list(authenticated_clients)
+        
         for c in clients:
             if c['mount'] != mount:
                 continue
+            
             for ts, chunk in data:
                 if ts <= c['auth_time']:
                     continue
+                
                 try:
-                    c['socket'].sendall(chunk)
+                    # 对NTRIP v2.0使用分块编码
+                    if c['protocol_version'] == 'NTRIP v2.0':
+                        # 分块格式: 十六进制长度\r\n数据\r\n
+                        chunk_data = f"{len(chunk):X}\r\n".encode() + chunk + b"\r\n"
+                        c['socket'].sendall(chunk_data)
+                    else:
+                        c['socket'].sendall(chunk)
                 except Exception as e:
                     logger.warning(f"Communication closed, removing connection: addr={c['addr']}, err={e}")
                     to_remove.append(c)
                     break
+        
         if to_remove:
             with clients_lock:
                 for c in to_remove:
@@ -431,9 +552,6 @@ class Handler(socketserver.BaseRequestHandler):
 
 # ===================================
 # 服务器关闭处理
-# - 清理数据库中的运行时数据
-# - 关闭所有客户端连接
-# - 安全关闭NTRIP和Web服务器
 # ===================================
 def shutdown(sig, frame):
     print("\n正在关闭caster服务器…")
@@ -450,9 +568,7 @@ def shutdown(sig, frame):
     with clients_lock:
         for client in authenticated_clients:
             try:
-                # 设置socket超时
                 client['socket'].settimeout(5)
-                # 尝试优雅关闭
                 client['socket'].shutdown(socket.SHUT_RDWR)
                 client['socket'].close()
             except Exception as e:
@@ -484,15 +600,12 @@ def shutdown(sig, frame):
             print("已关闭Web服务器")
     except Exception as e:
         logger.error(f"关闭Web服务器时出错: {e}")
-    # 强制退出程序
+    
     print("服务器关闭完成，正在退出...")
-    sys.exit(0)  
+    sys.exit(0)
 
 # ===================================
 # Flask Web应用
-# - 提供Web管理界面
-# - 处理用户认证和会话管理
-# - 管理挂载点和用户配置
 # ===================================
 app = Flask(__name__)
 app.secret_key = '9#*&K47g@U2xR6!8pX3m$yQ0%z5L1cV7bW9dF3hJ6n2r'
@@ -500,7 +613,6 @@ app.secret_key = '9#*&K47g@U2xR6!8pX3m$yQ0%z5L1cV7bW9dF3hJ6n2r'
 ALIPAY_QR_URL = 'https://2rtk.rampump.cn/alipay.jpg'
 WECHAT_QR_URL = 'https://2rtk.rampump.cn/wechat.jpg'
 
-# 工具函数：将秒数转换为可读的时间格式
 def format_time_duration(seconds):
     days = int(seconds // 86400)
     seconds %= 86400
@@ -555,15 +667,8 @@ def serve_static(filename):
         cache_timeout=cache_timeout
     )
 
-# ===================================
-# Web路由处理
-# - 系统状态监控
-# - 运行状态展示
-# - 用户和挂载点统计
-# ===================================
 @app.route('/')
 def index():
-    # 获取系统资源使用情况
     cpu_percent = psutil.cpu_percent(interval=1)
     mem_percent = psutil.virtual_memory().percent
     start_datetime = datetime.datetime.fromtimestamp(START_TIME)
@@ -587,8 +692,8 @@ def index():
             agent = client['agent']
             ip = client['addr'][0]
             port = client['addr'][1]
-            auth_time = auth_time = datetime.datetime.fromtimestamp(client['auth_time'])
-            running_users.append((username, mount, agent, ip, port,auth_time ))
+            auth_time = datetime.datetime.fromtimestamp(client['auth_time'])
+            running_users.append((username, mount, agent, ip, port, auth_time ))
 
     return render_template('index.html',
                            cpu_percent=cpu_percent,
@@ -645,12 +750,6 @@ def get_mount_by_id(mount_id):
         result = c.fetchone()
     return result[0] if result else None
 
-# ===================================
-# 用户管理功能
-# - 添加/删除/修改用户
-# - 管理用户状态和权限
-# - 处理在线用户连接
-# ===================================
 @app.route('/user_management', methods=['GET', 'POST'])
 @require_login
 def user_management():
@@ -723,12 +822,6 @@ def user_management():
     return render_template('user_management.html', users=users_with_status, VERSION=VERSION,
                            CONTACT_EMAIL=CONTACT_EMAIL, online_usernames=online_usernames, error=error)
 
-# ===================================
-# 挂载点管理功能
-# - 添加/删除/修改挂载点
-# - 监控挂载点运行状态
-# - 管理挂载点连接和认证
-# ===================================
 @app.route('/mount_management', methods=['GET', 'POST'])
 @require_login
 def mount_management():
@@ -824,10 +917,6 @@ def change_admin_password():
 
 # ===================================
 # 主程序入口
-# - 初始化数据库
-# - 启动NTRIP服务器
-# - 启动Web管理界面
-# - 设置信号处理
 # ===================================
 if __name__ == '__main__':
     init_db()
@@ -841,7 +930,7 @@ if __name__ == '__main__':
     print(f"2RTK NTRIP Caster {VERSION}已启动:{HOST}:{NTRIP_PORT}")
     logger.info(f"启动 2RTK Caster {HOST}:{NTRIP_PORT}")
     import threading
-    web_thread = threading.Thread(target=app.run, kwargs={'host': HOST, 'port': WEB_PORT})
+    web_thread = threading.Thread(target=app.run, kwargs={'host': HOST, 'port': WEB_PORT, 'use_reloader': False})
     print (f"2RTK Caster Web 管理界面已启动:{HOST}:{WEB_PORT}")
     web_thread.daemon = True
     web_thread.start()

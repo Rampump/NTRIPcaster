@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}用户管理{% endblock %}
+{% block title %}User Management{% endblock %}
 
 {% block content %}
     {% if error %}
@@ -9,23 +9,23 @@
     {% if message %}
         <p style="color: green;">{{ message }}</p>
     {% endif %}
-    <h2>用户列表</h2>
+    <h2>User List</h2>
     <form method="post">
         <div class="form-group">
-            <label for="username">用户名：</label>
+            <label for="username">Username:</label>
             <input type="text" id="username" name="username" required>
         </div>
         <div class="form-group">
-            <label for="password">密码：</label>
+            <label for="password">Password:</label>
             <input type="password" id="password" name="password" required>
         </div>
-        <button type="submit" name="add_user">添加用户</button>
+        <button type="submit" name="add_user">Add User</button>
     </form>
     <table border="1" width="100%">
         <tr>
-            <th>用户名</th>
-            <th>状态</th>
-            <th>操作</th>
+            <th>Username</th>
+            <th>Status</th>
+            <th>Action</th>
         </tr>
         {% for user_id, username, password, status in users %}
             <tr>
@@ -34,13 +34,13 @@
                 <td>
                     <form method="post" style="display: inline;">
                         <input type="hidden" name="update_user" value="{{ user_id }}">
-                        <input type="text" name="username" value="{{ username }}" placeholder="新用户名">
-                        <input type="password" name="password" placeholder="新密码">
-                        <button type="submit">修改</button>
+                        <input type="text" name="username" value="{{ username }}" placeholder="New Username">
+                        <input type="password" name="password" placeholder="New Password">
+                        <button type="submit">Update</button>
                     </form>
                     <form method="post" style="display: inline;">
                         <input type="hidden" name="delete_user" value="{{ user_id }}">
-                        <button type="submit">删除</button>
+                        <button type="submit" onclick="return confirm('Are you sure you want to delete this user?')">Delete</button>
                     </form>
                 </td>
             </tr>

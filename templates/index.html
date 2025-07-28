@@ -1,29 +1,29 @@
 {% extends "base.html" %}
 
-{% block title %}系统首页{% endblock %}
+{% block title %}System Dashboard{% endblock %}
 
 {% block content %}
-    <h2>系统状态</h2>
+    <h2>System Status</h2>
     <div class="system-info">
         <p><strong>2RTK Ntrip Caster</strong></p>
-        <p><strong>当前版本：</strong> {{ VERSION }}</p>
-        <p><strong>运行端口：</strong> {{ NTRIP_PORT }}</p>
-        <p><strong>CPU 使用率：</strong> {{ cpu_percent }}%</p>
-        <p><strong>内存使用率：</strong> {{ mem_percent }}%</p>
-        <p><strong>运行时间：</strong> {{ program_runtime }}</p>
+        <p><strong>Current Version:</strong> {{ VERSION }}</p>
+        <p><strong>Running Port:</strong> {{ NTRIP_PORT }}</p>
+        <p><strong>CPU Usage:</strong> {{ cpu_percent }}%</p>
+        <p><strong>Memory Usage:</strong> {{ mem_percent }}%</p>
+        <p><strong>Uptime:</strong> {{ program_runtime }}</p>
     </div>
 
-    <h2>活跃挂载点</h2>
+    <h2>Active Mount Points</h2>
     <ul>
         {% for mount, start_time in running_mounts %}
-        <li>{{ mount }} - 启动时间：{{ start_time.strftime('%Y-%m-%d %H:%M:%S') }}</li>
+        <li>{{ mount }} - Start Time: {{ start_time.strftime('%Y-%m-%d %H:%M:%S') }}</li>
         {% endfor %}
     </ul>
 
-    <h2>连接中用户</h2>
+    <h2>Connected Users</h2>
     <ul>
         {% for username, mount, agent, ip, port, auth_time in running_users %}
-        <li>用户:{{ username }} (IP: {{ ip }}:{{ port }}) - 挂载点: {{ mount }} - 客户端型号: {{ agent }} - 认证时间: {{ auth_time.strftime('%Y-%m-%d %H:%M:%S') }}</li>
+        <li>User: {{ username }} (IP: {{ ip }}:{{ port }}) - Mount Point: {{ mount }} - Client: {{ agent }} - Authentication Time: {{ auth_time.strftime('%Y-%m-%d %H:%M:%S') }}</li>
         {% endfor %}
     </ul>
 
