@@ -1,0 +1,204 @@
+# Docker Compose 生产环境配置
+# 使用方法: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+version: '3.8'
+
+services:
+  ntrip-caster:
+    # 生产环境配置
+    image: ntrip-caster:2.2.0
+    # 不使用本地构建，使用预构建镜像
+    build: null
+    environment:
+      # 生产环境变量
+      - LOG_LEVEL=INFO
+      - FLASK_ENV=production
+      - FLASK_DEBUG=0
+      - PYTHONOPTIMIZE=1
+    # 生产环境资源限制
+    deploy:
+      mode: replicated
+      replicas: 1
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '1.0'
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0.3
+      rollback_config:
+        parallelism: 1
+        delay: 0s
+        failure_action: pause
+        monitor: 60s
+        max_failure_ratio: 0.3
+    # 生产环境安全设置
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /var/tmp:noexec,nosuid,size=50m
+    # 生产环境健康检查
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    # 生产环境日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        compress: "true"
+        labels: "service=ntrip-caster,environment=production"
+
+  nginx:
+    # 生产环境Nginx配置
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+    # 生产环境SSL配置
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/dhparam.pem:/etc/nginx/dhparam.pem:ro
+      - nginx-cache:/var/cache/nginx
+      - nginx-logs:/var/log/nginx
+    # 生产环境健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  prometheus:
+    # 生产环境Prometheus配置
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    # 生产环境数据保留
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=90d'
+      - '--storage.tsdb.retention.size=50GB'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--log.level=warn'
+      - '--web.external-url=https://your-domain.com/prometheus/'
+      - '--web.route-prefix=/'
+
+  grafana:
+    # 生产环境Grafana配置
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    environment:
+      # 生产环境安全配置
+      - GF_SECURITY_ADMIN_PASSWORD_FILE=/run/secrets/grafana_admin_password
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=strict
+      - GF_SERVER_ROOT_URL=https://your-domain.com/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_LOG_LEVEL=warn
+    secrets:
+      - grafana_admin_password
+
+  redis:
+    # 生产环境Redis配置
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+    # 生产环境持久化配置
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --maxmemory 200mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 60
+      --timeout 300
+
+# 生产环境密钥管理
+secrets:
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password.txt
+
+# 生产环境网络配置
+networks:
+  ntrip-network:
+    external: true
+    name: ntrip-production-network
+
+# 生产环境卷配置
+volumes:
+  ntrip-data:
+    external: true
+    name: ntrip-production-data
+  ntrip-logs:
+    external: true
+    name: ntrip-production-logs
+  ntrip-config:
+    external: true
+    name: ntrip-production-config
+  prometheus-data:
+    external: true
+    name: prometheus-production-data
+  grafana-data:
+    external: true
+    name: grafana-production-data
+  nginx-cache:
+    external: true
+    name: nginx-production-cache
+  redis-data:
+    external: true
+    name: redis-production-data

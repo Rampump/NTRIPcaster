@@ -1,0 +1,60 @@
+# Grafana 仪表板配置
+# 自动加载仪表板文件
+
+apiVersion: 1
+
+providers:
+  # NTRIP Caster 仪表板
+  - name: 'ntrip-dashboards'
+    orgId: 1
+    folder: 'NTRIP Caster'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/ntrip
+  
+  # 系统监控仪表板
+  - name: 'system-dashboards'
+    orgId: 1
+    folder: 'System Monitoring'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/system
+  
+  # 容器监控仪表板
+  - name: 'container-dashboards'
+    orgId: 1
+    folder: 'Container Monitoring'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/containers
+  
+  # 网络监控仪表板
+  - name: 'network-dashboards'
+    orgId: 1
+    folder: 'Network Monitoring'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/network
+  
+  # 应用监控仪表板
+  - name: 'application-dashboards'
+    orgId: 1
+    folder: 'Application Monitoring'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/applications

@@ -1,0 +1,21 @@
+# NTRIP Caster 核心依赖 - 安全修复版本
+# 修复了多个高危和中危安全漏洞 (详见 SECURITY-VULNERABILITIES-FIX.md)
+
+# Web框架核心组件
+Flask==3.0.3           # 升级以兼容新版werkzeug
+Flask-SocketIO==5.3.6  # 当前版本无已知漏洞
+# Flask-CORS>=5.0.0      # 已移除，不需要CORS功能，消除安全漏洞
+python-socketio==5.8.0 # 当前版本无已知漏洞
+werkzeug>=3.0.6        # 修复 CVE-2024-34069, CVE-2024-49767, CVE-2024-49766, CVE-2023-46136
+psutil==5.9.5          # 系统性能监控，当前版本无已知漏洞
+
+# 构建和包管理工具
+setuptools>=78.1.1     # 修复 CVE-2025-47273, CVE-2024-6345
+
+# RTCM数据处理
+pyrtcm>=1.1.0          # RTCM消息解析库，支持MSM消息
+reverse-geocode>=1.6.0 # 离线反向地理编码库
+pyproj>=3.6.1          # 坐标转换库，当前版本无已知漏洞
+
+
+

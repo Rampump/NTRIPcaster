@@ -1,0 +1,206 @@
+# Git相关
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+.gitkeep
+
+# Python相关
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+Pipfile.lock
+*.whl
+
+# 虚拟环境
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.env/
+pyvenv.cfg
+
+# IDE和编辑器相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.vim/
+.emacs.d/
+*.sublime-*
+.atom/
+
+# 系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# 日志文件
+logs/
+*.log
+*.log.*
+*.out
+*.err
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 临时文件和缓存
+*.tmp
+*.temp
+*.cache
+.cache/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# 文档和说明
+*.md
+README*
+CHANGELOG*
+LICENSE*
+CONTRIBUTING*
+AUTHORS*
+COPYING*
+INSTALL*
+NEWS*
+TODO*
+
+# 测试相关
+tests/
+test_*/
+*.test
+.coverage
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.tox/
+nosetests.xml
+pytest.ini
+tox.ini
+.nox/
+
+# Docker相关
+Dockerfile*
+docker-compose*
+.dockerignore
+*.dockerfile
+
+# 配置文件（敏感信息）
+.env
+.env.*
+!.env.example
+.envrc
+secrets.yml
+secrets.yaml
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# 部署和脚本
+install.sh
+uninstall.sh
+deploy.sh
+*.sh
+!docker-deploy.sh
+
+# 外部配置和服务
+monitoring/
+nginx/
+redis/
+data/
+config/
+
+# 备份文件
+*.bak
+*.backup
+*.old
+*.orig
+*.save
+
+# 压缩文件
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.rar
+*.7z
+*.gz
+*.bz2
+*.xz
+
+# 开发工具配置
+.pre-commit-config.yaml
+.flake8
+.pylintrc
+.bandit
+.safety
+.isort.cfg
+setup.cfg
+pyproject.toml
+
+# CI/CD相关
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+Jenkinsfile
+
+# 性能和分析
+*.prof
+*.pstats
+.profile
+
+# 其他
+node_modules/
+*.pid
+*.seed
+*.pid.lock
+.nyc_output
+.grunt
+bower_components
+.lock-wscript
+.sass-cache/
+.connect.lock
+.typings/
+typings/

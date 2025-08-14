@@ -1,0 +1,230 @@
+# NTRIP Caster 告警规则
+# 定义各种监控指标的告警条件
+
+groups:
+  # NTRIP Caster 应用告警
+  - name: ntrip-caster.rules
+    rules:
+      # 服务可用性告警
+      - alert: NTRIPCasterDown
+        expr: up{job="ntrip-caster"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ntrip-caster
+        annotations:
+          summary: "NTRIP Caster服务不可用"
+          description: "NTRIP Caster服务已停止响应超过1分钟"
+      
+      # 高错误率告警
+      - alert: NTRIPCasterHighErrorRate
+        expr: rate(ntrip_requests_total{status=~"5.."}[5m]) / rate(ntrip_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: ntrip-caster
+        annotations:
+          summary: "NTRIP Caster错误率过高"
+          description: "NTRIP Caster在过去5分钟内的错误率超过10%"
+      
+      # 响应时间告警
+      - alert: NTRIPCasterHighLatency
+        expr: histogram_quantile(0.95, rate(ntrip_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: ntrip-caster
+        annotations:
+          summary: "NTRIP Caster响应时间过长"
+          description: "NTRIP Caster 95%分位数响应时间超过2秒"
+      
+      # 连接数告警
+      - alert: NTRIPCasterHighConnections
+        expr: ntrip_active_connections > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: ntrip-caster
+        annotations:
+          summary: "NTRIP Caster连接数过高"
+          description: "NTRIP Caster当前活跃连接数超过1000"
+      
+      # 内存使用告警
+      - alert: NTRIPCasterHighMemoryUsage
+        expr: process_resident_memory_bytes{job="ntrip-caster"} / 1024 / 1024 > 512
+        for: 10m
+        labels:
+          severity: warning
+          service: ntrip-caster
+        annotations:
+          summary: "NTRIP Caster内存使用过高"
+          description: "NTRIP Caster内存使用超过512MB"
+
+  # 系统资源告警
+  - name: system.rules
+    rules:
+      # CPU使用率告警
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "CPU使用率过高"
+          description: "实例 {{ $labels.instance }} CPU使用率超过80%"
+      
+      # 内存使用率告警
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "内存使用率过高"
+          description: "实例 {{ $labels.instance }} 内存使用率超过85%"
+      
+      # 磁盘空间告警
+      - alert: HighDiskUsage
+        expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "磁盘空间不足"
+          description: "实例 {{ $labels.instance }} 磁盘 {{ $labels.mountpoint }} 使用率超过85%"
+      
+      # 磁盘IO告警
+      - alert: HighDiskIO
+        expr: rate(node_disk_io_time_seconds_total[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "磁盘IO使用率过高"
+          description: "实例 {{ $labels.instance }} 磁盘IO使用率超过80%"
+
+  # 容器告警
+  - name: container.rules
+    rules:
+      # 容器重启告警
+      - alert: ContainerRestarted
+        expr: increase(container_start_time_seconds[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "容器重启"
+          description: "容器 {{ $labels.name }} 在过去1小时内重启了"
+      
+      # 容器CPU使用率告警
+      - alert: ContainerHighCPUUsage
+        expr: (rate(container_cpu_usage_seconds_total[5m]) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "容器CPU使用率过高"
+          description: "容器 {{ $labels.name }} CPU使用率超过80%"
+      
+      # 容器内存使用率告警
+      - alert: ContainerHighMemoryUsage
+        expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "容器内存使用率过高"
+          description: "容器 {{ $labels.name }} 内存使用率超过85%"
+
+  # Nginx告警
+  - name: nginx.rules
+    rules:
+      # Nginx服务告警
+      - alert: NginxDown
+        expr: up{job="nginx"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: nginx
+        annotations:
+          summary: "Nginx服务不可用"
+          description: "Nginx服务已停止响应超过1分钟"
+      
+      # Nginx高错误率告警
+      - alert: NginxHighErrorRate
+        expr: rate(nginx_http_requests_total{status=~"5.."}[5m]) / rate(nginx_http_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: nginx
+        annotations:
+          summary: "Nginx错误率过高"
+          description: "Nginx在过去5分钟内的5xx错误率超过10%"
+
+  # Redis告警
+  - name: redis.rules
+    rules:
+      # Redis服务告警
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis服务不可用"
+          description: "Redis服务已停止响应超过1分钟"
+      
+      # Redis内存使用告警
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis内存使用率过高"
+          description: "Redis内存使用率超过85%"
+      
+      # Redis连接数告警
+      - alert: RedisHighConnections
+        expr: redis_connected_clients > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis连接数过高"
+          description: "Redis当前连接数超过100"
+
+  # 网络告警
+  - name: network.rules
+    rules:
+      # 网络延迟告警
+      - alert: HighNetworkLatency
+        expr: probe_duration_seconds > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: network
+        annotations:
+          summary: "网络延迟过高"
+          description: "目标 {{ $labels.instance }} 网络延迟超过1秒"
+      
+      # 网络连接失败告警
+      - alert: NetworkProbeFailure
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: network
+        annotations:
+          summary: "网络探测失败"
+          description: "目标 {{ $labels.instance }} 网络探测失败超过2分钟"

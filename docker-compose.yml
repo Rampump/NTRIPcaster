@@ -1,0 +1,270 @@
+services:
+  ntrip-caster:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: ntrip-caster:2.2.0
+    container_name: ntrip-caster
+    hostname: ntrip-caster
+    restart: unless-stopped
+    ports:
+      - "2101:2101"  # NTRIP服务端口
+      - "5757:5757"  # Web管理端口
+    volumes:
+      - ntrip-data:/app/data          # 数据持久化
+      - ntrip-logs:/app/logs          # 日志持久化
+      - ntrip-config:/app/config      # 配置文件目录
+      - /etc/localtime:/etc/localtime:ro  # 时区同步
+    # user: "1000:1000"  # 暂时注释，让容器以root启动来设置权限
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - TZ=Asia/Shanghai
+      - NTRIP_CONFIG_FILE=/app/config/config.ini
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.10
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+  # Nginx反向代理（可选）
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: ntrip-nginx
+    hostname: ntrip-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx-cache:/var/cache/nginx
+      - nginx-logs:/var/log/nginx
+    environment:
+      - TZ=Asia/Shanghai
+    depends_on:
+      ntrip-caster:
+        condition: service_healthy
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.20
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:noexec,nosuid,size=100m
+      - /var/run:noexec,nosuid,size=10m
+    profiles:
+      - nginx  # 使用 --profile nginx 启用
+
+  # 监控服务（可选）
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: ntrip-prometheus
+    hostname: ntrip-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=10GB'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--log.level=info'
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.30
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    user: "65534:65534"  # nobody user
+    profiles:
+      - monitoring  # 使用 --profile monitoring 启用
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: ntrip-grafana
+    hostname: ntrip-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - grafana-logs:/var/log/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+      - GF_LOG_LEVEL=info
+      - TZ=Asia/Shanghai
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.40
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    user: "472:472"  # grafana user
+    profiles:
+      - monitoring  # 使用 --profile monitoring 启用
+
+  # Redis缓存服务（可选）
+  redis:
+    image: redis:7.2-alpine
+    container_name: ntrip-redis
+    hostname: ntrip-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.50
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    profiles:
+      - cache  # 使用 --profile cache 启用
+
+networks:
+  ntrip-network:
+    name: ntrip-network
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+    driver_opts:
+      com.docker.network.bridge.name: ntrip-br0
+      com.docker.network.driver.mtu: 1500
+
+volumes:
+  # 应用数据卷
+  ntrip-data:
+    name: ntrip-data
+    driver: local
+  ntrip-logs:
+    name: ntrip-logs
+    driver: local
+  ntrip-config:
+    name: ntrip-config
+    driver: local
+  
+  # 监控数据卷
+  prometheus-data:
+    name: prometheus-data
+    driver: local
+  grafana-data:
+    name: grafana-data
+    driver: local
+  grafana-logs:
+    name: grafana-logs
+    driver: local
+  
+  # Nginx数据卷
+  nginx-cache:
+    name: nginx-cache
+    driver: local
+  nginx-logs:
+    name: nginx-logs
+    driver: local
+  
+  # Redis数据卷
+  redis-data:
+    name: redis-data
+    driver: local

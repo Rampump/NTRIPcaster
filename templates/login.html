@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login - 2RTK Ntrip Caster</title>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            width: 100%;
+            max-width: 400px;
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo h1 {
+            color: #333;
+            margin: 0;
+            font-size: 28px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+            box-sizing: border-box;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus, input[type="password"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .btn {
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .field-error {
+            border-color: #dc3545 !important;
+        }
+        .validation-error {
+            color: #dc3545;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <h1>2RTK Ntrip Caster</h1>
+            <p id="loginMessage">Administrator Login</p>
+            <p id="defaultCredentials" style="color: #1e40af; font-size: 12px; margin-top: 10px; margin-bottom: 0;">Default credentials: admin/admin123. Please change in Settings for production use.</p>
+        </div>
+        
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
+        
+        <form method="post" id="loginForm" onsubmit="return validateLoginForm(event)">
+            <div class="form-group">
+                <label>Username:</label>
+                <input type="text" name="username" id="username" required maxlength="50" 
+                       oninput="validateUsername()">
+                <div id="usernameError" class="validation-error"></div>
+            </div>
+            <div class="form-group">
+                <label>Password:</label>
+                <input type="password" name="password" id="password" required maxlength="100" 
+                       oninput="validatePassword()">
+                <div id="passwordError" class="validation-error"></div>
+            </div>
+            <button type="submit" class="btn" id="loginBtn">Login</button>
+        </form>
+    </div>
+    
+    <script>
+        let isSubmitting = false;
+        
+        // 页面加载时检查重定向参数
+        window.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const redirectPage = urlParams.get('redirect');
+            const messageElement = document.getElementById('loginMessage');
+            
+            if (redirectPage) {
+                const pageNames = {
+                    'users': 'User Management',
+                    'mounts': 'Mount Point Management',
+                    'settings': 'System Settings'
+                };
+                const pageName = pageNames[redirectPage] || 'Management Function';
+                messageElement.textContent = `Access to ${pageName} requires administrator account login, please login`;
+            }
+        });
+        
+        function validateUsername() {
+            const input = document.getElementById('username');
+            const error = document.getElementById('usernameError');
+            const value = input.value.trim();
+            
+            input.classList.remove('field-error');
+            error.textContent = '';
+            
+            if (value.length === 0) {
+                return false;
+            }
+            
+            if (value.length < 3) {
+                input.classList.add('field-error');
+                error.textContent = 'Username must be at least 3 characters';
+                return false;
+            }
+            
+            if (value.length > 50) {
+                input.classList.add('field-error');
+                error.textContent = 'Username cannot exceed 50 characters';
+                return false;
+            }
+            
+            const invalidChars = [' ', '/', '\\', '?', '#', '[', ']', '@', '&', '=', '+', '<', '>', '"', "'"];
+            for (let char of invalidChars) {
+                if (value.includes(char)) {
+                    input.classList.add('field-error');
+                    error.textContent = 'Username contains invalid characters';
+                    return false;
+                }
+            }
+            
+            return true;
+        }
+        
+        function validatePassword() {
+            const input = document.getElementById('password');
+            const error = document.getElementById('passwordError');
+            const value = input.value.trim();
+            
+            input.classList.remove('field-error');
+            error.textContent = '';
+            
+            if (value.length === 0) {
+                return false;
+            }
+            
+            if (value.length < 6) {
+                input.classList.add('field-error');
+                error.textContent = 'Password must be at least 6 characters';
+                return false;
+            }
+            
+            if (value.length > 100) {
+                input.classList.add('field-error');
+                error.textContent = 'Password cannot exceed 100 characters';
+                return false;
+            }
+            
+            return true;
+        }
+        
+        function validateLoginForm(event) {
+            if (isSubmitting) {
+                event.preventDefault();
+                return false;
+            }
+            
+            const usernameValid = validateUsername();
+            const passwordValid = validatePassword();
+            
+            if (!usernameValid || !passwordValid) {
+                event.preventDefault();
+                return false;
+            }
+            
+            // 防止重复提交
+            isSubmitting = true;
+            const submitBtn = document.getElementById('loginBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Logging in...';
+            
+            setTimeout(() => {
+                isSubmitting = false;
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Login';
+            }, 5000);
+            
+            return true;
+        }
+    </script>
+</body>
+</html>
