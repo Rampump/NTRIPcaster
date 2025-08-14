@@ -10,7 +10,7 @@ This is a simple NTRIP caster written in Python that supports NTRIP v1.0 and v2.
 You can use the web interface to add users and mount points in your browser, and also view the NTRIP caster connection information.
 It supports high concurrent connections and can handle 2000+ concurrent connections. (Due to my limited testing environment, I only tested with 2 RTCM data sources and 2000 concurrent user downloads, but its performance is excellent)
 
-It used to be a single file 2rtk.py, but I recently refactored it. Now it looks much fatter, but I still think it's relatively lightweight. lol
+It used to be a single file 2rtk.py,（https://github.com/Rampump/2RTKcaster） but I recently refactored it. Now it looks much fatter, but I still think it's relatively lightweight. lol
 
 - Web-based management. So you can deploy it on any cloud host.
 - Uses SQLite database to store user information and mount point information.

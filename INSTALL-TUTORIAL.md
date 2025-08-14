@@ -41,7 +41,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/2rtk/NTRIPcaster.git
+git clone https://github.com/Rampump/NTRIPcaster
 cd NTRIPcaster
 
 # 2. 运行安装脚本
@@ -167,7 +167,7 @@ sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
 cd /opt/ntripcaster
 
 # 下载源码
-sudo -u ntripcaster git clone https://github.com/2rtk/NTRIPcaster.git .
+sudo -u ntripcaster git clone https://github.com/Rampump/NTRIPcaster.git .
 
 # 创建 Python 虚拟环境
 sudo -u ntripcaster python3 -m venv venv
