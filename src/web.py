@@ -404,7 +404,7 @@ class WebManager:
                     timestamp = parsed_data.get("timestamp", "N/A")
                     data_keys = list(parsed_data.keys()) if isinstance(parsed_data, dict) else "N/A"
                     
-                    # print(f"\n🚀 [后端推送] 准备推送数据到前端:")
+                    # print(f"\n[后端推送] 准备推送数据到前端:")
         # print(f"   挂载点: {mount_name}")
         # print(f"   数据类型: {data_type}")
         # print(f"   时间戳: {timestamp}")
@@ -413,7 +413,7 @@ class WebManager:
                     # 详细打印不同类型的数据
                     if data_type == 'msm_satellite':
                         # MSM卫星数据调试信息已注释，避免刷屏
-                        # print(f"   🛰️ MSM卫星数据详情:")
+                        # print(f"   MSM卫星数据详情:")
                         # print(f"      GNSS类型: {parsed_data.get('gnss', 'N/A')}")
                         # print(f"      消息类型: {parsed_data.get('msg_type', 'N/A')}")
                         # print(f"      MSM等级: {parsed_data.get('msm_level', 'N/A')}")
@@ -426,7 +426,7 @@ class WebManager:
                         #         print(f"        ... 还有 {len(parsed_data['sats']) - 3} 个卫星")
                         pass
                     elif data_type == 'geography':
-                        # print(f"   🌍 地理位置数据详情:")
+                        # print(f"   地理位置数据详情:")
                         # print(f"      基准站ID: {parsed_data.get('station_id', 'N/A')}")
                         # print(f"      纬度: {parsed_data.get('lat', 'N/A')}")
                         # print(f"      经度: {parsed_data.get('lon', 'N/A')}")
@@ -435,14 +435,14 @@ class WebManager:
                         # print(f"      城市: {parsed_data.get('city', 'N/A')}")
                         pass
                     elif data_type == 'device_info':
-                        # print(f"   📡 设备信息数据详情:")
+                        # print(f"   设备信息数据详情:")
                         # print(f"      接收机: {parsed_data.get('receiver', 'N/A')}")
                         # print(f"      固件版本: {parsed_data.get('firmware', 'N/A')}")
                         # print(f"      天线: {parsed_data.get('antenna', 'N/A')}")
                         # print(f"      天线固件: {parsed_data.get('antenna_firmware', 'N/A')}")
                         pass
                     elif data_type == 'message_stats':
-                        # print(f"   📊 消息统计数据详情:")
+                        # print(f"   消息统计数据详情:")
                         # print(f"      消息类型: {parsed_data.get('message_types', 'N/A')}")
                         # print(f"      GNSS系统: {parsed_data.get('gnss', 'N/A')}")
                         # print(f"      载波频段: {parsed_data.get('carriers', 'N/A')}")
@@ -455,20 +455,20 @@ class WebManager:
                     
                     # 确保数据包含mount_name
                     if 'mount_name' not in parsed_data:
-                        # print(f"❌ [后端推送] 推送数据缺少mount_name字段")
+                        # print(f"[后端推送] 推送数据缺少mount_name字段")
                         log_warning("推送数据缺少mount_name字段")
                         return
                         
                     # 通过SocketIO推送给前端，事件名为'rtcm_realtime_data'
                     if data_type != 'msm_satellite':
-                        # print(f"📡 [后端推送] 通过SocketIO推送数据到前端 - 事件: rtcm_realtime_data")
+                        # print(f"[后端推送] 通过SocketIO推送数据到前端 - 事件: rtcm_realtime_data")
                         pass
                     self.socketio.emit(
                         'rtcm_realtime_data',
                         parsed_data
                     )
                     if data_type != 'msm_satellite':
-                        # print(f"✅ [后端推送] 数据推送完成\n")
+                        # print(f"[后端推送] 数据推送完成\n")
                         pass
                 
                 # 启动新的解析任务，传入回调

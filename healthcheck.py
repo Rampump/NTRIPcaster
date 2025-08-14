@@ -123,13 +123,13 @@ class HealthChecker:
                 }
                 
                 if success:
-                    logger.info(f"✓ {check_name}: {message}")
+                    logger.info(f"[OK] {check_name}: {message}")
                 else:
-                    logger.error(f"✗ {check_name}: {message}")
+                    logger.error(f"[FAIL] {check_name}: {message}")
                     failed_checks.append(check_name)
                     results['healthy'] = False
             except Exception as e:
-                logger.error(f"✗ {check_name}: 检查失败 - {e}")
+                logger.error(f"[ERROR] {check_name}: 检查失败 - {e}")
                 results['checks'][check_name] = {
                     'success': False,
                     'message': f"检查失败: {e}"
@@ -139,10 +139,10 @@ class HealthChecker:
         
         if results['healthy']:
             results['summary'] = "所有健康检查通过"
-            logger.info("✓ 所有健康检查通过")
+            logger.info("[OK] 所有健康检查通过")
         else:
             results['summary'] = f"健康检查失败: {', '.join(failed_checks)}"
-            logger.error(f"✗ 健康检查失败: {', '.join(failed_checks)}")
+            logger.error(f"[FAIL] 健康检查失败: {', '.join(failed_checks)}")
         
         return results
 

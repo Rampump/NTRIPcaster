@@ -294,28 +294,28 @@ class RTCMParserThread(threading.Thread):
         if msg_id not in (1005, 1006):
             return
 
-        # print(f"🌍 [1005/1006消息] 收到位置消息: {msg_id}")
-        # print(f"🌍 [1005/1006消息] 消息对象: {msg}")
-        # print(f"🌍 [1005/1006消息] 消息属性: {dir(msg)}")
+        # print(f"[1005/1006消息] 收到位置消息: {msg_id}")
+            # print(f"[1005/1006消息] 消息对象: {msg}")
+            # print(f"[1005/1006消息] 消息属性: {dir(msg)}")
 
         # 提取基准站ID
         station_id = getattr(msg, "DF003", None) if hasattr(msg, "DF003") else None
-        # print(f"🌍 [1005/1006消息] 基准站ID: {station_id}")
+        # print(f"[1005/1006消息] 基准站ID: {station_id}")
         
         # 提取ECEF坐标并转换为经纬度
         try:
             x, y, z = msg.DF025, msg.DF026, msg.DF027
-            # print(f"🌍 [1005/1006消息] ECEF坐标: X={x}, Y={y}, Z={z}")
+            # print(f"[1005/1006消息] ECEF坐标: X={x}, Y={y}, Z={z}")
             
             transformer = Transformer.from_crs("epsg:4978", "epsg:4326", always_xy=True)
             lon, lat, height = transformer.transform(x, y, z)
-            # print(f"🌍 [1005/1006消息] 转换后坐标: 经度={lon}, 纬度={lat}, 高程={height}")
+            # print(f"[1005/1006消息] 转换后坐标: 经度={lon}, 纬度={lat}, 高程={height}")
             
             # 反向地理编码 - 直接获取完整信息，无需映射转换
             country_code, country_name, city = self._reverse_geocode(lat, lon)
             # 为了保持STR修正的兼容性，仍需要3字符国家代码
             country_3code = COUNTRY_CODE_MAP.get(country_code, country_code) if country_code else None
-            # print(f"🌍 [1005/1006消息] 地理编码: 国家代码={country_code}, 国家名称={country_name}, 城市={city}")
+            # print(f"[1005/1006消息] 地理编码: 国家代码={country_code}, 国家名称={country_name}, 城市={city}")
 
             # 整理结果 - 优化数据结构，包含原始XYZ和基准站ID
             location_data = {
@@ -342,16 +342,16 @@ class RTCMParserThread(threading.Thread):
                 "city": city
             }
 
-            # print(f"🌍 [1005/1006消息] 最终数据: {location_data}")
+            # print(f"[1005/1006消息] 最终数据: {location_data}")
 
             # 更新结果并推送
             with self.result_lock:
                 self.result["location"] = location_data
             self._push_data(DataType.GEOGRAPHY, location_data)
-            # print(f"🌍 [1005/1006消息] 数据已推送到前端")
+            # print(f"[1005/1006消息] 数据已推送到前端")
 
         except Exception as e:
-            # print(f"❌ [1005/1006消息] 位置信息解析错误: {str(e)}")
+            # print(f"[1005/1006消息] 位置信息解析错误: {str(e)}")
             log_error(f"位置信息解析错误: {str(e)}")
 
     def _reverse_geocode(self, lat: float, lon: float, min_population: int = 10000) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -392,9 +392,9 @@ class RTCMParserThread(threading.Thread):
         if msg_id != 1033:
             return
 
-        # print(f"📡 [1033消息] 收到设备信息消息: {msg_id}")
-        # print(f"📡 [1033消息] 消息对象: {msg}")
-        # print(f"📡 [1033消息] 消息属性: {dir(msg)}")
+        # print(f"[1033消息] 收到设备信息消息: {msg_id}")
+        # print(f"[1033消息] 消息对象: {msg}")
+        # print(f"[1033消息] 消息属性: {dir(msg)}")
 
         try:
             # 提取设备信息（根据RTCM 1033标准字段）
@@ -402,58 +402,58 @@ class RTCMParserThread(threading.Thread):
             
             # 提取天线描述（DF030_xx字段）
             antenna_parts = []
-            # print(f"📡 [1033消息] 开始解析天线描述字段...")
+            # print(f"[1033消息] 开始解析天线描述字段...")
             for i in range(1, 21):  # DF030_01 到 DF030_20
                 field_name = f"DF030_{i:02d}"
                 if hasattr(msg, field_name):
                     part = getattr(msg, field_name)
-                    # print(f"📡 [1033消息] {field_name}: {part} (类型: {type(part)})")
+                    # print(f"[1033消息] {field_name}: {part} (类型: {type(part)})")
                     if part and part != 0:  # 跳过空值
                         antenna_parts.append(chr(part) if isinstance(part, int) and 0 < part < 256 else str(part))
             antenna = ''.join(antenna_parts).strip() if antenna_parts else None
-            # print(f"📡 [1033消息] 天线描述拼接结果: '{antenna}'")
+            # print(f"[1033消息] 天线描述拼接结果: '{antenna}'")
             
             # 提取接收机类型（DF228_xx字段）
             receiver_parts = []
-            # print(f"📡 [1033消息] 开始解析接收机类型字段...")
+            # print(f"[1033消息] 开始解析接收机类型字段...")
             for i in range(1, 31):  # DF228_01 到 DF228_30
                 field_name = f"DF228_{i:02d}"
                 if hasattr(msg, field_name):
                     part = getattr(msg, field_name)
-                    # print(f"📡 [1033消息] {field_name}: {part} (类型: {type(part)})")
+                    # print(f"[1033消息] {field_name}: {part} (类型: {type(part)})")
                     if part and part != 0:  # 跳过空值
                         receiver_parts.append(chr(part) if isinstance(part, int) and 0 < part < 256 else str(part))
             receiver = ''.join(receiver_parts).strip() if receiver_parts else None
-            # print(f"📡 [1033消息] 接收机类型拼接结果: '{receiver}'")
+            # print(f"[1033消息] 接收机类型拼接结果: '{receiver}'")
             
             # 提取固件版本（DF230_xx字段）
             firmware_parts = []
-            # print(f"📡 [1033消息] 开始解析固件版本字段...")
+            # print(f"[1033消息] 开始解析固件版本字段...")
             for i in range(1, 21):  # DF230_01 到 DF230_20
                 field_name = f"DF230_{i:02d}"
                 if hasattr(msg, field_name):
                     part = getattr(msg, field_name)
-                    # print(f"📡 [1033消息] {field_name}: {part} (类型: {type(part)})")
+                    # print(f"[1033消息] {field_name}: {part} (类型: {type(part)})")
                     if part and part != 0:  # 跳过空值
                         firmware_parts.append(chr(part) if isinstance(part, int) and 0 < part < 256 else str(part))
             firmware = ''.join(firmware_parts).strip() if firmware_parts else None
-            # print(f"📡 [1033消息] 固件版本拼接结果: '{firmware}'")
+            # print(f"[1033消息] 固件版本拼接结果: '{firmware}'")
             
             # 提取天线序列号（DF033字段或其他可能字段）
             antenna_serial = getattr(msg, "DF033", None)
-            # print(f"📡 [1033消息] DF033 (天线序列号): {antenna_serial}")
+            # print(f"[1033消息] DF033 (天线序列号): {antenna_serial}")
             if not antenna_serial:
                 # 尝试其他可能的序列号字段
                 antenna_serial = getattr(msg, "DF032", None)
-                # print(f"📡 [1033消息] DF032 (备用序列号): {antenna_serial}")
+                # print(f"[1033消息] DF032 (备用序列号): {antenna_serial}")
             
-            # print(f"📡 [1033消息] 接收机: {receiver}")
-            # print(f"📡 [1033消息] 固件: {firmware}")
-            # print(f"📡 [1033消息] 天线: {antenna}")
-            # print(f"📡 [1033消息] 天线序列号: {antenna_serial}")
+            # print(f"[1033消息] 接收机: {receiver}")
+            # print(f"[1033消息] 固件: {firmware}")
+            # print(f"[1033消息] 天线: {antenna}")
+            # print(f"[1033消息] 天线序列号: {antenna_serial}")
             
             # 打印所有可用属性以便调试
-            # print(f"📡 [1033消息] 所有属性: {[attr for attr in dir(msg) if not attr.startswith('_')]}")
+            # print(f"[1033消息] 所有属性: {[attr for attr in dir(msg) if not attr.startswith('_')]}")
             
             device_data = {
                 "mount": self.mount_name,
@@ -463,16 +463,16 @@ class RTCMParserThread(threading.Thread):
                 "antenna_firmware": antenna_serial
             }
 
-            # print(f"📡 [1033消息] 最终数据: {device_data}")
+            # print(f"[1033消息] 最终数据: {device_data}")
 
             # 更新结果并推送
             with self.result_lock:
                 self.result["device"] = device_data
             self._push_data(DataType.DEVICE_INFO, device_data)
-            # print(f"📡 [1033消息] 数据已推送到前端")
+            # print(f"[1033消息] 数据已推送到前端")
 
         except Exception as e:
-            # print(f"❌ [1033消息] 设备信息解析错误: {str(e)}")
+            # print(f"[1033消息] 设备信息解析错误: {str(e)}")
             log_error(f"设备信息解析错误: {str(e)}")
 
     # -------------------------- 比特率统计函数 --------------------------
@@ -613,16 +613,16 @@ class RTCMParserThread(threading.Thread):
 
     def _process_realtime_web(self, msg: RTCMMessage, msg_id: int, raw: bytes) -> None:
         """Web实时模式处理逻辑（处理所有消息类型）"""
-        # print(f"🔄 [Web模式] 处理消息ID: {msg_id}")
+        # print(f"[Web模式] 处理消息ID: {msg_id}")
         
         # 处理位置信息（1005/1006）
         if msg_id in (1005, 1006):
-            # print(f"🔄 [Web模式] 调用位置消息处理函数")
+            # print(f"[Web模式] 调用位置消息处理函数")
             self._process_location_message(msg, msg_id)
         
         # 处理设备信息（1033）
         elif msg_id == 1033:
-            # print(f"🔄 [Web模式] 调用设备信息处理函数")
+            # print(f"[Web模式] 调用设备信息处理函数")
             self._process_device_info(msg, msg_id)
         
         # 处理MSM消息

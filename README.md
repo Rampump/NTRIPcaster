@@ -1,8 +1,8 @@
 # 2RTK NTRIP Caster v2.2.0
 
 **Language / 语言选择:**
-- [🇺🇸 English](#) (Current)
-- [🇨🇳 中文版](README-zh.md)
+- [English](#) (Current)
+- [中文版](README-zh.md)
 
 ---
 
@@ -19,9 +19,9 @@ It used to be a single file 2rtk.py,（https://github.com/Rampump/2RTKcaster） 
 - It supports most systems with Python environment, including debian, ubuntu, centos, armbian, etc.
 - Supports Docker deployment.
 
-## 📖 Installation Tutorials
+## Installation Tutorials
 
-### 🐳 Docker Deployment (Recommended)
+### Docker Deployment (Recommended)
 Recommended one-click deployment, no manual configuration required.
 ```bash
 # Pull and run directly, the image will automatically create required directories and configuration files
@@ -34,7 +34,7 @@ docker run -d \
 - **中文教程**: [Docker 安装和使用教程](DOCKER-TUTORIAL.md)
 - **English Tutorial**: [Docker Installation and Usage Guide](DOCKER-TUTORIAL-EN.md)
 
-### 🖥️ Debian System Native Installation
+### Debian System Native Installation
 - **中文教程**: [Linux 系统原生安装教程](INSTALL-TUTORIAL.md)
 - **English Tutorial**: [Linux Native Installation Guide](INSTALL-TUTORIAL-EN.md)
 
@@ -43,26 +43,37 @@ docker run -d \
 - NTRIP Service: `ntrip://yourserverip:2101`
 - Default Account: `admin` / `admin123` (Remember to change the default password)
 
-## 💻 Hardware Recommendations
+## Hardware Recommendations
 
-### 🔧 Minimum Configuration Requirements
+### Minimum Configuration Requirements
 - **CPU**: 2 cores (x86_64 architecture recommended)
 - **Memory**: 2GB RAM
 - **Storage**: 10GB available disk space
 - **Network**: Stable network connection
 - **Operating System**: Ubuntu 18.04+ / Debian 10+ / CentOS 7+
 
-## 🌐 Frontend Web Interface Features
+## Frontend Web Interface Features
 ### Homepage
 You can see the current caster's running status on the homepage, including connection count, user count, mount point count, etc. The log information below will push user or mount point connection status in real-time. DEBUG mode will push more debugging information.
+
+![Homepage](img/Home.png)
+
 ### User Management Page
 You can add users, delete users, modify user passwords, etc. on the user management page. You can also see online users. (User management will be added later, API is reserved)
+
+![User Management](img/user.png)
+
 ### Mount Point Management Page
 You can add mount points, delete mount points, modify mount point information, etc. on the mount point management page. You can also see online information. (Mount point management will be added later, API is reserved)
+
+![Mount Point Management](img/mount.png)
+
 ### Base Station Information Page
 You can view RTCM status on the base station information page. Click the INFO button in front of the STR entry, and the backend will parse it and display it in the information below. (This usually takes some time to parse before updating the display)
 
-### 📊 Configuration Recommendations for Different Loads
+![Base Station Information](img/rtcm.png)
+
+### Configuration Recommendations for Different Loads
 
 | Concurrent Connections | CPU | Memory | Storage | Network Bandwidth |
 |------------------------|-----|--------|---------|------------------|
@@ -72,24 +83,24 @@ You can view RTCM status on the base station information page. Click the INFO bu
 | **1000-2000** | 8 cores | 8GB | 50GB | 200Mbps |
 | **2000+** | 16+ cores | 16GB+ | 100GB+ | 500Mbps+ |
 
-### ☁️ Cloud Server Recommendations
-💡 For cloud server deployment, please open ports 5757 and 2101 in security settings
+### Cloud Server Recommendations
+For cloud server deployment, please open ports 5757 and 2101 in security settings
 #### AWS EC2
 - **Entry Level**: t3.small (2 cores 2GB)
 - **Standard**: c5.large (2 cores 4GB)
 - **High Performance**: c5.2xlarge (8 cores 16GB)
 
-## 📈 Performance Benchmark Tests
+## Performance Benchmark Tests
 
 - **500 Connection Test**: CPU 18.1%, Memory 29.5%, Network 7.47 Mbps
 - **1000 Connection Test**: CPU 19.1%, Memory 33.9%, Network 10.79 Mbps
 - **2000 Connection Limit Test**: CPU 17.3%, Memory 30.3%, Network 7.69 Mbps
 
-> 📋 For detailed test reports, please check the [tests/](tests/) directory
+> For detailed test reports, please check the [tests/](tests/) directory
 
-## ⚙️ Configuration Guide
+## Configuration Guide
 
-### 🔧 Main Configuration Options
+### Main Configuration Options
 
 ```ini
 [ntrip]
@@ -115,7 +126,7 @@ username = admin               # Administrator username
 password = admin123            # Administrator password (change in production)
 ```
 
-### 🔍 Common Issue Diagnosis
+### Common Issue Diagnosis
 
 #### Port Occupation Issues
 ```bash
@@ -144,7 +155,7 @@ telnet localhost 2101              # Test NTRIP port
 curl http://localhost:5757/        # Test Web port
 ```
 
-### ⚡ Performance Optimization
+### Performance Optimization
 
 #### High Concurrency Configuration
 ```ini
@@ -175,7 +186,7 @@ echo "net.ipv4.tcp_max_syn_backlog = 65536" >> /etc/sysctl.conf
 sudo sysctl -p
 ```
 
-### 📊 Monitoring and Logging
+### Monitoring and Logging
 
 #### Log Level Configuration
 ```ini
@@ -187,12 +198,12 @@ rotate_size = 100MB               # Log rotation size
 rotate_count = 10                 # Number of log files to keep
 ```
 
-## 🤝 Contributing
+## Contributing
 
 - Welcome to submit Pull Requests
 - Contact: i@jia.by
 
-## 🙏 Acknowledgments and Open Source Libraries
+## Acknowledgments and Open Source Libraries
 
 This project uses the following excellent open source libraries and tools, and we express our sincere gratitude:
 
@@ -216,7 +227,7 @@ This project uses the following excellent open source libraries and tools, and w
 - **Purpose**: Provides complete RTCM 3.x message parsing, encoding and decoding functions
 - **Note**: To ensure project stability, it is recommended to directly integrate the pyrtcm library source code into the project to avoid external dependency risks
 
-## 📄 Open Source License
+## Open Source License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
@@ -231,4 +242,4 @@ All integrated third-party libraries maintain their original open source license
 
 ---
 
-**⭐ If this project helps you, please give me a Star!**
+** If this project helps you, please give me a Star!**

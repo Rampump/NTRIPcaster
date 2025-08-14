@@ -744,7 +744,7 @@ function updateMapLocation(latitude, longitude, mountName = null, isInitialMarki
                             </filter>
                         </defs>
                         <circle cx="16" cy="16" r="12" fill="transparent" stroke="rgba(21, 101, 192, 0.8)" stroke-width="3" filter="url(#shadow)"/>
-                         <path d="M16 8 L18.4 13.2 L24 13.2 L19.8 16.8 L22.2 22 L16 18.4 L9.8 22 L12.2 16.8 L8 13.2 L13.6 13.2 Z" fill="#DC143C"/>
+                        <text x="16" y="21" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#DC143C">T</text>
                     </svg>
                 `),
                 scale: 1,
@@ -1138,7 +1138,7 @@ function getDashboardContent() {
         <!-- 系统概览卡片 -->
         <div class="dashboard-cards">
             <div class="dashboard-card">
-                <div class="card-icon">🕐</div>
+                <div class="card-icon">⏰</div>
                 <div class="card-content">
                     <div class="card-title">Uptime</div>
                     <div class="card-value" id="system-uptime">-</div>
@@ -1154,7 +1154,7 @@ function getDashboardContent() {
             </div>
             
             <div class="dashboard-card">
-                <div class="card-icon">📊</div>
+                <div class="card-icon">📈</div>
                 <div class="card-content">
                     <div class="card-title">Memory Usage</div>
                     <div class="card-value" id="system-memory">-</div>
@@ -1163,7 +1163,7 @@ function getDashboardContent() {
             </div>
             
             <div class="dashboard-card">
-                <div class="card-icon">📡</div>
+                <div class="card-icon">📻</div>
                 <div class="card-content">
                     <div class="card-title">Network Bandwidth</div>
                     <div class="card-value" id="system-bandwidth">-</div>
@@ -1173,7 +1173,7 @@ function getDashboardContent() {
         
         <!-- 连接统计 -->
         <div class="dashboard-section">
-            <h4>🔗 Connection Statistics</h4>
+            <h4>Connection Statistics</h4>
             <div class="stats-grid">
                 <div class="stat-item">
                     <span class="stat-label">Active Connections:</span>
@@ -1208,7 +1208,7 @@ function getDashboardContent() {
         
         <!-- 挂载点详情 -->
         <div class="dashboard-section">
-            <h4>📡 Mount Point Details</h4>
+            <h4>Mount Point Details</h4>
             <div class="mounts-container" id="mounts-detail">
                 <div class="loading-text">Loading...</div>
             </div>
@@ -1639,13 +1639,13 @@ socket.on('system_stats_update', function(data) {
 
 // 调试RTCM 数据
 socket.on('rtcm_realtime_data', function(data) {
-    // console.log('🎯 [前端接收] 收到RTCM实时数据:', data);
-    // console.log('🎯 [前端接收] 数据类型:', typeof data);
-    // console.log('🎯 [前端接收] 数据键:', Object.keys(data || {}));
+    // console.log('[前端接收] 收到RTCM实时数据:', data);
+    // console.log('[前端接收] 数据类型:', typeof data);
+    // console.log('[前端接收] 数据键:', Object.keys(data || {}));
     
     // 调试信息：显示除MSM类型外的其他数据类型
     if (data && data.data_type && data.data_type !== 'msm_satellite') {
-        // console.log('🔍 [调试] 收到非MSM数据:', {
+        // console.log('[调试] 收到非MSM数据:', {
         //     数据类型: data.data_type,
         //     挂载点: data.mount_name || data.mount,
         //     时间戳: data.timestamp,
@@ -1655,7 +1655,7 @@ socket.on('rtcm_realtime_data', function(data) {
     
     // 特别关注天线和设备信息
     if (data && data.data_type && ['device_info', 'antenna_info', 'receiver_info'].includes(data.data_type)) {
-        // console.log('📡 [天线设备调试] 收到天线/设备信息:', {
+        // console.log('[天线设备调试] 收到天线/设备信息:', {
         //     数据类型: data.data_type,
         //     挂载点: data.mount_name || data.mount,
         //     接收机: data.receiver,
@@ -1741,25 +1741,25 @@ socket.on('rtcm_realtime_data', function(data) {
                 
             case 'geography':
                 // （1005/1006）
-                // console.log('🌍 [地理信息调试] 收到地理位置信息:', data);
-    // console.log('🌍 [地理信息调试] 当前页面:', currentPage);
+                // console.log('[地理信息调试] 收到地理位置信息:', data);
+    // console.log('[地理信息调试] 当前页面:', currentPage);
                 
                 // 只在monitor页面处理基准站信息显示
                 if (currentPage !== 'monitor') {
-                    // console.log('🌍 [地理信息调试] 不在monitor页面，跳过基准站信息显示');
+                    // console.log('[地理信息调试] 不在monitor页面，跳过基准站信息显示');
                     break;
                 }
                 
                 
                 const stationInfoDiv = document.getElementById('station-info');
-                // console.log('🌍 [地理信息调试] station-info元素:', stationInfoDiv);
-    // console.log('🌍 [地理信息调试] station-info内容:', stationInfoDiv ? stationInfoDiv.innerHTML : 'station-info不存在');
-    // console.log('🌍 [地理信息调试] 是否有empty-state:', stationInfoDiv ? stationInfoDiv.querySelector('.empty-state') : 'station-info不存在');
-    // console.log('🌍 [地理信息调试] 是否有station-details:', stationInfoDiv ? stationInfoDiv.querySelector('.station-details') : 'station-info不存在');
+                // console.log('[地理信息调试] station-info元素:', stationInfoDiv);
+    // console.log('[地理信息调试] station-info内容:', stationInfoDiv ? stationInfoDiv.innerHTML : 'station-info不存在');
+    // console.log('[地理信息调试] 是否有empty-state:', stationInfoDiv ? stationInfoDiv.querySelector('.empty-state') : 'station-info不存在');
+    // console.log('[地理信息调试] 是否有station-details:', stationInfoDiv ? stationInfoDiv.querySelector('.station-details') : 'station-info不存在');
                 
                 if (stationInfoDiv && (stationInfoDiv.querySelector('.empty-state') || !stationInfoDiv.querySelector('.station-details'))) {
                     // 如果还是空状态，先创建基础结构
-                    // console.log('🌍 [地理信息调试] 检测到empty-state，创建基础结构');
+                    // console.log('[地理信息调试] 检测到empty-state，创建基础结构');
                     const stationData = {
                         name: data.mount_name || data.mount || 'Unknown',
                         id: data.station_id || 'Unknown',
@@ -1774,28 +1774,28 @@ socket.on('rtcm_realtime_data', function(data) {
                         receiver: { name: 'Unknown', firmware: 'Unknown' },
                         antenna: { name: 'Unknown', serial: 'Unknown' }
                     };
-                    // console.log('🌍 [地理信息调试] 准备显示基准站信息:', stationData);
+                    // console.log('[地理信息调试] 准备显示基准站信息:', stationData);
                     displayStationInfo(stationData);
                 } else {
                     // 如果结构已存在，直接更新数据
-                    // console.log('🌍 [地理信息调试] 基础结构已存在，更新数据');
-        // console.log('🌍 [地理信息调试] 完整数据内容:', data);
+                    // console.log('[地理信息调试] 基础结构已存在，更新数据');
+        // console.log('[地理信息调试] 完整数据内容:', data);
                     
                     
                     if (data.mount_name || data.mount) {
-                        // console.log('🌍 [地理信息调试] 更新挂载点名称:', data.mount_name || data.mount);
+                        // console.log('[地理信息调试] 更新挂载点名称:', data.mount_name || data.mount);
                         updateElement('station-name', data.mount_name || data.mount);
                     }
                     
                     
                     if (data.station_id !== undefined) {
-                        // console.log('🌍 [地理信息调试] 更新基准站ID:', data.station_id);
+                        // console.log('[地理信息调试] 更新基准站ID:', data.station_id);
                         updateElement('station-id', data.station_id.toString());
                     }
                     
                     
                     if (data.lat !== undefined && data.lon !== undefined) {
-                        // console.log('🌍 [地理信息调试] 更新经纬度:', data.lat, data.lon);
+                        // console.log('[地理信息调试] 更新经纬度:', data.lat, data.lon);
                         
                         // 存储当前挂载点名称
                         currentMountName = data.mount_name || data.mount || null;
@@ -1812,25 +1812,25 @@ socket.on('rtcm_realtime_data', function(data) {
                     
                    
                     if (data.height !== undefined) {
-                        // console.log('🌍 [地理信息调试] 更新高程:', data.height);
+                        // console.log('[地理信息调试] 更新高程:', data.height);
                         updateElement('station-height', data.height.toFixed(3) + ' m');
                     }
                     
                     // ECEF  XYZ
                     if (data.x !== undefined && data.y !== undefined && data.z !== undefined) {
-                        // console.log('🌍 [地理信息调试] 更新XYZ坐标:', data.x, data.y, data.z);
+                        // console.log('[地理信息调试] 更新XYZ坐标:', data.x, data.y, data.z);
                         updateElement('station-xyz', `X: ${data.x.toFixed(3)}, Y: ${data.y.toFixed(3)}, Z: ${data.z.toFixed(3)}`);
                     }
                     
                     // country
                     if (data.country || data.country_name) {
-                        // console.log('🌍 [地理信息调试] 更新国家:', data.country_name || data.country);
+                        // console.log('[地理信息调试] 更新国家:', data.country_name || data.country);
                         updateElement('station-country', data.country_name || 'Unknown');
                     }
                     
                     // city
                     if (data.city) {
-                        // console.log('🌍 [地理信息调试] 更新城市:', data.city);
+                        // console.log('[地理信息调试] 更新城市:', data.city);
                         updateElement('station-city', data.city);
                     }
                 }
@@ -2004,10 +2004,10 @@ function updateMountDetails(mounts) {
             <div class="mount-item">
                 <div class="mount-name">${mountName}</div>
                 <div class="mount-stats">
-                    <div>👥 ${userCount} Users</div>
-            <div>📊 ${dataCount} Data Packets</div>
+                    <div>👤 ${userCount} Users</div>
+            <div>📈 ${dataCount} Data Packets</div>
                     <div>⏱️ ${uptimeStr}</div>
-                    <div>🔄 ${status}</div>
+                    <div>⚙️ ${status}</div>
                 </div>
             </div>
         `;
@@ -2860,9 +2860,9 @@ function showAlert(message, type = 'info') {
     }
     
     const iconMap = {
-        'info': '💡',
-        'success': '✅',
-        'error': '❌',
+        'info': 'ℹ️',
+        'success': '✔️',
+        'error': '✖️',
         'warning': '⚠️'
     };
     

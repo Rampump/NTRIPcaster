@@ -1123,11 +1123,11 @@ a=control:*
                 self.mount_connection_established = True
                 
                 if success:
-                    logger.log_info(f"✓ 挂载点 {mount} 已成功添加到连接管理器: {message}")
+                    logger.log_info(f"挂载点 {mount} 已成功添加到连接管理器: {message}")
                 else:
-                    logger.log_warning(f"✗ 挂载点 {mount} 添加到连接管理器失败: {message}")
+                    logger.log_warning(f"挂载点 {mount} 添加到连接管理器失败: {message}")
             except Exception as e:
-                logger.log_error(f"✗ 添加挂载点 {mount} 到连接管理器时发生异常: {e}", exc_info=True)
+                logger.log_error(f"添加挂载点 {mount} 到连接管理器时发生异常: {e}", exc_info=True)
 
             self.send_upload_success_response()
             
