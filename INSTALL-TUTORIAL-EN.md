@@ -43,7 +43,7 @@ This tutorial will guide you through installing and deploying NTRIP Caster v2.2.
 
 ```bash
 # 1. Clone project
-git clone https://github.com/2rtk/NTRIPcaster.git
+git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
 
 # 2. Run installation script
@@ -169,7 +169,7 @@ sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
 cd /opt/ntripcaster
 
 # Download source code
-sudo -u ntripcaster git clone https://github.com/2rtk/NTRIPcaster.git .
+sudo -u ntripcaster git clone https://github.com/Rampump/NTRIPcaster.git .
 
 # Create Python virtual environment
 sudo -u ntripcaster python3 -m venv venv
@@ -852,8 +852,8 @@ If you encounter issues during installation or usage:
 
 1. **Check Logs**: `sudo journalctl -u ntripcaster -f`
 2. **Check Status**: `sudo systemctl status ntripcaster`
-3. **View Documentation**: [GitHub Repository](https://github.com/2rtk/NTRIPcaster)
-4. **Report Issues**: [GitHub Issues](https://github.com/2rtk/NTRIPcaster/issues)
+3. **View Documentation**: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
+4. **Report Issues**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 5. **Contact Author**: i@jia.by
 6. **Visit Website**: https://2rtk.com
 

@@ -5,6 +5,7 @@
 ## 目录
 - [系统要求](#系统要求)
 - [快速安装](#快速安装)
+- [一键安装脚本](#一键安装脚本)
 - [详细安装步骤](#详细安装步骤)
 - [配置说明](#配置说明)
 - [服务管理](#服务管理)
@@ -41,7 +42,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/Rampump/NTRIPcaster
+git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
 
 # 2. 运行安装脚本
@@ -52,6 +53,139 @@ sudo ./install.sh
 sudo systemctl start ntripcaster
 sudo systemctl enable ntripcaster
 ```
+
+## 一键安装脚本
+
+### 自动安装脚本
+
+我们提供了一个自动安装脚本，可以在大多数 Linux 发行版上一键安装 NTRIP Caster。
+
+#### 使用方法
+
+**方法一：直接下载并执行（推荐）**
+```bash
+# 下载并运行安装脚本
+wget -O - https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh | sudo bash
+```
+
+**方法二：下载后执行**
+```bash
+# 下载脚本到本地
+wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+> **注意**：脚本会自动从GitHub下载最新的项目文件，无需手动克隆仓库。
+
+#### 脚本功能
+
+安装脚本会自动完成以下操作：
+
+1. **检测系统环境**
+   - 自动识别 Linux 发行版（Debian/Ubuntu/CentOS/RHEL/openSUSE 等）
+   - 检查系统版本和架构
+   - 验证必要的系统权限
+
+2. **安装系统依赖**
+   - 更新系统包管理器
+   - 安装 Python 3.8+ 和相关开发工具
+   - 安装 Git、SQLite、Nginx 等必要组件
+   - 配置防火墙规则
+
+3. **创建系统用户和目录**
+   - 创建专用的 `ntripcaster` 系统用户
+   - 建立应用目录结构 (`/opt/ntripcaster`)
+   - 设置日志目录 (`/var/log/ntripcaster`)
+   - 配置适当的文件权限
+
+4. **下载和配置应用**
+   - 自动从 GitHub 克隆最新源码（无需手动下载）
+   - 创建 Python 虚拟环境
+   - 安装 Python 依赖包
+   - 生成默认配置文件
+
+5. **配置系统服务**
+   - 创建 systemd 服务文件
+   - 启用开机自启动
+   - 启动 NTRIP Caster 服务
+   - 配置日志轮转
+
+6. **网络配置**
+   - 开放必要的端口（2101, 5757）
+   - 配置防火墙规则
+   - 可选配置 Nginx 反向代理
+
+#### 安装选项
+
+脚本支持以下环境变量来自定义安装：
+
+```bash
+# 指定安装目录
+export INSTALL_DIR="/opt/ntripcaster"
+
+# 指定用户名
+export NTRIP_USER="ntripcaster"
+
+# 指定端口
+export NTRIP_PORT="2101"
+export WEB_PORT="5757"
+
+# 是否安装 Nginx 反向代理
+export INSTALL_NGINX="true"
+
+# 是否启用 SSL
+export ENABLE_SSL="false"
+
+# 运行安装脚本
+sudo -E ./install.sh
+```
+
+#### 验证安装
+
+安装完成后，脚本会自动验证安装结果：
+
+```bash
+# 检查服务状态
+sudo systemctl status ntripcaster
+
+# 检查端口监听
+sudo netstat -tlnp | grep :2101
+sudo netstat -tlnp | grep :5757
+
+# 访问 Web 界面
+curl -I http://localhost:5757
+```
+
+#### 卸载
+
+如需卸载，可以使用卸载脚本：
+
+```bash
+# 下载并运行卸载脚本
+wget -O - https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/uninstall.sh | sudo bash
+```
+
+### 快速验证
+
+安装完成后，您可以通过以下方式快速验证：
+
+1. **检查服务状态**：
+   ```bash
+   sudo systemctl status ntripcaster
+   ```
+
+2. **访问 Web 管理界面**：
+   打开浏览器访问 `http://your-server-ip:5757`
+   
+   默认登录信息：
+   - 用户名：`admin`
+   - 密码：`admin123`
+
+3. **测试 NTRIP 连接**：
+   ```bash
+   telnet localhost 2101
+   ```
 
 ## 详细安装步骤
 
@@ -167,7 +301,7 @@ sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
 cd /opt/ntripcaster
 
 # 下载源码
-sudo -u ntripcaster git clone https://github.com/Rampump/NTRIPcaster.git .
+sudo -u ntripcaster git clone https://github.com/Rampump/NTRIPcaster.git 
 
 # 创建 Python 虚拟环境
 sudo -u ntripcaster python3 -m venv venv
@@ -850,8 +984,8 @@ sudo ufw delete allow 5757/tcp
 
 1. **查看日志**: `sudo journalctl -u ntripcaster -f`
 2. **检查状态**: `sudo systemctl status ntripcaster`
-3. **查看文档**: [GitHub Repository](https://github.com/2rtk/NTRIPcaster)
-4. **提交问题**: [GitHub Issues](https://github.com/2rtk/NTRIPcaster/issues)
+3. **查看文档**: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
+4. **提交问题**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 5. **联系作者**: i@jia.by
 6. **访问官网**: https://2rtk.com
 

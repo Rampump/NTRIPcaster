@@ -53,25 +53,27 @@ echo -e "${YELLOW}创建日志目录...${NC}"
 # 更新系统并安装依赖
 echo -e "${YELLOW}更新系统并安装依赖...${NC}"
 apt-get update
-apt-get install -y python3 python3-pip python3-venv supervisor nginx
+apt-get install -y python3 python3-pip python3-venv supervisor nginx git
 
 # 创建 Python 虚拟环境
 echo -e "${YELLOW}创建 Python 虚拟环境...${NC}"
 python3 -m venv $INSTALL_DIR/venv
 source $INSTALL_DIR/venv/bin/activate
 
-# 复制项目文件
-echo -e "${YELLOW}复制项目文件...${NC}"
-cp -r ./* $INSTALL_DIR/
+# 下载项目文件
+echo -e "${YELLOW}下载项目文件...${NC}"
+cd /tmp
+git clone https://github.com/Rampump/NTRIPcaster.git
+cp -r NTRIPcaster/* $INSTALL_DIR/
 
 # 复制并配置 config.ini
 echo -e "${YELLOW}配置 config.ini...${NC}"
-if [ -f config.ini ]; then
+if [ -f $INSTALL_DIR/config.ini.example ]; then
     # 备份原始配置文件
-    cp config.ini $CONFIG_DIR/config.ini.original
+    cp $INSTALL_DIR/config.ini.example $CONFIG_DIR/config.ini.original
     
     # 复制并修改配置文件
-    cp config.ini $CONFIG_DIR/config.ini
+    cp $INSTALL_DIR/config.ini.example $CONFIG_DIR/config.ini
     
     # 更新配置文件中的路径
     sed -i "s|path = /app/data/2rtk.db|path = $INSTALL_DIR/data/2rtk.db|g" $CONFIG_DIR/config.ini
@@ -88,7 +90,7 @@ if [ -f config.ini ]; then
     
     echo -e "${GREEN}配置文件已更新${NC}"
 else
-    echo -e "${RED}错误: 未找到 config.ini 文件${NC}"
+    echo -e "${RED}错误: 未找到 config.ini.example 文件${NC}"
     exit 1
 fi
 

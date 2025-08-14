@@ -108,7 +108,7 @@ docker run -d \
 
 1. 下载项目文件：
 ```bash
-git clone https://github.com/2rtk/NTRIPcaster.git
+git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
 ```
 
@@ -476,8 +476,8 @@ docker exec ntrip-caster python /app/healthcheck.py
 
 如果您在使用过程中遇到问题，可以：
 
-1. 查看项目文档：[GitHub Repository](https://github.com/2rtk/NTRIPcaster)
-2. 提交 Issue：[GitHub Issues](https://github.com/2rtk/NTRIPcaster/issues)
+1. 查看项目文档：[GitHub Repository](https://github.com/Rampump/NTRIPcaster)
+2. 提交 Issue：[GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 3. 联系作者：i@jia.by
 4. 访问官网：https://2rtk.com
 

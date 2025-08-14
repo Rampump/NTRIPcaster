@@ -37,7 +37,7 @@ LABEL maintainer="2rtk <i@jia.by>" \
       org.opencontainers.image.version="2.2.0" \
       org.opencontainers.image.vendor="2RTK" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/2rtk/NTRIPcaster"
+      org.opencontainers.image.source="https://github.com/Rampump/NTRIPcaster"
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
