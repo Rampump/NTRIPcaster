@@ -42,24 +42,24 @@ def get_config_value(section, key, fallback=None, value_type=str):
 
 # 基本应用信息
 APP_NAME = get_config_value('app', 'name', '2RTK Ntrip Caster')
-APP_VERSION = get_config_value('app', 'version', '2.0.0')
-APP_DESCRIPTION = get_config_value('app', 'description', '高性能NTRIP数据转发服务器')
-APP_AUTHOR = get_config_value('app', 'author', '2RTK Team')
-APP_CONTACT = get_config_value('app', 'contact', 'support@2rtk.com')
+APP_VERSION = get_config_value('app', 'version', '2.2.0')
+APP_DESCRIPTION = get_config_value('app', 'description', 'Ntrip Caster')
+APP_AUTHOR = get_config_value('app', 'author', '2rtk')
+APP_CONTACT = get_config_value('app', 'contact', 'i@jia.by')
 APP_WEBSITE = get_config_value('app', 'website', 'https://2rtk.com')
 
 
 VERSION = APP_VERSION
 
 
-DEBUG = get_config_value('development', 'debug_mode', True, bool)
+DEBUG = get_config_value('development', 'debug_mode', False, bool)
 
 # ==================== CASTER配置 ====================
 
 # NTRIP Caster地理位置信息
 CASTER_COUNTRY = get_config_value('caster', 'country', 'CHN')
-CASTER_LATITUDE = get_config_value('caster', 'latitude', 25.2034, float)
-CASTER_LONGITUDE = get_config_value('caster', 'longitude', 110.2777, float)
+CASTER_LATITUDE = get_config_value('caster', 'latitude', 25.20341154, float)
+CASTER_LONGITUDE = get_config_value('caster', 'longitude', 110.277492, float)
 
 # ==================== 网络配置 ====================
 
@@ -150,15 +150,15 @@ WEB_HOST = HOST  # Web服务监听地址
 WEB_PORT = get_config_value('web', 'port', 5757, int)      # Web服务端口
 
 # 最大连接数
-MAX_CONNECTIONS = get_config_value('network', 'max_connections', 100, int)
+MAX_CONNECTIONS = get_config_value('network', 'max_connections', 5000, int)
 
 # 缓冲区大小
-BUFFER_SIZE = get_config_value('network', 'buffer_size', 8192, int)      # 8KB
-MAX_BUFFER_SIZE = get_config_value('network', 'max_buffer_size', 65536, int) # 64KB
+BUFFER_SIZE = get_config_value('network', 'buffer_size', 81920, int)      # 80KB
+MAX_BUFFER_SIZE = get_config_value('network', 'max_buffer_size', 655360, int) # 640KB
 
 # ==================== 数据库配置 ====================
 
-DATABASE_PATH = get_config_value('database', 'path', 'ntrip_caster.db')
+DATABASE_PATH = get_config_value('database', 'path', '2rtk.db')
 DB_POOL_SIZE = get_config_value('database', 'pool_size', 10, int)
 DB_TIMEOUT = get_config_value('database', 'timeout', 30, int)
 
@@ -182,11 +182,11 @@ LOG_BACKUP_COUNT = get_config_value('logging', 'backup_count', 5, int)  # 保留
 LOG_FREQUENT_STATUS = get_config_value('logging', 'log_frequent_status', False, bool)
 
 # Flask密钥 (生产环境中请修改)
-SECRET_KEY = get_config_value('security', 'secret_key', 'your-secret-key-change-this-in-production')
+SECRET_KEY = get_config_value('security', 'secret_key', '8f4a9c2e7d1b6f3a5e8d7c9b2a4f6e3d5c8b7a9f2e4d6c8b3a5f7e9d1c2b4a6')
 FLASK_SECRET_KEY = SECRET_KEY  # Flask应用密钥
 
 # 密码哈希配置
-PASSWORD_HASH_ROUNDS = get_config_value('security', 'password_hash_rounds', 12, int)
+PASSWORD_HASH_ROUNDS = get_config_value('security', 'password_hash_rounds', 3, int)
 SESSION_TIMEOUT = get_config_value('security', 'session_timeout', 3600, int)  # 1小时
 
 # 默认管理员账户
@@ -201,12 +201,12 @@ DEFAULT_ADMIN = {
 SUPPORTED_NTRIP_VERSIONS = get_config_value('ntrip', 'supported_versions', ['1.0', '2.0'], list)
 
 DEFAULT_NTRIP_VERSION = get_config_value('ntrip', 'default_version', '1.0')
-MAX_USER_CONNECTIONS_PER_MOUNT = get_config_value('ntrip', 'max_user_connections_per_mount', 3, int)
-MAX_USERS_PER_MOUNT = get_config_value('ntrip', 'max_users_per_mount', 3, int)  # 每个挂载点每个用户的最大连接数
+MAX_USER_CONNECTIONS_PER_MOUNT = get_config_value('ntrip', 'max_user_connections_per_mount', 3000, int)
+MAX_USERS_PER_MOUNT = get_config_value('ntrip', 'max_users_per_mount', 3000, int)  # 每个挂载点每个用户的最大连接数
 MAX_CONNECTIONS_PER_USER = get_config_value('ntrip', 'max_connections_per_user', 3, int)  # 每个用户的最大连接数
-MOUNT_TIMEOUT = get_config_value('ntrip', 'mount_timeout', 300, int)  # 5分钟
-CLIENT_TIMEOUT = get_config_value('ntrip', 'client_timeout', 60, int)  # 1分钟
-CONNECTION_TIMEOUT = get_config_value('ntrip', 'connection_timeout', 300, int)  # 连接超时时间 (秒)
+MOUNT_TIMEOUT = get_config_value('ntrip', 'mount_timeout', 1800, int)  # 30分钟
+CLIENT_TIMEOUT = get_config_value('ntrip', 'client_timeout', 300, int)  # 5分钟
+CONNECTION_TIMEOUT = get_config_value('ntrip', 'connection_timeout', 1800, int)  # 连接超时时间 (秒)
 
 # ==================== TCP配置 ====================
 
@@ -217,18 +217,18 @@ TCP_KEEPALIVE = {
     'interval': get_config_value('tcp', 'keepalive_interval', 10, int),  # keep-alive探测间隔
     'count': get_config_value('tcp', 'keepalive_count', 3, int)       # 最大keep-alive探测次数
 }
-SOCKET_TIMEOUT = get_config_value('tcp', 'socket_timeout', 30, int)
+SOCKET_TIMEOUT = get_config_value('tcp', 'socket_timeout', 120, int)
 
 # ==================== 数据转发配置 ====================
 
 # 环形缓冲区配置
-RING_BUFFER_SIZE = get_config_value('data_forwarding', 'ring_buffer_size', 2000, int)  # 缓冲区大小
+RING_BUFFER_SIZE = get_config_value('data_forwarding', 'ring_buffer_size', 60, int)  # 缓冲区大小
 
 BROADCAST_INTERVAL = get_config_value('data_forwarding', 'broadcast_interval', 0.01, float)  # 广播间隔 (秒)
 
 DATA_SEND_TIMEOUT = get_config_value('data_forwarding', 'data_send_timeout', 5, int)  # 数据发送超时时间（秒）
 
-CLIENT_HEALTH_CHECK_INTERVAL = get_config_value('data_forwarding', 'client_health_check_interval', 30, int)  # 客户端健康检查间隔（秒）
+CLIENT_HEALTH_CHECK_INTERVAL = get_config_value('data_forwarding', 'client_health_check_interval', 120, int)  # 客户端健康检查间隔（秒）
 
 # ==================== RTCM解析 ====================
 
@@ -278,13 +278,13 @@ RTCM_MESSAGE_DESCRIPTIONS = {
 # WebSocket配置
 WEBSOCKET_CONFIG = {
     # 'cors_allowed_origins': get_config_value('websocket', 'cors_allowed_origins', '*'),  # 已移除CORS功能
-    'ping_timeout': get_config_value('websocket', 'ping_timeout', 60, int),
-    'ping_interval': get_config_value('websocket', 'ping_interval', 25, int)
+    'ping_timeout': get_config_value('websocket', 'ping_timeout', 120, int),
+    'ping_interval': get_config_value('websocket', 'ping_interval', 15, int)
 }
 WEBSOCKET_ENABLED = get_config_value('websocket', 'enabled', True, bool)
 
 # 实时数据推送间隔 (秒)
-REALTIME_PUSH_INTERVAL = get_config_value('web', 'realtime_push_interval', 5, int)
+REALTIME_PUSH_INTERVAL = get_config_value('web', 'realtime_push_interval', 3, int)
 
 
 PAGE_REFRESH_INTERVAL = get_config_value('web', 'page_refresh_interval', 30, int)
@@ -300,11 +300,11 @@ ALIPAY_QR_URL = PAYMENT_QR_CODES['alipay']
 WECHAT_QR_URL = PAYMENT_QR_CODES['wechat']
 
 # 线程池配置
-THREAD_POOL_SIZE = get_config_value('performance', 'thread_pool_size', 100, int)
-MAX_WORKERS = get_config_value('performance', 'max_workers', 100, int)
-CONNECTION_QUEUE_SIZE = get_config_value('performance', 'connection_queue_size', 500, int)
+THREAD_POOL_SIZE = get_config_value('performance', 'thread_pool_size', 5000, int)
+MAX_WORKERS = get_config_value('performance', 'max_workers', 5000, int)
+CONNECTION_QUEUE_SIZE = get_config_value('performance', 'connection_queue_size', 5000, int)
 
-MAX_MEMORY_USAGE = get_config_value('performance', 'max_memory_usage', 512, int)
+MAX_MEMORY_USAGE = get_config_value('performance', 'max_memory_usage', 2048, int)
 
 CPU_WARNING_THRESHOLD = get_config_value('performance', 'cpu_warning_threshold', 80, int)
 

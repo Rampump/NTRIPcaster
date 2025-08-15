@@ -1084,16 +1084,10 @@ a=control:*
                     
                     connection.get_connection_manager().remove_mount_connection(mount, "相同IP重复连接")
             
-            # 对于NTRIP 1.0 SOURCE请求，如果已经在handle_request中验证过，则跳过重复验证
-            if (hasattr(self, 'protocol_type') and self.protocol_type == 'ntrip1_0' and 
-                hasattr(self, 'ntrip1_password') and self.ntrip1_password):
-                logger.log_info(f"handle_upload跳过验证 {self.client_address}: 已在handle_request中验证过NTRIP 1.0 SOURCE请求")
-                is_valid = True
-                message = "Already authenticated in handle_request"
-            else:
-                auth_header = headers.get('authorization', '')
-                logger.log_info(f"handle_upload开始验证 {self.client_address}: mount={mount}, auth_header={auth_header[:50] if auth_header else 'None'}")
-                is_valid, message = self.verify_user(mount, auth_header)
+            # 所有请求都必须通过完整的数据库验证，确保挂载点存在且密码正确
+            auth_header = headers.get('authorization', '')
+            logger.log_info(f"handle_upload开始验证 {self.client_address}: mount={mount}, auth_header={auth_header[:50] if auth_header else 'None'}")
+            is_valid, message = self.verify_user(mount, auth_header)
             
             logger.log_info(f"handle_upload验证结果 {self.client_address}: is_valid={is_valid}, message={message}")
             
