@@ -706,11 +706,68 @@ function updateMapButtons() {
 }
 
 
+// 坐标转换函数：WGS84转GCJ02（火星坐标系）
+function wgs84ToGcj02(lng, lat) {
+    const x_pi = 3.14159265358979324 * 3000.0 / 180.0;
+    const pi = 3.1415926535897932384626;
+    const a = 6378245.0; // 长半轴
+    const ee = 0.00669342162296594323; // 扁率
+    
+    // 判断是否在中国境外
+    function outOfChina(lng, lat) {
+        return (lng < 72.004 || lng > 137.8347) || (lat < 0.8293 || lat > 55.8271);
+    }
+    
+    function transformLat(lng, lat) {
+        let ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * Math.sqrt(Math.abs(lng));
+        ret += (20.0 * Math.sin(6.0 * lng * pi) + 20.0 * Math.sin(2.0 * lng * pi)) * 2.0 / 3.0;
+        ret += (20.0 * Math.sin(lat * pi) + 40.0 * Math.sin(lat / 3.0 * pi)) * 2.0 / 3.0;
+        ret += (160.0 * Math.sin(lat / 12.0 * pi) + 320 * Math.sin(lat * pi / 30.0)) * 2.0 / 3.0;
+        return ret;
+    }
+    
+    function transformLng(lng, lat) {
+        let ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * Math.sqrt(Math.abs(lng));
+        ret += (20.0 * Math.sin(6.0 * lng * pi) + 20.0 * Math.sin(2.0 * lng * pi)) * 2.0 / 3.0;
+        ret += (20.0 * Math.sin(lng * pi) + 40.0 * Math.sin(lng / 3.0 * pi)) * 2.0 / 3.0;
+        ret += (150.0 * Math.sin(lng / 12.0 * pi) + 300.0 * Math.sin(lng / 30.0 * pi)) * 2.0 / 3.0;
+        return ret;
+    }
+    
+    // 如果在中国境外，不进行转换
+    if (outOfChina(lng, lat)) {
+        return [lng, lat];
+    }
+    
+    let dlat = transformLat(lng - 105.0, lat - 35.0);
+    let dlng = transformLng(lng - 105.0, lat - 35.0);
+    const radlat = lat / 180.0 * pi;
+    let magic = Math.sin(radlat);
+    magic = 1 - ee * magic * magic;
+    const sqrtmagic = Math.sqrt(magic);
+    dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrtmagic) * pi);
+    dlng = (dlng * 180.0) / (a / sqrtmagic * Math.cos(radlat) * pi);
+    const mglat = lat + dlat;
+    const mglng = lng + dlng;
+    return [mglng, mglat];
+}
+
 function updateMapLocation(latitude, longitude, mountName = null, isInitialMarking = false) {
     if (!currentMap) return;
     
+    // 根据地图类型决定是否进行坐标转换
+    let displayLng = longitude;
+    let displayLat = latitude;
     
-    const center = ol.proj.fromLonLat([longitude, latitude]);
+    // 如果是高德地图，需要将WGS84坐标转换为GCJ02坐标
+    if (mapType === 'amap') {
+        const converted = wgs84ToGcj02(longitude, latitude);
+        displayLng = converted[0];
+        displayLat = converted[1];
+        console.log(`[坐标转换] WGS84: ${longitude}, ${latitude} -> GCJ02: ${displayLng}, ${displayLat}`);
+    }
+    
+    const center = ol.proj.fromLonLat([displayLng, displayLat]);
     currentMap.getView().setCenter(center);
     
     

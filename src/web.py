@@ -141,7 +141,7 @@ class WebManager:
             """主页 - SPA应用"""
             # 获取配置信息
             app_name = config.get_config_value('app', 'name', '2RTK NTRIP Caster')
-            app_version = config.get_config_value('app', 'version', '2.0.0')
+            app_version = config.get_config_value('app', 'version', config.APP_VERSION)
             current_year = datetime.now().year
             
             return self._load_template('spa.html', 
