@@ -15,6 +15,7 @@ It used to be a single file 2rtk.py,https://github.com/Rampump/2RTKcaster   . bu
 - Web-based management. So you can deploy it on any cloud host.
 - Uses SQLite database to store user information and mount point information.
 - Leverages the pyrtcm library to parse uploaded data and correct STR tables (this part of the code has been rewritten several times, but I'm still not satisfied with it, including the current version. Looking forward to future updates).
+    (You just need to add a mount point on the web page and upload RTCM data, 2rtk-NtripCaster will automatically generate STR information and parse RTCM data to extract data types and location information to correct the STR)
 - This NTRIP caster is still far from the caster in my mind. I will gradually improve it in my spare time.
 - It supports most systems with Python environment, including debian, ubuntu, centos, armbian, etc.
 - Supports Docker deployment.
@@ -197,11 +198,12 @@ format = json                      # json, text
 rotate_size = 100MB               # Log rotation size
 rotate_count = 10                 # Number of log files to keep
 ```
-
 ## Contributing
 
 - Welcome to submit Pull Requests
 - Contact: i@jia.by
+- 2rtk.com
+
 
 ## Acknowledgments and Open Source Libraries
 

@@ -15,6 +15,7 @@
 - 使用web管理。所以你可以把它部署在任意的云主机上.
 - 使用SQLite数据库存储用户信息和挂载点信息.
 - 借用了pyrtcm库，会对上传的数据进行解析然后修正STR表（这部分代码重写了几次.但是我总感觉不满意，包括现在的版本.期待后续更新）.
+    （你只需要在web页面添加一个挂载点，然后上传RTCM数据，2rtk-NtripCaster会自动生成STR信息.并且会解析RTCM数据从中提取数据类型等位置信息对STR进行修正）
 - 这个NTRIP caster和我心中的caster还很远。我会在空闲的时间慢慢去完善它。
 - 它支持大多数装有python环境的系统，包括debian、ubuntu、centos、armbian等。
 - 支持docker部署。
