@@ -50,8 +50,8 @@ sudo chmod +x install.sh
 sudo ./install.sh
 
 # 3. 启动服务
-sudo systemctl start ntripcaster
-sudo systemctl enable ntripcaster
+sudo systemctl start 2rtk
+sudo systemctl enable 2rtk
 ```
 
 ## 一键安装脚本
@@ -80,66 +80,21 @@ sudo ./install.sh
 
 #### 脚本功能
 
-安装脚本会自动完成以下操作：
+`install.sh` 是**仅支持 Debian/Ubuntu** 的一键安装脚本，会自动完成：
 
-1. **检测系统环境**
-   - 自动识别 Linux 发行版（Debian/Ubuntu/CentOS/RHEL/openSUSE 等）
-   - 检查系统版本和架构
-   - 验证必要的系统权限
+1. **检查系统环境**：必须是 Debian/Ubuntu（其他发行版会直接退出），并以 root 运行。
 
-2. **安装系统依赖**
-   - 更新系统包管理器
-   - 安装 Python 3.8+ 和相关开发工具
-   - 安装 Git、SQLite、Nginx 等必要组件
-   - 配置防火墙规则
+2. **安装系统依赖**：`python3`、`python3-pip`、`python3-venv`、`supervisor`、`nginx`、`git`。
 
-3. **创建系统用户和目录**
-   - 创建专用的 `ntripcaster` 系统用户
-   - 建立应用目录结构 (`/opt/ntripcaster`)
-   - 设置日志目录 (`/var/log/ntripcaster`)
-   - 配置适当的文件权限
+3. **创建目录**：安装目录 `/opt/2rtk`、配置目录 `/etc/2rtk`、日志目录 `/var/log/2rtk`。
 
-4. **下载和配置应用**
-   - 自动从 GitHub 克隆最新源码（无需手动下载）
-   - 创建 Python 虚拟环境
-   - 安装 Python 依赖包
-   - 生成默认配置文件
+4. **下载并配置应用**：从 GitHub 克隆源码到 `/opt/2rtk`，创建虚拟环境，安装依赖，复制 `config.ini.example` 到 `/etc/2rtk/config.ini`，并把数据库路径/日志目录写入配置、生成随机 `secret_key`。
 
-5. **配置系统服务**
-   - 创建 systemd 服务文件
-   - 启用开机自启动
-   - 启动 NTRIP Caster 服务
-   - 配置日志轮转
+5. **配置 systemd 服务**：创建 `/etc/systemd/system/2rtk.service`，`enable` 并 `start`；同时创建日志轮转 `/etc/logrotate.d/2rtk`。
 
-6. **网络配置**
-   - 开放必要的端口（2101, 5757）
-   - 配置防火墙规则
-   - 可选配置 Nginx 反向代理
+6. **网络配置**：配置 UFW/firewalld 开放 2101/5757 端口；创建 Nginx 反向代理配置（`/etc/nginx/sites-available/2rtk`）。
 
-#### 安装选项
-
-脚本支持以下环境变量来自定义安装：
-
-```bash
-# 指定安装目录
-export INSTALL_DIR="/opt/ntripcaster"
-
-# 指定用户名
-export NTRIP_USER="ntripcaster"
-
-# 指定端口
-export NTRIP_PORT="2101"
-export WEB_PORT="5757"
-
-# 是否安装 Nginx 反向代理
-export INSTALL_NGINX="true"
-
-# 是否启用 SSL
-export ENABLE_SSL="false"
-
-# 运行安装脚本
-sudo -E ./install.sh
-```
+> 注意：脚本以 **root 用户**运行服务（systemd `User=root`），目录/服务名固定为 `2rtk`，不通过环境变量自定义。
 
 #### 验证安装
 
@@ -147,7 +102,7 @@ sudo -E ./install.sh
 
 ```bash
 # 检查服务状态
-sudo systemctl status ntripcaster
+sudo systemctl status 2rtk
 
 # 检查端口监听
 sudo netstat -tlnp | grep :2101
@@ -172,7 +127,7 @@ wget -O - https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/uninstall.s
 
 1. **检查服务状态**：
    ```bash
-   sudo systemctl status ntripcaster
+   sudo systemctl status 2rtk
    ```
 
 2. **访问 Web 管理界面**：
@@ -281,33 +236,33 @@ sudo zypper install -y \
 
 ```bash
 # 创建专用用户
-sudo useradd -r -s /bin/false -d /opt/ntripcaster ntripcaster
+sudo useradd -r -s /bin/false -d /opt/2rtk 2rtk
 
 # 创建应用目录
-sudo mkdir -p /opt/ntripcaster
-sudo mkdir -p /var/log/ntripcaster
-sudo mkdir -p /etc/ntripcaster
+sudo mkdir -p /opt/2rtk
+sudo mkdir -p /var/log/2rtk
+sudo mkdir -p /etc/2rtk
 
 # 设置目录权限
-sudo chown -R ntripcaster:ntripcaster /opt/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /var/log/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
+sudo chown -R 2rtk:2rtk /opt/2rtk
+sudo chown -R 2rtk:2rtk /var/log/2rtk
+sudo chown -R 2rtk:2rtk /etc/2rtk
 ```
 
 ### 3. 下载和安装应用
 
 ```bash
 # 切换到应用目录
-cd /opt/ntripcaster
+cd /opt/2rtk
 
 # 下载源码
-sudo -u ntripcaster git clone https://github.com/Rampump/NTRIPcaster.git 
+sudo -u 2rtk git clone https://github.com/Rampump/NTRIPcaster.git 
 
 # 创建 Python 虚拟环境
-sudo -u ntripcaster python3 -m venv venv
+sudo -u 2rtk python3 -m venv venv
 
 # 激活虚拟环境并安装依赖
-sudo -u ntripcaster bash -c '
+sudo -u 2rtk bash -c '
     source venv/bin/activate
     pip install --upgrade pip setuptools wheel
     pip install -r requirements.txt
@@ -318,10 +273,10 @@ sudo -u ntripcaster bash -c '
 
 ```bash
 # 复制配置文件
-sudo -u ntripcaster cp config.ini.example /etc/ntripcaster/config.ini
+sudo -u 2rtk cp config.ini.example /etc/2rtk/config.ini
 
 # 编辑配置文件
-sudo nano /etc/ntripcaster/config.ini
+sudo nano /etc/2rtk/config.ini
 ```
 
 #### 主要配置项：
@@ -329,7 +284,7 @@ sudo nano /etc/ntripcaster/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.1.9
+version = 2.2.0
 description = Ntrip Caster
 author = 2rtk
 contact = your-email@example.com
@@ -337,41 +292,46 @@ website = https://your-domain.com
 
 [network]
 host = 0.0.0.0
-ntrip_port = 2101
-web_port = 5757
+max_connections = 5000
+
+[ntrip]
+port = 2101
+
+[web]
+port = 5757
 
 [database]
-path = /opt/ntripcaster/data/2rtk.db
+path = /opt/2rtk/data/2rtk.db
 
 [logging]
-log_dir = /var/log/ntripcaster
+log_dir = /var/log/2rtk
 log_level = INFO
-log_file = main.log
-log_format = %(asctime)s - %(name)s - %(levelname)s - %(message)s
-log_max_size = 10485760
-log_backup_count = 5
+main_log_file = main.log
+log_format = %%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s
+max_log_size = 10485760
+backup_count = 5
 
 [security]
 secret_key = $(openssl rand -hex 32)
-password_hash_rounds = 12
+password_hash_rounds = 3
 session_timeout = 3600
 ```
 
 ### 5. 生成密钥和初始化数据库
 
 ```bash
-# 生成安全密钥
+# 生成安全密钥（config.ini 的 secret_key 留空会自动生成，也可手动指定）
 SECRET_KEY=$(openssl rand -hex 32)
-sudo sed -i "s/your-secret-key-here/$SECRET_KEY/g" /etc/ntripcaster/config.ini
+sudo sed -i "s/^secret_key = *$/secret_key = $SECRET_KEY/" /etc/2rtk/config.ini
 
 # 创建数据目录
-sudo -u ntripcaster mkdir -p /opt/ntripcaster/data
+sudo -u 2rtk mkdir -p /opt/2rtk/data
 
-# 初始化数据库（如果应用支持）
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+# 初始化数据库（首次启动 main.py 会自动建表，无需手动初始化）
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
-    python -c "from src.database import init_db; init_db()"
+    python3 -c "from src.database import DatabaseManager; DatabaseManager().init_database()"
 '
 ```
 
@@ -379,7 +339,7 @@ sudo -u ntripcaster bash -c '
 
 ```bash
 # 创建服务文件
-sudo tee /etc/systemd/system/ntripcaster.service > /dev/null <<EOF
+sudo tee /etc/systemd/system/2rtk.service > /dev/null <<EOF
 [Unit]
 Description=NTRIP Caster Service
 After=network.target
@@ -387,12 +347,12 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=ntripcaster
-Group=ntripcaster
-WorkingDirectory=/opt/ntripcaster
-Environment=NTRIP_CONFIG_FILE=/etc/ntripcaster/config.ini
-Environment=PYTHONPATH=/opt/ntripcaster
-ExecStart=/opt/ntripcaster/venv/bin/python /opt/ntripcaster/main.py
+User=2rtk
+Group=2rtk
+WorkingDirectory=/opt/2rtk
+Environment=NTRIP_CONFIG_FILE=/etc/2rtk/config.ini
+Environment=PYTHONPATH=/opt/2rtk
+ExecStart=/opt/2rtk/venv/bin/python /opt/2rtk/main.py
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=10
@@ -404,7 +364,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/ntripcaster/data /var/log/ntripcaster /etc/ntripcaster
+ReadWritePaths=/opt/2rtk/data /var/log/2rtk /etc/2rtk
 
 # 资源限制
 LimitNOFILE=65536
@@ -472,29 +432,29 @@ sudo service iptables save
 可以通过环境变量覆盖配置文件设置：
 
 ```bash
-# 在 /etc/systemd/system/ntripcaster.service 中添加
+# 在 /etc/systemd/system/2rtk.service 中添加
 Environment=NTRIP_PORT=2101
 Environment=WEB_PORT=5757
-Environment=DEBUG_MODE=false
-Environment=DATABASE_PATH=/opt/ntripcaster/data/2rtk.db
-Environment=LOG_LEVEL=INFO
+Environment=DEBUG=false
+Environment=DATABASE_PATH=/opt/2rtk/data/2rtk.db
+Environment=LOG_DIR=/var/log/2rtk
 ```
 
 ### 日志配置
 
 ```bash
 # 配置 logrotate
-sudo tee /etc/logrotate.d/ntripcaster > /dev/null <<EOF
-/var/log/ntripcaster/*.log {
+sudo tee /etc/logrotate.d/2rtk > /dev/null <<EOF
+/var/log/2rtk/*.log {
     daily
     missingok
     rotate 30
     compress
     delaycompress
     notifempty
-    create 644 ntripcaster ntripcaster
+    create 644 2rtk 2rtk
     postrotate
-        systemctl reload ntripcaster
+        systemctl reload 2rtk
     endscript
 }
 EOF
@@ -506,48 +466,48 @@ EOF
 
 ```bash
 # 启动服务
-sudo systemctl start ntripcaster
+sudo systemctl start 2rtk
 
 # 停止服务
-sudo systemctl stop ntripcaster
+sudo systemctl stop 2rtk
 
 # 重启服务
-sudo systemctl restart ntripcaster
+sudo systemctl restart 2rtk
 
 # 重新加载配置
-sudo systemctl reload ntripcaster
+sudo systemctl reload 2rtk
 
 # 查看服务状态
-sudo systemctl status ntripcaster
+sudo systemctl status 2rtk
 
 # 设置开机自启
-sudo systemctl enable ntripcaster
+sudo systemctl enable 2rtk
 
 # 禁用开机自启
-sudo systemctl disable ntripcaster
+sudo systemctl disable 2rtk
 ```
 
 ### 日志查看
 
 ```bash
 # 查看服务日志
-sudo journalctl -u ntripcaster
+sudo journalctl -u 2rtk
 
 # 实时查看日志
-sudo journalctl -u ntripcaster -f
+sudo journalctl -u 2rtk -f
 
 # 查看应用日志
-sudo tail -f /var/log/ntripcaster/main.log
+sudo tail -f /var/log/2rtk/main.log
 
 # 查看错误日志
-sudo grep ERROR /var/log/ntripcaster/main.log
+sudo grep ERROR /var/log/2rtk/main.log
 ```
 
 ### 服务监控
 
 ```bash
 # 检查服务是否运行
-sudo systemctl is-active ntripcaster
+sudo systemctl is-active 2rtk
 
 # 检查端口监听
 sudo netstat -tlnp | grep -E ':(2101|5757)'
@@ -555,7 +515,7 @@ sudo netstat -tlnp | grep -E ':(2101|5757)'
 sudo ss -tlnp | grep -E ':(2101|5757)'
 
 # 检查进程
-sudo ps aux | grep ntripcaster
+sudo ps aux | grep 2rtk
 ```
 
 ## 常见问题
@@ -566,25 +526,25 @@ sudo ps aux | grep ntripcaster
 
 ```bash
 # 查看详细错误信息
-sudo journalctl -u ntripcaster -n 50
+sudo journalctl -u 2rtk -n 50
 
 # 检查配置文件语法
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
-    python -c "import configparser; c=configparser.ConfigParser(); c.read("/etc/ntripcaster/config.ini")"
+    python3 -c "import configparser; c=configparser.ConfigParser(); c.read("/etc/2rtk/config.ini")"
 '
 
 # 检查文件权限
-sudo ls -la /opt/ntripcaster/
-sudo ls -la /etc/ntripcaster/
-sudo ls -la /var/log/ntripcaster/
+sudo ls -la /opt/2rtk/
+sudo ls -la /etc/2rtk/
+sudo ls -la /var/log/2rtk/
 
 # 手动测试启动
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
-    NTRIP_CONFIG_FILE=/etc/ntripcaster/config.ini python main.py
+    NTRIP_CONFIG_FILE=/etc/2rtk/config.ini python3 main.py
 '
 ```
 
@@ -599,16 +559,16 @@ sudo lsof -i :5757
 sudo kill -9 <PID>
 
 # 或者修改配置文件中的端口
-sudo nano /etc/ntripcaster/config.ini
+sudo nano /etc/2rtk/config.ini
 ```
 
 ### Q3: 权限问题
 
 ```bash
 # 重新设置权限
-sudo chown -R ntripcaster:ntripcaster /opt/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /var/log/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
+sudo chown -R 2rtk:2rtk /opt/2rtk
+sudo chown -R 2rtk:2rtk /var/log/2rtk
+sudo chown -R 2rtk:2rtk /etc/2rtk
 
 # 检查 SELinux (CentOS/RHEL)
 sudo getenforce
@@ -619,8 +579,8 @@ sudo setsebool -P httpd_can_network_connect 1
 
 ```bash
 # 重新安装依赖
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
     pip install --upgrade pip
     pip install -r requirements.txt --force-reinstall
@@ -641,18 +601,19 @@ sudo apt install python3.11 python3.11-venv python3.11-dev
 
 ```bash
 # 检查数据库文件
-sudo ls -la /opt/ntripcaster/data/
+sudo ls -la /opt/2rtk/data/
 
-# 重新初始化数据库
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+# 重新初始化数据库（删除后重启服务会自动重建）
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
     rm -f data/2rtk.db
-    python -c "from src.database import init_db; init_db()"
 '
+# 重启服务，main.py 会自动建表
+sudo systemctl restart 2rtk
 
 # 检查数据库完整性
-sudo -u ntripcaster sqlite3 /opt/ntripcaster/data/2rtk.db "PRAGMA integrity_check;"
+sudo -u 2rtk sqlite3 /opt/2rtk/data/2rtk.db "PRAGMA integrity_check;"
 ```
 
 ## 性能优化
@@ -662,10 +623,10 @@ sudo -u ntripcaster sqlite3 /opt/ntripcaster/data/2rtk.db "PRAGMA integrity_chec
 ```bash
 # 优化文件描述符限制
 sudo tee -a /etc/security/limits.conf > /dev/null <<EOF
-ntripcaster soft nofile 65536
-ntripcaster hard nofile 65536
-ntripcaster soft nproc 4096
-ntripcaster hard nproc 4096
+2rtk soft nofile 65536
+2rtk hard nofile 65536
+2rtk soft nproc 4096
+2rtk hard nproc 4096
 EOF
 
 # 优化网络参数
@@ -685,7 +646,7 @@ sudo sysctl -p
 
 ### 2. 应用优化
 
-编辑配置文件 `/etc/ntripcaster/config.ini`：
+编辑配置文件 `/etc/2rtk/config.ini`：
 
 ```ini
 [performance]
@@ -716,35 +677,34 @@ buffer_size = 8192
 
 [tcp]
 # TCP Keep-Alive 设置
-keepalive_enable = true
+keepalive_enabled = true
 keepalive_idle = 600
 keepalive_interval = 60
 keepalive_count = 3
 
 # Socket 超时
 socket_timeout = 30
-connection_timeout = 10
 ```
 
 ### 3. 监控脚本
 
-创建监控脚本 `/opt/ntripcaster/monitor.sh`：
+创建监控脚本 `/opt/2rtk/monitor.sh`：
 
 ```bash
 #!/bin/bash
 
 # NTRIP Caster 监控脚本
 
-LOG_FILE="/var/log/ntripcaster/monitor.log"
-PID_FILE="/var/run/ntripcaster.pid"
+LOG_FILE="/var/log/2rtk/monitor.log"
+PID_FILE="/var/run/2rtk.pid"
 
 # 检查服务状态
 check_service() {
-    if ! systemctl is-active --quiet ntripcaster; then
+    if ! systemctl is-active --quiet 2rtk; then
         echo "$(date): NTRIP Caster service is not running, attempting to restart..." >> $LOG_FILE
-        systemctl start ntripcaster
+        systemctl start 2rtk
         sleep 5
-        if systemctl is-active --quiet ntripcaster; then
+        if systemctl is-active --quiet 2rtk; then
             echo "$(date): NTRIP Caster service restarted successfully" >> $LOG_FILE
         else
             echo "$(date): Failed to restart NTRIP Caster service" >> $LOG_FILE
@@ -765,7 +725,7 @@ check_ports() {
 
 # 检查内存使用
 check_memory() {
-    MEMORY_USAGE=$(ps -o pid,ppid,cmd,%mem --sort=-%mem -C python3 | grep ntripcaster | awk '{print $4}' | head -1)
+    MEMORY_USAGE=$(ps -o pid,ppid,cmd,%mem --sort=-%mem -C python3 | grep 2rtk | awk '{print $4}' | head -1)
     if [ ! -z "$MEMORY_USAGE" ] && (( $(echo "$MEMORY_USAGE > 80" | bc -l) )); then
         echo "$(date): High memory usage detected: ${MEMORY_USAGE}%" >> $LOG_FILE
     fi
@@ -783,12 +743,12 @@ echo "$(date): Monitor check completed" >> $LOG_FILE
 
 ```bash
 # 设置执行权限
-sudo chmod +x /opt/ntripcaster/monitor.sh
+sudo chmod +x /opt/2rtk/monitor.sh
 
 # 添加到 crontab
 sudo crontab -e
 # 添加以下行（每5分钟检查一次）
-*/5 * * * * /opt/ntripcaster/monitor.sh
+*/5 * * * * /opt/2rtk/monitor.sh
 ```
 
 ## 安全配置
@@ -799,36 +759,36 @@ sudo crontab -e
 
 ```bash
 # 创建证书目录
-sudo mkdir -p /etc/ntripcaster/ssl
+sudo mkdir -p /etc/2rtk/ssl
 
 # 生成私钥
-sudo openssl genrsa -out /etc/ntripcaster/ssl/server.key 2048
+sudo openssl genrsa -out /etc/2rtk/ssl/server.key 2048
 
 # 生成证书签名请求
-sudo openssl req -new -key /etc/ntripcaster/ssl/server.key -out /etc/ntripcaster/ssl/server.csr
+sudo openssl req -new -key /etc/2rtk/ssl/server.key -out /etc/2rtk/ssl/server.csr
 
 # 生成自签名证书
-sudo openssl x509 -req -days 365 -in /etc/ntripcaster/ssl/server.csr -signkey /etc/ntripcaster/ssl/server.key -out /etc/ntripcaster/ssl/server.crt
+sudo openssl x509 -req -days 365 -in /etc/2rtk/ssl/server.csr -signkey /etc/2rtk/ssl/server.key -out /etc/2rtk/ssl/server.crt
 
 # 设置权限
-sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster/ssl
-sudo chmod 600 /etc/ntripcaster/ssl/server.key
-sudo chmod 644 /etc/ntripcaster/ssl/server.crt
+sudo chown -R 2rtk:2rtk /etc/2rtk/ssl
+sudo chmod 600 /etc/2rtk/ssl/server.key
+sudo chmod 644 /etc/2rtk/ssl/server.crt
 ```
 
 #### 配置 Nginx 反向代理
 
 ```bash
 # 创建 Nginx 配置
-sudo tee /etc/nginx/sites-available/ntripcaster > /dev/null <<EOF
+sudo tee /etc/nginx/sites-available/2rtk > /dev/null <<EOF
 server {
     listen 80;
     listen 443 ssl http2;
     server_name your-domain.com;
 
     # SSL 配置
-    ssl_certificate /etc/ntripcaster/ssl/server.crt;
-    ssl_certificate_key /etc/ntripcaster/ssl/server.key;
+    ssl_certificate /etc/2rtk/ssl/server.crt;
+    ssl_certificate_key /etc/2rtk/ssl/server.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
@@ -860,7 +820,7 @@ server {
 EOF
 
 # 启用站点
-sudo ln -s /etc/nginx/sites-available/ntripcaster /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/2rtk /etc/nginx/sites-enabled/
 
 # 测试配置
 sudo nginx -t
@@ -877,19 +837,19 @@ sudo apt install fail2ban  # Debian/Ubuntu
 sudo yum install fail2ban  # CentOS/RHEL
 
 # 创建 fail2ban 配置
-sudo tee /etc/fail2ban/jail.d/ntripcaster.conf > /dev/null <<EOF
-[ntripcaster]
+sudo tee /etc/fail2ban/jail.d/2rtk.conf > /dev/null <<EOF
+[2rtk]
 enabled = true
 port = 2101,5757
-filter = ntripcaster
-logpath = /var/log/ntripcaster/main.log
+filter = 2rtk
+logpath = /var/log/2rtk/main.log
 maxretry = 5
 bantime = 3600
 findtime = 600
 EOF
 
 # 创建过滤规则
-sudo tee /etc/fail2ban/filter.d/ntripcaster.conf > /dev/null <<EOF
+sudo tee /etc/fail2ban/filter.d/2rtk.conf > /dev/null <<EOF
 [Definition]
 failregex = ^.*Authentication failed.*from <HOST>.*$
             ^.*Invalid credentials.*from <HOST>.*$
@@ -903,34 +863,34 @@ sudo systemctl restart fail2ban
 
 ### 3. 定期备份
 
-创建备份脚本 `/opt/ntripcaster/backup.sh`：
+创建备份脚本 `/opt/2rtk/backup.sh`：
 
 ```bash
 #!/bin/bash
 
 # NTRIP Caster 备份脚本
 
-BACKUP_DIR="/opt/backups/ntripcaster"
+BACKUP_DIR="/opt/backups/2rtk"
 DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="ntripcaster_backup_$DATE.tar.gz"
+BACKUP_FILE="2rtk_backup_$DATE.tar.gz"
 
 # 创建备份目录
 mkdir -p $BACKUP_DIR
 
 # 停止服务
-systemctl stop ntripcaster
+systemctl stop 2rtk
 
 # 创建备份
 tar -czf $BACKUP_DIR/$BACKUP_FILE \
-    /opt/ntripcaster \
-    /etc/ntripcaster \
-    /var/log/ntripcaster
+    /opt/2rtk \
+    /etc/2rtk \
+    /var/log/2rtk
 
 # 启动服务
-systemctl start ntripcaster
+systemctl start 2rtk
 
 # 删除30天前的备份
-find $BACKUP_DIR -name "ntripcaster_backup_*.tar.gz" -mtime +30 -delete
+find $BACKUP_DIR -name "2rtk_backup_*.tar.gz" -mtime +30 -delete
 
 echo "Backup completed: $BACKUP_DIR/$BACKUP_FILE"
 ```
@@ -939,12 +899,12 @@ echo "Backup completed: $BACKUP_DIR/$BACKUP_FILE"
 
 ```bash
 # 设置执行权限
-sudo chmod +x /opt/ntripcaster/backup.sh
+sudo chmod +x /opt/2rtk/backup.sh
 
 # 添加到 crontab（每天凌晨2点备份）
 sudo crontab -e
 # 添加以下行
-0 2 * * * /opt/ntripcaster/backup.sh
+0 2 * * * /opt/2rtk/backup.sh
 ```
 
 ## 卸载
@@ -953,24 +913,24 @@ sudo crontab -e
 
 ```bash
 # 停止并禁用服务
-sudo systemctl stop ntripcaster
-sudo systemctl disable ntripcaster
+sudo systemctl stop 2rtk
+sudo systemctl disable 2rtk
 
 # 删除服务文件
-sudo rm /etc/systemd/system/ntripcaster.service
+sudo rm /etc/systemd/system/2rtk.service
 sudo systemctl daemon-reload
 
 # 删除应用文件
-sudo rm -rf /opt/ntripcaster
-sudo rm -rf /etc/ntripcaster
-sudo rm -rf /var/log/ntripcaster
+sudo rm -rf /opt/2rtk
+sudo rm -rf /etc/2rtk
+sudo rm -rf /var/log/2rtk
 
 # 删除用户
-sudo userdel ntripcaster
+sudo userdel 2rtk
 
 # 删除 Nginx 配置（如果配置了）
-sudo rm /etc/nginx/sites-enabled/ntripcaster
-sudo rm /etc/nginx/sites-available/ntripcaster
+sudo rm /etc/nginx/sites-enabled/2rtk
+sudo rm /etc/nginx/sites-available/2rtk
 sudo systemctl restart nginx
 
 # 删除防火墙规则
@@ -982,8 +942,8 @@ sudo ufw delete allow 5757/tcp
 
 如果您在安装或使用过程中遇到问题，可以：
 
-1. **查看日志**: `sudo journalctl -u ntripcaster -f`
-2. **检查状态**: `sudo systemctl status ntripcaster`
+1. **查看日志**: `sudo journalctl -u 2rtk -f`
+2. **检查状态**: `sudo systemctl status 2rtk`
 3. **查看文档**: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
 4. **提交问题**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 5. **联系作者**: i@jia.by

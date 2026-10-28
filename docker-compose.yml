@@ -23,6 +23,10 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - TZ=Asia/Shanghai
       - NTRIP_CONFIG_FILE=/app/config/config.ini
+      # 数据库与日志必须落在持久卷内，否则 docker compose down/up 后用户、挂载点全部丢失
+      - DATABASE_PATH=/app/data/2rtk.db
+      - LOG_DIR=/app/logs
+      - DATA_DIR=/app/data
     networks:
       ntrip-network:
         ipv4_address: 172.20.0.10
@@ -109,7 +113,7 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'

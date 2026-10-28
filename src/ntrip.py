@@ -5,6 +5,7 @@ ntrip.py - NTRIP Caster主程序模块
 """
 
 import sys
+import re
 import time
 import socket
 import logging
@@ -25,9 +26,14 @@ from . import connection
 
 DEBUG = config.DEBUG
 VERSION = config.VERSION
-NTRIP_PORT = config.NTRIP_PORT
+# 注意：端口不在导入期缓存，统一在运行时读取 config.NTRIP_PORT，
+# 否则 load_from_env() 的环境变量覆盖对监听端口不生效。
 WEB_PORT = config.WEB_PORT
 BUFFER_SIZE = config.BUFFER_SIZE
+
+# 全局停止事件：worker 线程里的长驻循环（下载保活、上传接收）都监听它，
+# 关闭时置位即可让线程尽快退出，避免 thread_pool.shutdown(wait=True) 永久阻塞。
+SHUTDOWN_EVENT = threading.Event()
 
 
 class AntiSpamLogger:
@@ -72,6 +78,10 @@ CONNECTION_QUEUE_SIZE = config.CONNECTION_QUEUE_SIZE
 
 class NTRIPHandler:
     """NTRIP请求处理器"""
+    
+    # 挂载点名白名单：与 Web 端创建挂载点时的校验保持一致。
+    # 挂载点名直接来自请求路径，若不校验会原样进入在线列表并渲染到管理页面。
+    MOUNT_NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,50}$')
     
     def __init__(self, client_socket, client_address, db_manager):
         self.client_socket = client_socket
@@ -125,7 +135,19 @@ class NTRIPHandler:
             # 改为debug级别，避免频繁日志
             log_debug(f"=== 开始处理请求 {self.client_address} ===")
            
-            request_data = self.client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
+            # 循环读取直到拿到完整请求头：原来只 recv 一次，
+            # TCP 分段或客户端分两次写 "GET" + "Authorization" 时会解析失败返回 400
+            raw_request_bytes = b''
+            while b'\r\n\r\n' not in raw_request_bytes:
+                chunk = self.client_socket.recv(min(BUFFER_SIZE, 8192))
+                if not chunk:
+                    break
+                raw_request_bytes += chunk
+                if len(raw_request_bytes) > 16384:  # 请求头上限，防止恶意客户端撑爆内存
+                    log_debug(f"请求头超过 16KB，按非法请求处理: {self.client_address}")
+                    break
+            
+            request_data = raw_request_bytes.decode('utf-8', errors='ignore')
             if not request_data:
                 log_debug(f"客户端 {self.client_address} 发送空请求")
                 return
@@ -202,6 +224,11 @@ class NTRIPHandler:
            
             self._cleanup()
         except Exception as e:
+            # 关闭过程中 socket 会被主动 shutdown/close，这里不再是真正的异常，避免刷错误日志
+            if SHUTDOWN_EVENT.is_set():
+                log_debug(f"关闭过程中中断连接 {self.client_address}: {e}")
+                self._cleanup()
+                return
             log_error(f"处理请求异常 {self.client_address}: {e}", exc_info=True)
             self.send_error_response(500, "Internal Server Error")
            
@@ -350,6 +377,11 @@ class NTRIPHandler:
     
     def _determine_ntrip_version(self, headers, request_line):
         """确定NTRIP协议类型判断"""
+        
+        # 从请求行解析 path：下方按路径判断 2.0 的分支引用了 path，
+        # 原实现未定义该变量，只因前面的 user-agent 判断短路才没抛 NameError。
+        _parts = request_line.split()
+        path = _parts[1] if len(_parts) >= 2 else '/'
         
         if request_line.startswith(('SOURCE ', 'ADMIN ')):
             
@@ -573,13 +605,23 @@ class NTRIPHandler:
             # 统一处理挂载点名称，确保去除前导/
             mount_name = mount.lstrip('/')
             self.mount = mount_name
-            
+
+            # Digest 已彻底移除（只保留 Basic）：
+            # 库里存的是 PBKDF2 哈希，算不出客户端期望的 HA1，校验必然失败；
+            # 且旧实现不校验 nonce 时效，修好校验反而会引入重放面。
+            # 这里显式拒绝并给出可操作的提示，避免落到下面的"缺密码"分支里误导排查。
+            if auth_header and auth_header[:7].lower() == 'digest ':
+                message_key = f"digest_rejected_{self.client_address[0]}"
+                if anti_spam_logger.should_log(message_key):
+                    logger.log_warning(
+                        f"客户端使用 Digest 认证，服务端仅支持 Basic: {self.client_address}"
+                    )
+                return False, "Digest authentication is not supported, use Basic"
+
             if self.protocol_type == "ntrip1_0":
                 
                 if auth_header.startswith('Basic '):
                     return self._verify_basic_auth(mount, auth_header, request_type)
-                elif auth_header.startswith('Digest '):
-                    return self._verify_digest_auth(mount, auth_header, request_type)
                 elif hasattr(self, 'ntrip1_password') and self.ntrip1_password:
                    
                     mount_password = self.ntrip1_password
@@ -600,8 +642,6 @@ class NTRIPHandler:
             elif self.protocol_type == "ntrip1_0_http":
                  if auth_header.startswith('Basic '):
                      return self._verify_basic_auth(mount, auth_header, request_type)
-                 elif auth_header.startswith('Digest '):
-                     return self._verify_digest_auth(mount, auth_header, request_type)
                  else:
                      
                      if hasattr(self, 'ntrip1_password') and self.ntrip1_password:
@@ -638,8 +678,6 @@ class NTRIPHandler:
             elif self.protocol_type == "ntrip2_0":
                  if auth_header.startswith('Basic '):
                      return self._verify_basic_auth(mount, auth_header, request_type)
-                 elif auth_header.startswith('Digest '):
-                     return self._verify_digest_auth(mount, auth_header, request_type)
                  elif not auth_header and hasattr(self, 'ntrip1_password') and self.ntrip1_password:
                    
                      password = self.ntrip1_password
@@ -658,8 +696,6 @@ class NTRIPHandler:
             elif self.protocol_type == "rtsp":
                  if auth_header.startswith('Basic '):
                      return self._verify_basic_auth(mount, auth_header, request_type)
-                 elif auth_header.startswith('Digest '):
-                     return self._verify_digest_auth(mount, auth_header, request_type)
                  elif not auth_header and hasattr(self, 'ntrip1_password') and self.ntrip1_password:
 
                      password = self.ntrip1_password
@@ -752,98 +788,6 @@ class NTRIPHandler:
         except Exception as e:
             logger.log_error(f"Basic认证异常: {e}", exc_info=True)
             return False, "Authentication error"
-    
-    def _verify_digest_auth(self, mount, auth_header, request_type="upload"):
-        """验证Digest认证"""
-        try:
-            
-            mount_name = mount.lstrip('/')
-            
-            digest_params = self._parse_digest_auth(auth_header)
-            
-            if not digest_params:
-                return False, "Invalid digest format"
-            
-            username = digest_params.get('username')
-            if not username:
-                return False, "Missing username in digest"
-            
-            self.username = username
-            
-            stored_password = self.db_manager.get_user_password(username)
-            if not stored_password:
-                return False, "Invalid credentials"
-
-            if not self._validate_digest_response(digest_params, stored_password, mount_name):
-                return False, "Invalid digest response"
-
-            if request_type == "download":
-               
-                is_valid, error_msg = self.db_manager.verify_download_user(mount_name, username, stored_password)
-            else:
-                
-                if self.protocol_type == "ntrip2_0":
-                    
-                    is_valid, error_msg = self.db_manager.verify_mount_and_user(mount_name, username, stored_password, mount_password=None, protocol_version="2.0")
-                else:
-                    
-                    is_valid, error_msg = self.db_manager.verify_mount_and_user(mount_name, username, stored_password, mount_password=stored_password, protocol_version="1.0")
-            
-            if not is_valid:
-                return False, error_msg
-            
-            current_connections = connection.get_user_connection_count(username)
-            if current_connections >= MAX_CONNECTIONS_PER_USER:
-                return False, f"User connection limit exceeded (max: {MAX_CONNECTIONS_PER_USER})"
-            
-            return True, "Authentication successful"
-        except Exception as e:
-            logger.log_error(f"Digest认证异常: {e}", exc_info=True)
-            return False, "Authentication error"
-    
-    def _parse_digest_auth(self, auth_header):
-        """解析Digest认证头部"""
-        import re
-        
-        digest_pattern = r'(\w+)=(?:"([^"]*)"|([^,\s]*))'  
-        matches = re.findall(digest_pattern, auth_header[7:])
-        
-        params = {}
-        for match in matches:
-            key = match[0]
-            value = match[1] if match[1] else match[2]
-            params[key] = value
-        
-        return params
-    
-    def _validate_digest_response(self, params, password, uri):
-        """验证Digest响应"""
-        import hashlib
-        
-        try:
-            username = params.get('username')
-            realm = params.get('realm')
-            nonce = params.get('nonce')
-            response = params.get('response')
-            method = getattr(self, 'current_method', 'GET')
-            
-            if not all([username, realm, nonce, response]):
-                return False
-            
-            # HA1
-            ha1 = hashlib.md5(f"{username}:{realm}:{password}".encode()).hexdigest()
-            
-            # HA2
-            ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()
-            
-            
-            expected_response = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()
-            
-            return response.lower() == expected_response.lower()
-        except Exception:
-            return False
-    
-
     
     def handle_options(self, headers):
         """处理OPTIONS请求（CORS预检等）"""
@@ -1059,6 +1003,11 @@ a=control:*
                 self.send_error_response(400, "Missing mount point")
                 return
             
+            if not self.MOUNT_NAME_RE.match(mount):
+                logger.log_warning(f"拒绝非法挂载点名称 {self.client_address}: {mount[:50]!r}")
+                self.send_error_response(400, "Invalid mount point name")
+                return
+            
             self.mount = mount
              
             if connection.get_connection_manager().is_mount_online(mount):
@@ -1086,7 +1035,9 @@ a=control:*
             
             # 所有请求都必须通过完整的数据库验证，确保挂载点存在且密码正确
             auth_header = headers.get('authorization', '')
-            logger.log_info(f"handle_upload开始验证 {self.client_address}: mount={mount}, auth_header={auth_header[:50] if auth_header else 'None'}")
+            # 严禁打印 auth_header：Basic 的前 50 字符即完整 base64(用户名:密码)
+            auth_scheme = auth_header.split(' ', 1)[0] if auth_header else 'None'
+            logger.log_info(f"handle_upload开始验证 {self.client_address}: mount={mount}, auth_scheme={auth_scheme}")
             is_valid, message = self.verify_user(mount, auth_header)
             
             logger.log_info(f"handle_upload验证结果 {self.client_address}: is_valid={is_valid}, message={message}")
@@ -1121,7 +1072,15 @@ a=control:*
                 else:
                     logger.log_warning(f"挂载点 {mount} 添加到连接管理器失败: {message}")
             except Exception as e:
+                # 注册失败不能再回 200 开始收数据：那会让源站以为推流成功，
+                # 而管理页看不到挂载点、订阅端也拿不到数据，属于"静默失败"。
                 logger.log_error(f"添加挂载点 {mount} 到连接管理器时发生异常: {e}", exc_info=True)
+                self.send_error_response(500, "Failed to register mount point")
+                try:
+                    self.client_socket.close()
+                except Exception:
+                    pass
+                return
 
             self.send_upload_success_response()
             
@@ -1144,6 +1103,10 @@ a=control:*
                 return
             
             mount = path.lstrip('/')
+            if not self.MOUNT_NAME_RE.match(mount):
+                self.send_error_response(400, "Invalid mount point name")
+                return
+            
             self.mount = mount
 
             auth_header = next((v for k, v in headers.items() if k.lower() == 'authorization'), '')
@@ -1157,8 +1120,15 @@ a=control:*
                 self.send_error_response(404, "Mount point not found")
                 return
             
+            # 挂载点离线时直接返回 404，避免客户端连上后无限干等（NTRIP 规范行为）
+            if not connection.is_mount_online(mount):
+                logger.log_info(f"拒绝订阅离线挂载点 {mount} (客户端 {self.client_address[0]})")
+                self.send_error_response(404, "Mount point is offline")
+                return
+            
             # 添加到连接管理器
             connection_id = connection.add_user_connection(self.username, mount, self.client_address[0])
+            self.connection_id = connection_id
             
             # 添加客户端到转发器
             try:
@@ -1166,10 +1136,13 @@ a=control:*
                                                        self.user_agent, self.client_address, 
                                                        self.ntrip_version, connection_id)
                 if not self.client_info:
+                    # 计数器必须回滚，否则连接数会持续漂移并误触发限流
+                    connection.remove_user_connection(self.username, connection_id)
                     self.send_error_response(500, "Failed to add client")
                     return
             except Exception as e:
                 logger.log_error(f"添加客户端失败: {e}", exc_info=True)
+                connection.remove_user_connection(self.username, connection_id)
                 self.send_error_response(500, "Failed to add client")
                 return
             
@@ -1202,7 +1175,7 @@ a=control:*
     def _receive_rtcm_data(self, mount):
         """接收RTCM数据循环"""
         try:
-            while True:
+            while not SHUTDOWN_EVENT.is_set():
                 try:
                     data = self.client_socket.recv(BUFFER_SIZE)
                     if not data:
@@ -1212,32 +1185,50 @@ a=control:*
                     
                     forwarder.upload_data(mount, data)
 
-                    connection.get_connection_manager().update_mount_data_stats(mount, len(data))
+                    # 字节/包统计已由 forwarder.upload_data() 内部调用
+                    # connection.update_mount_data_stats() 完成，这里不能再记一次，
+                    # 否则 total_bytes / data_rate 会整整翻倍。
                     
+                except socket.timeout:
+                    # socket.timeout 是 OSError 子类，必须放在前面，否则上游静默超时会被直接断开
+                    logger.log_debug(f"挂载点 {mount} 数据接收超时", 'ntrip')
+                    continue
                 except OSError as e:
-                    
-                    if e.winerror == 10038:  #10038 
+                    # winerror 是 Windows 专有属性，Linux 上访问会抛 AttributeError
+                    if getattr(e, 'winerror', None) == 10038:  # 10038: socket 已被关闭
                         logger.log_debug(f"挂载点 {mount} socket已被关闭，停止接收数据", 'ntrip')
                     else:
                         logger.log_error(f"挂载点 {mount} socket错误: {e}", 'ntrip')
                     break
-                except socket.timeout:
-                    logger.log_debug(f"挂载点 {mount} 数据接收超时", 'ntrip')
-                    continue
         
         except Exception as e:
             logger.log_error(f"接收RTCM数据异常: {e}", exc_info=True)
         finally:
-            
+            # 记住本次连接对应的缓冲区对象：1.5 秒延迟清理期间源站可能已经重连，
+            # 若仍按名字直接 remove，就会把"新连接"的缓冲区和在线记录一起删掉
+            # （表现为：源站重连后管理页显示离线、订阅端数据断流）。
+            try:
+                dead_buffer = forwarder.get_forwarder().mount_buffers.get(mount)
+            except Exception:
+                dead_buffer = None
+
             def delayed_cleanup():
-                """延迟清理函数"""
+                """延迟清理函数（只清理本次连接遗留的状态）"""
                 try:
-                    forwarder.remove_mount_buffer(mount)
+                    current = forwarder.get_forwarder().mount_buffers.get(mount)
+                    if current is not None and current is dead_buffer:
+                        forwarder.remove_mount_buffer(mount)
+                    else:
+                        log_debug(f"挂载点 {mount} 已被新连接接管，跳过缓冲区清理")
                 except Exception as e:
                     logger.log_warning(f"清理转发器缓冲区失败: {e}", 'ntrip')
-                
+
                 try:
-                    connection.get_connection_manager().remove_mount_connection(mount)
+                    # 源站已重连时不能删掉新连接的在线记录
+                    if connection.get_connection_manager().is_mount_online(mount):
+                        log_debug(f"挂载点 {mount} 已重新上线，跳过在线记录清理")
+                    else:
+                        connection.get_connection_manager().remove_mount_connection(mount)
                 except Exception as e:
                     log_warning(f"清理挂载点连接失败: {e}")
                 
@@ -1258,11 +1249,16 @@ a=control:*
             self._cleanup()
     
     def _keep_connection_alive(self):
-        """保持下载连接活跃）"""
+        """保持下载连接活跃
+
+        除了检查 SO_ERROR，还要用 MSG_PEEK 探测对端是否已关闭：
+        客户端正常断开（FIN）不会触发 SO_ERROR，而 socket 在 add_client 里已设为
+        非阻塞，此时 recv 会立刻返回 b''。没有这一步时，只要挂载点段时间没有数据
+        下发，发送线程就不会发现连接已死，一条僵尸连接会一直占着一个工作线程。
+        """
         try:
-            
-            while True:
-                time.sleep(5)  
+            # 用 Event.wait 代替 sleep：关闭时能被立即唤醒，不再白等 5 秒
+            while not SHUTDOWN_EVENT.wait(5):
                 
                 if hasattr(self, 'client_info') and self.client_info:
                     
@@ -1270,6 +1266,16 @@ a=control:*
                         
                         self.client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                     except (OSError, AttributeError):
+                        break
+
+                    # 非阻塞 peek：b'' 表示对端已关闭；BlockingIOError 表示暂无数据（正常）
+                    try:
+                        if self.client_socket.recv(1, socket.MSG_PEEK) == b'':
+                            log_debug(f"下载连接已被对端关闭: {self.client_address}", 'ntrip')
+                            break
+                    except (BlockingIOError, InterruptedError):
+                        pass
+                    except (ConnectionResetError, ConnectionAbortedError, OSError):
                         break
                 else:
                     break
@@ -1312,7 +1318,7 @@ a=control:*
             
             if self.ntrip_version == "2.0":
                 # NTRIP 2.0格式 - 使用标准HTTP响应
-                current_time = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+                current_time = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
                 
                 # 构建HTTP响应头
                 response_lines = [
@@ -1329,13 +1335,13 @@ a=control:*
                 
                 response = '\r\n'.join(response_lines)
                 try:
-                    self.client_socket.send(response.encode('utf-8'))
+                    self.client_socket.sendall(response.encode('utf-8'))
                     log_debug(f"发送NTRIP 2.0格式挂载点列表到 {self.client_address}")
                 except Exception as e:
                     logger.log_error(f"发送NTRIP 2.0挂载点列表失败: {e}", exc_info=True)
             else:
                 # NTRIP 1.0格式 - 使用SOURCETABLE格式
-                current_time = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+                current_time = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
                 
                 response_lines = [
                     "SOURCETABLE 200 OK",
@@ -1353,7 +1359,7 @@ a=control:*
                 response = '\r\n'.join(response_lines)
                 log_debug(f"NTRIP 1.0响应内容: {repr(response[:200])}...")
                 try:
-                    self.client_socket.send(response.encode('utf-8'))
+                    self.client_socket.sendall(response.encode('utf-8'))
                     log_debug(f"发送NTRIP 1.0格式挂载点列表到 {self.client_address}")
                 except Exception as e:
                     logger.log_error(f"发送NTRIP 1.0挂载点列表失败: {e}", exc_info=True)
@@ -1374,45 +1380,42 @@ a=control:*
             # NTRIP 1.0格式
             try:
                 response = "ICY 200 OK\r\n\r\n"
-                self.client_socket.send(response.encode('utf-8'))
+                self.client_socket.sendall(response.encode('utf-8'))
             except Exception as e:
                 logger.log_error(f"发送上传成功响应失败: {e}", exc_info=True)
     
     def send_download_success_response(self):
-        """发送下载成功响应"""
+        """发送下载成功响应
+
+        NTRIP 2.0 采用「无 Content-Length、无 Transfer-Encoding 的裸字节流」，
+        由连接关闭界定消息边界（与主流 caster 一致，RTKLIB 等客户端按流读取）。
+        注意：既然走裸流，就绝不能再对数据做 chunked 包装。
+        """
         if self.ntrip_version == "2.0":
             self._send_response(
                 "HTTP/1.1 200 OK",
                 content_type="application/octet-stream",
-                additional_headers=["Connection: keep-alive"]
+                additional_headers=["Connection: keep-alive", "Cache-Control: no-store"]
             )
         else:
             # NTRIP 1.0格式 - 强制保持连接，忽略客户端的Connection: close
             try:
                 response = "ICY 200 OK\r\nConnection: keep-alive\r\n\r\n"
-                self.client_socket.send(response.encode('utf-8'))
+                self.client_socket.sendall(response.encode('utf-8'))
                 logger.log_debug(f"NTRIP 1.0下载响应已发送，保持长连接: {self.client_address}", 'ntrip')
             except Exception as e:
                 logger.log_error(f"发送下载成功响应失败: {e}", exc_info=True)
     
-    def send_auth_challenge(self, message="Authentication required", auth_type="both"):
-        """发送认证挑战"""
-        import secrets
-        import time
-        
-        # 生成nonce用于Digest认证
-        nonce = secrets.token_hex(16)
+    def send_auth_challenge(self, message="Authentication required"):
+        """发送认证挑战
+
+        只声明 Basic —— 本项目不再支持 Digest（实现已删除）。
+        原因：库里只存 PBKDF2 哈希，无法计算客户端期望的 HA1；旧实现的 nonce
+        也没有时效校验，一旦"修好"校验就会引入重放面。少一种方案不如明确一种。
+        """
         realm = "NTRIP"
-        
-        # 构建认证头
-        auth_headers = []
-        if auth_type in ["basic", "both"]:
-            auth_headers.append(f'WWW-Authenticate: Basic realm="{realm}"')
-        
-        if auth_type in ["digest", "both"]:
-            digest_header = f'WWW-Authenticate: Digest realm="{realm}", nonce="{nonce}", algorithm=MD5, qop="auth"'
-            auth_headers.append(digest_header)
-        
+        auth_headers = [f'WWW-Authenticate: Basic realm="{realm}"']
+
         if self.ntrip_version == "2.0":
             self._send_response(
                 "HTTP/1.1 401 Unauthorized",
@@ -1427,7 +1430,7 @@ a=control:*
                 for header in auth_headers:
                     response += f"{header}\r\n"
                 response += "\r\n"
-                self.client_socket.send(response.encode('utf-8'))
+                self.client_socket.sendall(response.encode('utf-8'))
             except Exception as e:
                 logger.log_error(f"发送认证挑战失败: {e}", exc_info=True)
     
@@ -1454,7 +1457,7 @@ a=control:*
             # NTRIP 1.0格式
             try:
                 response = f"ERROR {code} {message}\r\n\r\n"
-                self.client_socket.send(response.encode('utf-8'))
+                self.client_socket.sendall(response.encode('utf-8'))
             except Exception as e:
                 logger.log_error(f"发送错误响应失败: {e}", exc_info=True)
     
@@ -1498,7 +1501,9 @@ a=control:*
             if content_type:
                 headers.append(f"Content-Type: {content_type}")
             if content:
-                headers.append(f"Content-Length: {len(content)}")
+                # Content-Length 必须是字节数：中文响应按字符数计算会导致客户端提前截断、污染后续帧
+                body_bytes = content.encode('utf-8')
+                headers.append(f"Content-Length: {len(body_bytes)}")
             
             response += self._generate_standard_headers(headers + (additional_headers or []))
             response += "\r\n"
@@ -1506,9 +1511,12 @@ a=control:*
             if content:
                 response += content
             
-            self.client_socket.send(response.encode('utf-8'))
+            self.client_socket.sendall(response.encode('utf-8'))
             
         except Exception as e:
+            if SHUTDOWN_EVENT.is_set():
+                logger.log_debug(f"关闭过程中发送响应中断: {e}", 'ntrip')
+                return
             logger.log_error(f"发送响应失败: {e}", exc_info=True)
     
     def _cleanup(self):
@@ -1517,9 +1525,10 @@ a=control:*
             # print(f"\n>>> 连接清理开始 - IP: {self.client_address[0]}, 时间: {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
 
             if hasattr(self, 'username') and hasattr(self, 'mount'):
-                if hasattr(self, 'client_info'):  # 下载连接
-                    # print(f">>> 移除用户连接 - 用户: {self.username}, 挂载点: {self.mount}")
-                    connection.remove_user_connection(self.username, self.client_address[0], self.mount)
+                if hasattr(self, 'client_info') and self.client_info:  # 下载连接
+                    # 统一交给 forwarder 清理（幂等），内部按 connection_id 精确移除计数
+                    forwarder.remove_client(self.client_info)
+                    self.client_info = None
                 else:  # 上传连接
                     # 只有真正成功建立的挂载点连接才在断开时移除
                     if hasattr(self, 'mount_connection_established') and self.mount_connection_established:
@@ -1549,6 +1558,9 @@ class NTRIPCaster:
         self.connection_queue = Queue(maxsize=CONNECTION_QUEUE_SIZE)
         self.active_connections = 0
         self.connection_lock = threading.Lock()
+        # 正在处理中的客户端 socket 集合，关闭时用于强制打断阻塞的 recv/send
+        self.active_sockets = set()
+        self.active_sockets_lock = threading.Lock()
 
         self.total_connections = 0
         self.rejected_connections = 0
@@ -1559,7 +1571,7 @@ class NTRIPCaster:
             
             self._start_ntrip_server()
             
-            log_system_event(f'NTRIP服务器已启动，监听端口: {NTRIP_PORT}')
+            log_system_event(f'NTRIP服务器已启动，监听端口: {config.NTRIP_PORT}')
             
             self._main_loop()
         
@@ -1569,9 +1581,12 @@ class NTRIPCaster:
     
     def _start_ntrip_server(self):
         """启动NTRIP服务器"""
+        SHUTDOWN_EVENT.clear()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', NTRIP_PORT))
+        # 监听地址跟随配置（NTRIP_HOST 来自 network.host），便于只在内网/本机暴露
+        bind_host = getattr(config, 'NTRIP_HOST', '0.0.0.0') or '0.0.0.0'
+        self.server_socket.bind((bind_host, config.NTRIP_PORT))
         self.server_socket.listen(MAX_CONNECTIONS)
         self.running = True
         
@@ -1582,7 +1597,7 @@ class NTRIPCaster:
         
         self._start_connection_handler()
 
-        ntrip_urls = config.get_display_urls(NTRIP_PORT, "NTRIP服务器")
+        ntrip_urls = config.get_display_urls(config.NTRIP_PORT, "NTRIP服务器")
         if len(ntrip_urls) == 1:
             log_system_event(f'NTRIP服务器已启动，监听地址: {ntrip_urls[0]}')
         else:
@@ -1637,12 +1652,19 @@ class NTRIPCaster:
             try:
                 
                 client_socket, client_address = self.connection_queue.get(timeout=1.0)
-                
-                future = self.thread_pool.submit(self._handle_client_connection, client_socket, client_address)
 
+                # 先计数再提交：原来 submit 之后才 +=1，短连接可能在线程池里
+                # 已经跑完并执行了 -=1，计数器就永久漂到负数（在线数越跑越少）
                 with self.connection_lock:
                     self.active_connections += 1
-                
+
+                try:
+                    self.thread_pool.submit(self._handle_client_connection, client_socket, client_address)
+                except Exception:
+                    with self.connection_lock:
+                        self.active_connections -= 1
+                    raise
+
                 log_info(f"连接 {client_address} 已提交给线程池处理")
                 
             except Empty:
@@ -1653,6 +1675,8 @@ class NTRIPCaster:
     
     def _handle_client_connection(self, client_socket, client_address):
         """处理单个客户端连接"""
+        with self.active_sockets_lock:
+            self.active_sockets.add(client_socket)
         try:
             
             handler = NTRIPHandler(client_socket, client_address, self.db_manager)
@@ -1661,6 +1685,9 @@ class NTRIPCaster:
             log_error(f"处理客户端连接 {client_address} 时发生异常: {e}", exc_info=True)
         finally:
            
+            with self.active_sockets_lock:
+                self.active_sockets.discard(client_socket)
+            
             with self.connection_lock:
                 self.active_connections -= 1
             
@@ -1698,6 +1725,8 @@ class NTRIPCaster:
         log_system_event('正在关闭NTRIP服务器')
         
         self.running = False
+        # 置位全局停止事件：让下载保活循环、上传接收循环立即退出
+        SHUTDOWN_EVENT.set()
         
         if self.server_socket:
             try:
@@ -1705,10 +1734,42 @@ class NTRIPCaster:
             except:
                 pass
         
+        # 先关闭已建立的客户端/源站 socket，否则 worker 会阻塞在 recv/send 上，
+        # 后续 shutdown 必然等不到线程退出（原实现在这里永久卡死）
+        try:
+            forwarder.stop_forwarder()
+        except Exception as e:
+            log_error(f'停止数据转发器时出错: {e}')
+        
+        # 强制打断仍在 recv 的 worker（例如请求头还没发完的客户端）
+        with self.active_sockets_lock:
+            pending_sockets = list(self.active_sockets)
+        for sock in pending_sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        
         if self.thread_pool:
             logger.log_system_event("正在关闭线程池...")
             
-            self.thread_pool.shutdown(wait=True)
+            self.thread_pool.shutdown(wait=False)
+            
+            # 带超时的兜底等待，避免任何残留线程把进程卡死
+            timeout = float(getattr(config, 'SHUTDOWN_TIMEOUT', 10))
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                alive = [t for t in list(getattr(self.thread_pool, '_threads', []))
+                         if t is not None and t.is_alive()]
+                if not alive:
+                    break
+                time.sleep(0.2)
+            else:
+                log_warning(f"线程池仍有 {timeout:.0f}s 内未退出的线程，强制继续关闭")
             log_system_event("线程池已关闭")
         
         while not self.connection_queue.empty():

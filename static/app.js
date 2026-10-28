@@ -10,6 +10,18 @@ const socket = io({
 let currentPage = 'dashboard';
 let connectionStatus = 'connecting';
 
+// HTML 转义：所有来自服务端/上行的字符串（用户名、挂载点名、User-Agent、STR 内容）
+// 在拼进 innerHTML 之前都必须经过这里，否则构成存储型 XSS。
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // WebSocket connection status monitoring
 socket.on('connect', function() {
     connectionStatus = 'connected';
@@ -47,24 +59,35 @@ socket.on('reconnect_failed', function() {
 
 // Update connection status display
 function updateConnectionStatus() {
-    const statusElement = document.getElementById('connection-status');
-    if (statusElement) {
-        const statusText = {
-        'connecting': 'Connecting...',
-        'connected': 'Connected',
-        'disconnected': 'Disconnected',
-        'reconnecting': 'Reconnecting...',
-        'failed': 'Connection Failed'
-    };
-        const statusColor = {
-            'connecting': '#ffd93d',
-            'connected': '#00ff41',
-            'disconnected': '#ff6b6b',
-            'reconnecting': '#ffd93d',
-            'failed': '#ff6b6b'
-        };
-        statusElement.textContent = statusText[connectionStatus] || 'Unknown Status';
-        statusElement.style.color = statusColor[connectionStatus] || '#adb5bd';
+    const textKey = {
+        'connecting': 'rt.connecting',
+        'connected': 'rt.connected',
+        'disconnected': 'rt.disconnected',
+        'reconnecting': 'rt.reconnecting',
+        'failed': 'rt.failed'
+    }[connectionStatus];
+    const text = textKey ? t(textKey) : t('rt.unknown');
+
+    const label = document.getElementById('realtime-status');
+    if (label) {
+        label.textContent = text;
+        label.classList.toggle('is-offline',
+            connectionStatus === 'disconnected' || connectionStatus === 'failed');
+    }
+
+    const dot = document.getElementById('realtime-dot');
+    if (dot) {
+        // 断开后不再呼吸并转红，避免"看着还连着"
+        if (connectionStatus === 'connected') {
+            dot.classList.remove('waiting');
+            dot.style.background = '';
+        } else if (connectionStatus === 'connecting' || connectionStatus === 'reconnecting') {
+            dot.classList.add('waiting');
+            dot.style.background = '';
+        } else {
+            dot.classList.remove('waiting');
+            dot.style.background = 'var(--danger)';
+        }
     }
 }
 
@@ -111,6 +134,13 @@ function performNavigation(page) {
         mainContent.classList.remove('dashboard-layout');
     }
     
+    // 每次切换页面重置分页/搜索状态与绑定标记，确保列表从第一页、无过滤重新渲染
+    if (page === 'users' || page === 'mounts') {
+        delete paginationState[page];
+        delete searchState[page];
+        delete paginationBound[page === 'users' ? '#users-pagination' : '#mounts-pagination'];
+    }
+
     loadPageContent(page);
 }
 
@@ -130,7 +160,7 @@ async function checkLoginStatus() {
     try {
         const response = await fetch('/api/users');
         if (response.status === 401) {
-            showAlert('Login expired, please log in again', 'warning');
+            showAlert(t('err.loginExpired'), 'warning');
             window.location.href = '/login';
             return false;
         }
@@ -145,15 +175,18 @@ async function checkLoginStatus() {
 async function handleApiResponse(response, skipAuthRedirect = false) {
     if (response.status === 401) {
         if (!skipAuthRedirect) {
-            showAlert('Login expired, please log in again', 'warning');
+            showAlert(t('err.loginExpired'), 'warning');
             window.location.href = '/login';
         }
-        throw new Error('Unauthorized access');
+        // 用属性标记而不是比对文案：文案会随语言变化，比对字符串一定会漏
+        const authError = new Error(t('err.unauthorized'));
+        authError.isAuthError = true;
+        throw authError;
     }
     
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({ error: t('err.unknown') }));
+        throw new Error(localizeServerMessage(errorData.error) || `HTTP ${response.status}`);
     }
     
     return response.json();
@@ -183,6 +216,10 @@ async function loadPageContent(page) {
                 const users = await handleApiResponse(response);
                 // /api/users API already contains correct online status information, use directly
                 contentDiv.innerHTML = getUsersContent(users);
+                // 初始化分页渲染（首屏）
+                renderUsersPage();
+                // 绑定搜索过滤
+                bindSearchEvents('users', renderUsersPage);
                 break;
             case 'mounts':
                 // Ensure content panel is displayed on non-dashboard pages
@@ -191,6 +228,10 @@ async function loadPageContent(page) {
                 const mounts = await handleApiResponse(response);
                 // /api/mounts API already contains correct online status and connection count information, use directly
                 contentDiv.innerHTML = getMountsContent(mounts);
+                // 初始化分页渲染（首屏）
+                renderMountsPage();
+                // 绑定搜索过滤
+                bindSearchEvents('mounts', renderMountsPage);
                 break;
             case 'monitor':
                 // Ensure content panel is displayed on non-dashboard pages
@@ -215,7 +256,7 @@ async function loadPageContent(page) {
         }
     } catch (error) {
         // console.error('Failed to load page content:', error);
-        contentDiv.innerHTML = '<div class="error-message">Failed to load page content, please try again later.</div>';
+        contentDiv.innerHTML = `<div class="error-message">${escapeHtml(t('dash.loadFailed'))}</div>`;
     }
 }
 
@@ -234,7 +275,7 @@ function addInfoButtonsToSTRItems() {
             return;
         }
         
-        button.title = `View real-time RTCM parsing for ${mountName}`;
+        button.title = t('monitor.infoTitle', { name: mountName });
         
         button.addEventListener('click', () => {
             // Start RTCM parsing and update container content
@@ -317,12 +358,14 @@ function startRTCMParsing(mountName) {
             }, 1000);
         } else {
             console.error(`[前端] RTCM解析启动失败: ${data.error || 'Unknown error'}`);
-            showAlert(`Failed to start RTCM parsing: ${data.error || 'Unknown error'}`, 'error');
+            showAlert(t('monitor.rtcmStartFailed', {
+                error: localizeServerMessage(data.error) || t('err.unknown')
+            }), 'error');
         }
     })
     .catch(error => {
         console.error('[前端] 调用RTCM解析API失败:', error);
-        showAlert('Failed to call RTCM parsing API', 'error');
+        showAlert(t('monitor.rtcmApiFailed'), 'error');
     });
 }
 
@@ -431,7 +474,7 @@ function updateStationInfo(mountName) {
     const stationInfoDiv = document.getElementById('station-info');
     stationInfoDiv.innerHTML = `
         <div class="station-info-loading">
-            <p>Parsing RTCM data for ${mountName}...</p>
+            <p>${escapeHtml(t('monitor.rtcmParsing', { name: mountName }))}</p>
             <div class="loading-spinner"></div>
         </div>
     `;
@@ -442,45 +485,46 @@ function updateStationInfo(mountName) {
 // Display base station information
 function displayStationInfo(stationData) {
     const stationInfoDiv = document.getElementById('station-info');
+    const unknown = escapeHtml(t('common.unknown'));
     stationInfoDiv.innerHTML = `
         <div class="station-details">
             <!-- 第一行：基本信息 -->
             <div class="info-row-group">
                 <div class="info-row">
-                    <span class="info-label">Mount Point:</span>
-                    <span class="info-value" id="station-name">${stationData.name || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.mount'))}</span>
+                    <span class="info-value" id="station-name">${escapeHtml(stationData.name || t('common.unknown'))}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Station ID:</span>
-                    <span class="info-value" id="station-id">${stationData.id || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.id'))}</span>
+                    <span class="info-value" id="station-id">${escapeHtml(stationData.id || t('common.unknown'))}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Country:</span>
-                    <span class="info-value" id="station-country">${stationData.country_name || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.country'))}</span>
+                    <span class="info-value" id="station-country">${escapeHtml(stationData.country_name || stationData.country || t('common.unknown'))}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">City:</span>
-                    <span class="info-value" id="station-city">${stationData.city || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.city'))}</span>
+                    <span class="info-value" id="station-city">${escapeHtml(stationData.city || t('common.unknown'))}</span>
                 </div>
             </div>
             
             <!-- 第二行：设备信息 -->
             <div class="info-row-group">
                 <div class="info-row">
-                    <span class="info-label">Receiver Type:</span>
-                    <span class="info-value" id="receiver-type">${stationData.receiver?.name || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.receiverType'))}</span>
+                    <span class="info-value" id="receiver-type">${escapeHtml(stationData.receiver?.name || t('common.unknown'))}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Receiver Firmware:</span>
-                    <span class="info-value" id="receiver-version">${stationData.receiver?.firmware || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.receiverFw'))}</span>
+                    <span class="info-value" id="receiver-version">${escapeHtml(stationData.receiver?.firmware || t('common.unknown'))}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Antenna Type:</span>
-                    <span class="info-value" id="antenna-type">${stationData.antenna?.name || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.antennaType'))}</span>
+                    <span class="info-value" id="antenna-type">${escapeHtml(stationData.antenna?.name || t('common.unknown'))}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Antenna Serial:</span>
-                    <span class="info-value" id="antenna-serial">${stationData.antenna?.serial || 'Unknown'}</span>
+                    <span class="info-label">${escapeHtml(t('station.antennaSerial'))}</span>
+                    <span class="info-value" id="antenna-serial">${escapeHtml(stationData.antenna?.serial || t('common.unknown'))}</span>
                 </div>
             </div>
             
@@ -488,13 +532,13 @@ function displayStationInfo(stationData) {
             <div class="info-row-group coordinates-group">
                 <div class="coordinates-half">
                     <div class="info-row">
-                        <span class="info-label">Coordinates:</span>
-                        <span class="info-value">Longitude: <span id="station-longitude">${stationData.longitude || 0}</span>°, Latitude: <span id="station-latitude">${stationData.latitude || 0}</span>°, Height: <span id="station-height">${stationData.height || 'Unknown'}</span></span>
+                        <span class="info-label">${escapeHtml(t('station.coordinates'))}</span>
+                        <span class="info-value">${escapeHtml(t('station.longitude'))} <span id="station-longitude">${stationData.longitude || 0}</span>°, ${escapeHtml(t('station.latitude'))} <span id="station-latitude">${stationData.latitude || 0}</span>°, ${escapeHtml(t('station.height'))} <span id="station-height">${escapeHtml(String(stationData.height || unknown))}</span></span>
                     </div>
                 </div>
                 <div class="coordinates-half">
                     <div class="info-row">
-                        <span class="info-label">ECEF:</span>
+                        <span class="info-label">${escapeHtml(t('station.ecef'))}</span>
                         <span class="info-value" id="station-xyz">X: ${stationData.x || 0}, Y: ${stationData.y || 0}, Z: ${stationData.z || 0}</span>
                     </div>
                 </div>
@@ -900,11 +944,11 @@ function getFrequencyInfo(constellation, channel) {
     
     const mappedConstellation = constellationMap[constellation];
     if (!mappedConstellation || !frequencyMap[mappedConstellation] || !channel) {
-        return { band: 'Unknown', freq: 'Unknown' };
+        return { band: t('common.unknown'), freq: t('common.unknown') };
     }
     
     const freqInfo = frequencyMap[mappedConstellation][channel];
-    return freqInfo || { band: 'Unknown', freq: 'Unknown' };
+    return freqInfo || { band: t('common.unknown'), freq: t('common.unknown') };
 }
 
 
@@ -953,7 +997,7 @@ function createConstellationContainer(constellation) {
     constellationDiv.id = `constellation-${constellation}`;
     
     constellationDiv.innerHTML = `
-        <h5 class="constellation-title">${constellation}</h5>
+        <h5 class="constellation-title">${escapeHtml(constellation)}</h5>
         <div class="satellite-chart" id="chart-${constellation}"></div>
     `;
     
@@ -1016,42 +1060,30 @@ function updateConstellationChart(constellation, satellites) {
     chartContainer.innerHTML = '';
     
     const activeSatellites = Object.values(satelliteData[constellation]);
-    const satelliteCount = activeSatellites.length;
     
-    
-    const containerWidth = chartContainer.offsetWidth || 300; 
-    const minBarWidth = 20; 
-    const maxBarWidth = 60; 
-    const spacing = 5; 
-    
-    let barWidth = Math.floor((containerWidth - (satelliteCount - 1) * spacing) / satelliteCount);
-    barWidth = Math.max(minBarWidth, Math.min(maxBarWidth, barWidth));
+    // 柱子统一由 .satellite-chart 的 flex 布局横向排列，这里不再用 inline-block / marginRight，
+    // 避免卫星被逐行换行堆成竖排、把页面拉长。
+    const barWidth = 30;
     
     activeSatellites.forEach(satellite => {
         const barContainer = document.createElement('div');
         barContainer.className = 'satellite-bar-container';
-        barContainer.style.width = `${barWidth}px`;
-        barContainer.style.marginRight = `${spacing}px`;
-        barContainer.style.display = 'inline-block';
-        barContainer.style.verticalAlign = 'bottom';
         
         const bar = document.createElement('div');
         bar.className = 'satellite-bar';
         bar.style.height = `${Math.max(satellite.signalStrength * 2, 10)}px`;
         bar.style.backgroundColor = getSignalColor(satellite.signalStrength);
-        bar.style.width = '100%';
+        bar.style.width = `${barWidth}px`;
         
         const label = document.createElement('div');
         label.className = 'satellite-label';
         label.textContent = satellite.name;
-        label.style.fontSize = barWidth < 30 ? '10px' : '12px'; 
-        label.style.textAlign = 'center';
+        label.style.width = `${barWidth}px`;
         
         const strength = document.createElement('div');
         strength.className = 'satellite-strength';
         strength.textContent = satellite.signalStrength;
-        strength.style.fontSize = barWidth < 30 ? '9px' : '11px';
-        strength.style.textAlign = 'center';
+        strength.style.width = `${barWidth}px`;
         
         
         barContainer.addEventListener('mouseenter', (e) => {
@@ -1075,12 +1107,6 @@ function updateConstellationChart(constellation, satellites) {
         barContainer.appendChild(label);
         chartContainer.appendChild(barContainer);
     });
-    
-    
-    const lastBar = chartContainer.lastElementChild;
-    if (lastBar) {
-        lastBar.style.marginRight = '0';
-    }
     
     
 }
@@ -1113,13 +1139,13 @@ function showSatelliteTooltip(event, satellite, constellation) {
     const tooltip = document.createElement('div');
     tooltip.className = 'satellite-tooltip';
     tooltip.innerHTML = `
-        <div><strong>${satellite.name}</strong></div>
-        <div>Signal Strength: ${satellite.signalStrength} dBHz</div>
-                    <div>Elevation: ${satellite.elevation}°</div>
-                    <div>Azimuth: ${satellite.azimuth}°</div>
-                    <div>Band: ${freqInfo.band}</div>
-                    <div>Frequency: ${freqInfo.freq}</div>
-                    <div>Channel: ${satellite.channel || 'Unknown'}</div>
+        <div><strong>${escapeHtml(satellite.name)}</strong></div>
+        <div>${escapeHtml(t('sat.signal'))} ${satellite.signalStrength} dBHz</div>
+                    <div>${escapeHtml(t('sat.elevation'))} ${satellite.elevation}°</div>
+                    <div>${escapeHtml(t('sat.azimuth'))} ${satellite.azimuth}°</div>
+                    <div>${escapeHtml(t('sat.band'))} ${freqInfo.band}</div>
+                    <div>${escapeHtml(t('sat.frequency'))} ${freqInfo.freq}</div>
+                    <div>${escapeHtml(t('sat.channel'))} ${escapeHtml(satellite.channel || t('common.unknown'))}</div>
     `;
     
     tooltip.style.cssText = `
@@ -1186,376 +1212,392 @@ function hideSatelliteTooltip() {
 
 
 function getDashboardContent() {
+    const L = (key) => escapeHtml(t(key));
     return `
         <div class="page-header">
-            <h3>System Status</h3>
-            <div class="dashboard-timestamp" id="dashboard-timestamp">Loading...</div>
+            <h3>${L('dash.title')}</h3>
+            <div class="dashboard-timestamp" id="dashboard-timestamp">${L('common.loading')}</div>
         </div>
-        
-        <!-- 系统概览卡片 -->
+
         <div class="dashboard-cards">
             <div class="dashboard-card">
-                <div class="card-icon">⏰</div>
+                <div class="card-icon"><i class="fas fa-clock"></i></div>
                 <div class="card-content">
-                    <div class="card-title">Uptime</div>
-                    <div class="card-value" id="system-uptime">-</div>
+                    <div class="card-title">${L('dash.uptime')}</div>
+                    <div class="card-value" id="system-uptime">–</div>
                 </div>
             </div>
-            
+
             <div class="dashboard-card">
-                <div class="card-icon">⚡</div>
+                <div class="card-icon"><i class="fas fa-broadcast-tower"></i></div>
                 <div class="card-content">
-                    <div class="card-title">CPU Usage</div>
-                    <div class="card-value" id="system-cpu">-</div>
+                    <div class="card-title">${L('dash.onlineMounts')}</div>
+                    <div class="card-value" id="dashboard-active-mounts">–</div>
                 </div>
             </div>
-            
+
             <div class="dashboard-card">
-                <div class="card-icon">📈</div>
+                <div class="card-icon"><i class="fas fa-users"></i></div>
                 <div class="card-content">
-                    <div class="card-title">Memory Usage</div>
-                    <div class="card-value" id="system-memory">-</div>
-                    <div class="card-detail" id="system-memory-detail">-</div>
+                    <div class="card-title">${L('dash.onlineUsers')}</div>
+                    <div class="card-value" id="dashboard-online-users">–</div>
+                    <div class="card-detail" id="dashboard-user-connections">–</div>
                 </div>
             </div>
-            
+
             <div class="dashboard-card">
-                <div class="card-icon">📻</div>
+                <div class="card-icon"><i class="fas fa-database"></i></div>
                 <div class="card-content">
-                    <div class="card-title">Network Bandwidth</div>
-                    <div class="card-value" id="system-bandwidth">-</div>
+                    <div class="card-title">${L('dash.dataTransfer')}</div>
+                    <div class="card-value" id="total-data">–</div>
                 </div>
             </div>
         </div>
-        
-        <!-- 连接统计 -->
-        <div class="dashboard-section">
-            <h4>Connection Statistics</h4>
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <span class="stat-label">Active Connections:</span>
-                    <span class="stat-value" id="active-connections">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Max Connections:</span>
-                    <span class="stat-value" id="max-connections">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Total Connections:</span>
-                    <span class="stat-value" id="total-connections">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Rejected Connections:</span>
-                    <span class="stat-value" id="rejected-connections">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Online Mount Points:</span>
-                    <span class="stat-value" id="total-mounts">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">User Connections:</span>
-                    <span class="stat-value" id="total-users">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Data Transfer:</span>
-                    <span class="stat-value" id="total-data">-</span>
-                </div>
-            </div>
-        </div>
-        
-        <!-- 挂载点详情 -->
-        <div class="dashboard-section">
-            <h4>Mount Point Details</h4>
+
+        <section class="dashboard-section">
+            <h4><i class="fas fa-microchip"></i> ${L('dash.runtime')}</h4>
+            <dl class="kv">
+                <dt>${L('dash.cpu')}</dt>
+                <dd class="kv-value" id="system-cpu">–</dd>
+                <dt>${L('dash.memory')}</dt>
+                <dd class="kv-value"><span id="system-memory">–</span><span class="card-detail" id="system-memory-detail"></span></dd>
+                <dt>${L('dash.network')}</dt>
+                <dd class="kv-value" id="system-bandwidth">–</dd>
+                <dt>${L('dash.activeConnections')}</dt>
+                <dd class="kv-value" id="active-connections">–</dd>
+                <dt>${L('dash.maxConcurrent')}</dt>
+                <dd class="kv-value" id="max-connections">–</dd>
+                <dt>${L('dash.totalConnections')}</dt>
+                <dd class="kv-value" id="total-connections">–</dd>
+                <dt>${L('dash.rejected')}</dt>
+                <dd class="kv-value" id="rejected-connections">–</dd>
+                <dt>${L('dash.onlineMountPoints')}</dt>
+                <dd class="kv-value" id="total-mounts">–</dd>
+                <dt>${L('dash.userConnections')}</dt>
+                <dd class="kv-value" id="total-users">–</dd>
+            </dl>
+        </section>
+
+        <section class="dashboard-section">
+            <h4><i class="fas fa-list"></i> ${L('dash.mountDetails')}</h4>
             <div class="mounts-container" id="mounts-detail">
-                <div class="loading-text">Loading...</div>
+                <div class="loading-text">${L('common.loading')}</div>
+            </div>
+        </section>
+    `;
+}
+
+// ============ 客户端分页（列表数据量大时避免整页拉长） ============
+// 分页状态：key 为列表类型（users / mounts），value 为 { page, pageSize }
+const paginationState = {};
+
+// 计算分页页码序列（带省略号，最多展示 7 个页码节点）
+function buildPageList(current, total) {
+    if (total <= 7) {
+        const list = [];
+        for (let i = 1; i <= total; i++) list.push(i);
+        return list;
+    }
+    const pages = [1];
+    if (current > 3) pages.push('...');
+    const start = Math.max(2, current - 1);
+    const end = Math.min(total - 1, current + 1);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (current < total - 2) pages.push('...');
+    pages.push(total);
+    return pages;
+}
+
+// 生成分页条 HTML。参数：listKey 列表类型、page 当前页、pageSize 每页条数、total 总条数
+function renderPaginationBar(listKey, page, pageSize, total) {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const L = (key) => escapeHtml(t(key));
+    const infoText = `${L('common.total')} ${total} · ${L('common.page')} ${page}/${totalPages}`;
+    const pageNodes = buildPageList(page, totalPages).map(p => {
+        if (p === '...') return `<span class="pagination-ellipsis">…</span>`;
+        const active = p === page ? ' active' : '';
+        return `<button type="button" class="pagination-num${active}" data-goto="${p}" data-list="${listKey}">${p}</button>`;
+    }).join('');
+
+    return `
+        <div class="pagination-bar" data-scope="${listKey}">
+            <span class="pagination-info">${infoText}</span>
+            <div class="pagination-controls">
+                <button type="button" class="btn btn-sm pagination-prev" data-list="${listKey}" data-page="${page}" ${page <= 1 ? 'disabled' : ''}>${L('common.prev')}</button>
+                <div class="pagination-page-nums">${pageNodes}</div>
+                <button type="button" class="btn btn-sm pagination-next" data-list="${listKey}" data-page="${page}" ${page >= totalPages ? 'disabled' : ''}>${L('common.next')}</button>
+                <span class="pagination-size">
+                    ${L('common.perPage')}
+                    <select class="pagination-size-select" data-list="${listKey}">
+                        <option value="20" ${pageSize === 20 ? 'selected' : ''}>20</option>
+                        <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
+                        <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
+                    </select>
+                </span>
             </div>
         </div>
-        
-        <style>
-        .dashboard-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        
-        .dashboard-card {
-            background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.85));
-            backdrop-filter: blur(15px);
-            border-radius: 15px;
-            padding: 1.2rem;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            position: relative;
-            overflow: hidden;
-            animation: fadeInUp 0.6s ease-out;
-        }
-        
-        .dashboard-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
-            transition: left 0.6s ease;
-        }
-        
-        .dashboard-card:hover::before {
-            left: 100%;
-        }
-        
-        .dashboard-card:hover {
-            transform: translateY(-8px) scale(1.02);
-            box-shadow: 0 15px 50px rgba(0, 0, 0, 0.15), 0 5px 20px rgba(0, 0, 0, 0.1);
-        }
-        
-        .card-icon {
-            font-size: 1.8em;
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            animation: pulse 2s ease-in-out infinite;
-        }
-        
-        .card-content {
-            flex: 1;
-            position: relative;
-            z-index: 1;
-        }
-        
-        .card-title {
-            font-size: 0.8rem;
-            color: #555;
-            margin-bottom: 0.5rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 600;
-        }
-        
-        .card-value {
-            font-size: 1.4rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #333, #555);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            transition: all 0.3s ease;
-        }
-        
-        .dashboard-card:hover .card-value {
-            transform: scale(1.1);
-        }
-        
-        .card-detail {
-            font-size: 0.8em;
-            color: #888;
-            margin-top: 2px;
-        }
-        
-        .dashboard-section {
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .dashboard-section h4 {
-            margin: 0 0 15px 0;
-            color: #333;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-        }
-        
-        .stat-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 4px;
-        }
-        
-        .stat-label {
-            color: #666;
-        }
-        
-        .stat-value {
-            font-weight: bold;
-            color: #333;
-        }
-        
-        .mounts-container {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .mount-item {
-            background: #f8f9fa;
-            border-radius: 4px;
-            padding: 15px;
-            margin-bottom: 10px;
-            border-left: 4px solid #007bff;
-        }
-        
-        .mount-name {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 5px;
-        }
-        
-        .mount-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 10px;
-            font-size: 0.9em;
-            color: #666;
-        }
-        
-        .dashboard-timestamp {
-            color: #666;
-            font-size: 0.9em;
-        }
-        
-        .loading-text {
-            text-align: center;
-            color: #666;
-            padding: 20px;
-        }
-        </style>
     `;
+}
+
+// 已绑定的分页容器选择器集合，避免重复绑定
+const paginationBound = {};
+
+// 绑定分页条事件：委托到分页容器上（翻页后内部分页条重建，委托不失效）
+function bindPaginationEvents(listKey, renderFn) {
+    const containerSel = listKey === 'users' ? '#users-pagination' : '#mounts-pagination';
+    if (paginationBound[containerSel]) return;
+    const container = document.querySelector(containerSel);
+    if (!container) return;
+    paginationBound[containerSel] = true;
+
+    container.addEventListener('click', function (e) {
+        const prevBtn = e.target.closest('.pagination-prev');
+        const nextBtn = e.target.closest('.pagination-next');
+        const numBtn = e.target.closest('.pagination-num');
+        if (prevBtn) {
+            if (prevBtn.disabled) return;
+            paginationState[listKey].page -= 1;
+            renderFn();
+        } else if (nextBtn) {
+            if (nextBtn.disabled) return;
+            paginationState[listKey].page += 1;
+            renderFn();
+        } else if (numBtn) {
+            paginationState[listKey].page = parseInt(numBtn.getAttribute('data-goto'), 10);
+            renderFn();
+        }
+    });
+
+    container.addEventListener('change', function (e) {
+        const sel = e.target.closest('.pagination-size-select');
+        if (sel) {
+            paginationState[listKey].pageSize = parseInt(sel.value, 10);
+            paginationState[listKey].page = 1;
+            renderFn();
+        }
+    });
+}
+
+// 通用分页渲染：slice 当前页数据后交给 rowRenderer 生成 <tr>，替换 tbody 并刷新分页条
+function renderPaginatedRows(listKey, items, rowRenderer, tbodySelector, paginationTargetSelector, emptyText) {
+    const state = paginationState[listKey] || { page: 1, pageSize: 20 };
+    paginationState[listKey] = state;
+    const total = items.length;
+    const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+    if (state.page > totalPages) state.page = totalPages;
+    const start = (state.page - 1) * state.pageSize;
+
+    const tbody = document.querySelector(tbodySelector);
+    if (tbody) {
+        if (total === 0 && emptyText) {
+            tbody.innerHTML = `<tr><td colspan="10" class="empty-cell">${escapeHtml(emptyText)}</td></tr>`;
+        } else {
+            tbody.innerHTML = items.slice(start, start + state.pageSize).map(rowRenderer).join('');
+        }
+    }
+
+    const pagTarget = document.querySelector(paginationTargetSelector);
+    if (pagTarget) {
+        pagTarget.innerHTML = total === 0 ? '' : renderPaginationBar(listKey, state.page, state.pageSize, total);
+    }
+}
+
+// ============ 列表搜索过滤（纯前端，数据已全量缓存，无需后端/数据库） ============
+// 搜索关键字状态：key 为列表类型，value 为关键字字符串
+const searchState = {};
+
+// 根据关键字过滤列表：前缀匹配排最前，包含匹配居中，其余剔除。
+// 返回过滤后的新数组（不改变原缓存），空关键字返回原数组。
+function filterByKeyword(list, keyword, keyFn) {
+    const kw = (keyword || '').trim().toLowerCase();
+    if (!kw) return list;
+    const starts = [];
+    const contains = [];
+    for (const item of list) {
+        const text = String(keyFn(item) || '').toLowerCase();
+        if (!text) continue;
+        if (text.startsWith(kw)) {
+            starts.push(item);
+        } else if (text.includes(kw)) {
+            contains.push(item);
+        }
+    }
+    return starts.concat(contains);
+}
+
+// 绑定搜索框事件：输入时 debounce 过滤 + 重置到第 1 页 + 重渲染
+function bindSearchEvents(listKey, renderFn) {
+    const input = document.querySelector(`#${listKey}-search-input`);
+    const clearBtn = document.querySelector(`#${listKey}-search-clear`);
+    if (!input) return;
+
+    let timer = null;
+    input.addEventListener('input', function () {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            searchState[listKey] = input.value;
+            // 搜索变化后重置到第一页
+            if (paginationState[listKey]) paginationState[listKey].page = 1;
+            if (clearBtn) clearBtn.classList.toggle('hidden', !input.value);
+            renderFn();
+        }, 150);
+    });
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', function () {
+            input.value = '';
+            searchState[listKey] = '';
+            if (paginationState[listKey]) paginationState[listKey].page = 1;
+            clearBtn.classList.add('hidden');
+            renderFn();
+        });
+    }
+}
+
+// 渲染用户列表当前页（首屏及翻页复用）
+function renderUsersPage() {
+    const filtered = filterByKeyword(window._usersCache || [], searchState['users'], u => u.username);
+    renderPaginatedRows('users', filtered, userRowRenderer, '#users-tbody', '#users-pagination', t('monitor.noData'));
+    bindPaginationEvents('users', renderUsersPage);
+}
+
+// 渲染挂载点列表当前页（首屏及翻页复用）
+function renderMountsPage() {
+    const filtered = filterByKeyword(window._mountsCache || [], searchState['mounts'], m => m.mount);
+    renderPaginatedRows('mounts', filtered, mountRowRenderer, '#mounts-tbody', '#mounts-pagination', t('monitor.noData'));
+    bindPaginationEvents('mounts', renderMountsPage);
 }
 
 // user
 function getUsersContent(users) {
-    let usersHtml = users.map(user => {
-        //两种方式 API获取和socket推送 可以备用
-        const isOnline = user.online !== undefined ? user.online : (window.onlineUsers && (user.username in window.onlineUsers));
-        const statusHtml = isOnline ? 
-            '<span style="color: #28a745; font-weight: bold;">● Online</span>' : 
-            '<span style="color: #6c757d;">○ Offline</span>';
-        return `
-            <tr class="user-row" data-username="${user.username}">
-                <td>${user.username}</td>
-                <td class="user-status">${statusHtml}</td>
-                <td>${user.connection_count || 0}</td>
-                <td>${user.connect_time || '-'}</td>
-                <td>
-                    <button class="btn btn-primary btn-sm edit-user-btn" data-username="${user.username}">Edit</button>
-                    <button class="btn btn-danger btn-sm delete-user-btn" data-username="${user.username}">Delete</button>
-                </td>
-            </tr>
-        `;
-    }).join('');
-    
-    
-    setTimeout(() => {
-        
-        document.querySelectorAll('.edit-user-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const username = this.getAttribute('data-username');
-                editUser(username);
-            });
-        });
-        
-        
-        document.querySelectorAll('.delete-user-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const username = this.getAttribute('data-username');
-                // console.log('Delete button clicked for user:', username);
-                deleteUser(username);
-            });
-        });
-    }, 0);
-    
+    // 缓存原始数据，供翻页时重渲染
+    window._usersCache = users || [];
+    const L = (key) => escapeHtml(t(key));
+
     return `
         <div class="page-header">
-            <h3>User Management</h3>
-            <button onclick="showAddUserForm()" class="btn btn-primary">Add User</button>
+            <h3>${L('users.title')}</h3>
+            <button onclick="showAddUserForm()" class="btn btn-primary">${L('users.add')}</button>
+        </div>
+        <div class="list-toolbar">
+            <div class="list-search">
+                <i class="fas fa-search search-icon" aria-hidden="true"></i>
+                <input type="text" id="users-search-input" placeholder="${L('common.searchPlaceholder')}" autocomplete="off" maxlength="50">
+                <button type="button" class="search-clear hidden" id="users-search-clear" aria-label="${L('common.searchClear')}">
+                    <i class="fas fa-times" aria-hidden="true"></i>
+                </button>
+            </div>
         </div>
         <div class="table-container">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Username</th>
-                        <th>Status</th>
-                        <th>Connections</th>
-                        <th>Connect Time</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${usersHtml}
-                </tbody>
-            </table>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>${L('users.col.username')}</th>
+                            <th>${L('users.col.status')}</th>
+                            <th>${L('users.col.connections')}</th>
+                            <th>${L('users.col.connectTime')}</th>
+                            <th>${L('users.col.actions')}</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-tbody"></tbody>
+                </table>
+            </div>
         </div>
+        <div id="users-pagination" class="pagination-wrap"></div>
+    `;
+}
+
+// 单行用户渲染（供分页切片后调用）
+function userRowRenderer(user) {
+    const onlineHtml = `<span class="status-online">● ${escapeHtml(t('users.online'))}</span>`;
+    const offlineHtml = `<span class="status-offline">○ ${escapeHtml(t('users.offline'))}</span>`;
+    const isOnline = user.online !== undefined ? user.online : (window.onlineUsers && (user.username in window.onlineUsers));
+    const statusHtml = isOnline ? onlineHtml : offlineHtml;
+    const L = (key) => escapeHtml(t(key));
+    return `
+        <tr class="user-row" data-username="${escapeHtml(user.username)}">
+            <td>${escapeHtml(user.username)}</td>
+            <td class="user-status">${statusHtml}</td>
+            <td>${escapeHtml(user.connection_count || 0)}</td>
+            <td>${escapeHtml(user.connect_time || '-')}</td>
+            <td>
+                <button class="btn btn-primary btn-sm edit-user-btn" data-username="${escapeHtml(user.username)}">${L('common.edit')}</button>
+                <button class="btn btn-danger btn-sm delete-user-btn" data-username="${escapeHtml(user.username)}">${L('common.delete')}</button>
+            </td>
+        </tr>
     `;
 }
 
 // 挂载点管理内容
 function getMountsContent(mounts) {
-    let mountsHtml = mounts.map(mount => {
-        // 优先使用从API获取的在线状态，如果没有则使用WebSocket数据
-        const isOnline = mount.active !== undefined ? mount.active : (window.onlineMounts && (mount.mount in window.onlineMounts));
-        const statusHtml = isOnline ? 
-            '<span style="color: #28a745; font-weight: bold;">● Online</span>' : 
-            '<span style="color: #6c757d;">○ Offline</span>';
-        return `
-            <tr class="mount-row" data-mount="${mount.mount}">
-                <td>${mount.mount}</td>
-                <td class="mount-status">${statusHtml}</td>
-                <td>${mount.connections || 0}</td>
-                <td>${mount.username || 'Unspecified'}</td>
-                <td>${mount.description || '-'}</td>
-                <td>
-                    <button onclick="editMount('${mount.mount}')" class="btn btn-primary btn-sm">Edit</button>
-                    <button onclick="deleteMount('${mount.mount}')" class="btn btn-danger btn-sm">Delete</button>
-                </td>
-            </tr>
-        `;
-    }).join('');
-    
+    window._mountsCache = mounts || [];
+    const L = (key) => escapeHtml(t(key));
+
     return `
         <div class="page-header">
-            <h3>Mount Point Management</h3>
-            <button onclick="showAddMountForm()" class="btn btn-primary">Add Mount Point</button>
+            <h3>${L('mounts.title')}</h3>
+            <button onclick="showAddMountForm()" class="btn btn-primary">${L('mounts.add')}</button>
+        </div>
+        <div class="list-toolbar">
+            <div class="list-search">
+                <i class="fas fa-search search-icon" aria-hidden="true"></i>
+                <input type="text" id="mounts-search-input" placeholder="${L('common.searchPlaceholder')}" autocomplete="off" maxlength="50">
+                <button type="button" class="search-clear hidden" id="mounts-search-clear" aria-label="${L('common.searchClear')}">
+                    <i class="fas fa-times" aria-hidden="true"></i>
+                </button>
+            </div>
         </div>
         <div class="table-container">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Mount Point</th>
-                        <th>Status</th>
-                        <th>Connections</th>
-                        <th>Owner</th>
-                        <th>Description</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${mountsHtml}
-                </tbody>
-            </table>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>${L('mounts.col.mount')}</th>
+                            <th>${L('mounts.col.status')}</th>
+                            <th>${L('mounts.col.connections')}</th>
+                            <th>${L('mounts.col.owner')}</th>
+                            <th>${L('mounts.col.description')}</th>
+                            <th>${L('mounts.col.actions')}</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mounts-tbody"></tbody>
+                </table>
+            </div>
         </div>
+        <div id="mounts-pagination" class="pagination-wrap"></div>
+    `;
+}
+
+// 单行挂载点渲染（供分页切片后调用）
+function mountRowRenderer(mount) {
+    const onlineHtml = `<span class="status-online">● ${escapeHtml(t('users.online'))}</span>`;
+    const offlineHtml = `<span class="status-offline">○ ${escapeHtml(t('users.offline'))}</span>`;
+    const isOnline = mount.active !== undefined ? mount.active : (window.onlineMounts && (mount.mount in window.onlineMounts));
+    const statusHtml = isOnline ? onlineHtml : offlineHtml;
+    const L = (key) => escapeHtml(t(key));
+    return `
+        <tr class="mount-row" data-mount="${escapeHtml(mount.mount)}">
+            <td>${escapeHtml(mount.mount)}</td>
+            <td class="mount-status">${statusHtml}</td>
+            <td>${escapeHtml(mount.connections || 0)}</td>
+            <td>${escapeHtml(mount.username || t('common.unspecified'))}</td>
+            <td>${escapeHtml(mount.description || '-')}</td>
+            <td>
+                <button onclick="editMount('${escapeHtml(mount.mount)}')" class="btn btn-primary btn-sm">${L('common.edit')}</button>
+                <button onclick="deleteMount('${escapeHtml(mount.mount)}')" class="btn btn-danger btn-sm">${L('common.delete')}</button>
+            </td>
+        </tr>
     `;
 }
 
 // RTCM监控内容
 function getMonitorContent() {
+    const L = (key) => escapeHtml(t(key));
     return `
         <div class="page-header">
-            <h3><i class="fas fa-satellite-dish"></i> Base Station STR Information</h3>
-            <p class="page-subtitle">Real-time monitoring of NTRIP data streams and base station status</p>
+            <h3><i class="fas fa-satellite-dish"></i> ${L('monitor.title')}</h3>
+            <p class="page-subtitle">${L('monitor.subtitle')}</p>
         </div>
         
         <div class="monitor-dashboard">
@@ -1564,27 +1606,27 @@ function getMonitorContent() {
                 <!-- STR数据表 - 全宽 -->
                 <div class="monitor-card full-width">
                     <div class="card-header">
-                        <h4><i class="fas fa-table"></i> STR Data Table</h4>
+                        <h4><i class="fas fa-table"></i> ${L('monitor.strTable')}</h4>
                     </div>
                     <div class="card-content" id="str-data">
-                        <p class="loading-text"><i class="fas fa-spinner fa-spin"></i> Loading STR table data...</p>
+                        <p class="loading-text"><i class="fas fa-spinner fa-spin"></i> ${L('monitor.strLoading')}</p>
                     </div>
                 </div>
 
                 <!-- 基准站信息 - 全宽 -->
                 <div class="monitor-card full-width">
                     <div class="card-header">
-                        <h4><i class="fas fa-broadcast-tower"></i> Base Station Information</h4>
+                        <h4><i class="fas fa-broadcast-tower"></i> ${L('monitor.stationInfo')}</h4>
                         <div class="card-status" id="station-status">
                             <span class="status-dot waiting"></span>
-                            <span>Waiting for selection</span>
+                            <span>${L('monitor.waitSelect')}</span>
                         </div>
                     </div>
                     <div class="card-content">
                         <div id="station-info" class="station-info-container">
                             <div class="empty-state">
                                 <i class="fas fa-mouse-pointer"></i>
-                                <p>Please click the INFO button in the STR table to select a mount point</p>
+                                <p>${L('monitor.selectHint')}</p>
                             </div>
                         </div>
                     </div>
@@ -1593,18 +1635,18 @@ function getMonitorContent() {
                 <!-- 基准站位置 - 全宽 -->
                 <div class="monitor-card full-width">
                     <div class="card-header">
-                        <h4><i class="fas fa-map-marker-alt"></i> Base Station Location</h4>
+                        <h4><i class="fas fa-map-marker-alt"></i> ${L('monitor.stationLocation')}</h4>
                     </div>
                     <div class="card-content map-content">
                         <div id="map-container" class="map-container">
                             <div id="map" class="map-display"></div>
                             <div class="map-overlay" id="map-loading">
                                 <i class="fas fa-map"></i>
-                                <p>Waiting for location data...</p>
+                                <p>${L('monitor.waitLocation')}</p>
                             </div>
                             <div id="map-switch" class="map-switch-floating">
-                                <button id="amap-btn" class="btn btn-sm btn-primary">高德地图</button>
-                                <button id="osm-btn" class="btn btn-sm btn-secondary">OpenStreetMap</button>
+                                <button id="amap-btn" class="btn btn-sm btn-primary">${L('monitor.mapAmap')}</button>
+                                <button id="osm-btn" class="btn btn-sm btn-secondary">${L('monitor.mapOsm')}</button>
                             </div>
                         </div>
                     </div>
@@ -1613,17 +1655,17 @@ function getMonitorContent() {
                 <!-- 卫星数据可视化 - 全宽 -->
                 <div class="monitor-card full-width">
                     <div class="card-header">
-                        <h4><i class="fas fa-satellite"></i> Satellite Data Visualization</h4>
+                        <h4><i class="fas fa-satellite"></i> ${L('monitor.satViz')}</h4>
                         <div class="card-status" id="satellite-status">
                             <span class="status-dot waiting"></span>
-                            <span>Waiting for data</span>
+                            <span>${L('monitor.waitData')}</span>
                         </div>
                     </div>
                     <div class="card-content">
                         <div id="satellite-container" class="satellite-container">
                             <div class="empty-state">
                                 <i class="fas fa-satellite-dish"></i>
-                                <p>Waiting for satellite data...</p>
+                                <p>${L('monitor.waitSat')}</p>
                             </div>
                         </div>
                     </div>
@@ -1635,28 +1677,40 @@ function getMonitorContent() {
 
 // settings
 function getSettingsContent() {
+    const L = (key) => escapeHtml(t(key));
+    const P = (key) => escapeHtml(t(key)); // 占位符同 t()
     return `
         <div class="page-header">
-            <h3>System Settings</h3>
+            <h3><i class="fas fa-sliders-h"></i> ${L('settings.title')}</h3>
         </div>
         <div class="settings-container">
-            <div class="settings-section">
-                <h4>Security Settings</h4>
+            <section class="settings-section">
+                <h4><i class="fas fa-shield-alt"></i> ${L('settings.security')}</h4>
                 <div class="form-group">
-                    <label for="admin-password">New Password:</label>
-                    <input type="password" id="admin-password" placeholder="Enter new password" class="form-control">
+                    <label for="admin-password">${L('settings.newPassword')}</label>
+                    <input type="password" id="admin-password" class="form-control"
+                           placeholder="${P('ph.newPassword')}" maxlength="100" autocomplete="new-password"
+                           data-validate="alnum" data-min="6" data-max="100" data-label="${L('field.newPassword')}">
                 </div>
                 <div class="form-group">
-                    <label for="confirm-password">Confirm Password:</label>
-                    <input type="password" id="confirm-password" placeholder="Enter password again" class="form-control">
+                    <label for="confirm-password">${L('settings.confirmPassword')}</label>
+                    <input type="password" id="confirm-password" class="form-control"
+                           placeholder="${P('ph.repeatPassword')}" maxlength="100" autocomplete="new-password"
+                           data-validate="alnum" data-min="6" data-max="100" data-label="${L('field.confirmPassword')}">
                 </div>
-                <button onclick="changePassword()" class="btn btn-primary">Change Admin Password</button>
-            </div>
+                <div class="field-hint">${L('settings.passwordHint')}</div>
+                <div class="form-actions" style="justify-content: flex-start; margin-top: 12px;">
+                    <button onclick="changePassword()" class="btn btn-primary">${L('settings.changePassword')}</button>
+                </div>
+            </section>
 
-            <div class="settings-section">
-                <h4>System Control</h4>
-                <button onclick="restartProgram()" class="btn btn-warning" style="background-color: #f39c12; border-color: #f39c12;">Restart Program</button>
-            </div>
+            <section class="settings-section">
+                <h4><i class="fas fa-power-off"></i> ${L('settings.systemControl')}</h4>
+                <div class="field-hint" style="margin-bottom: 12px;">
+                    ${L('settings.restartHint')}
+                </div>
+                <button onclick="restartProgram()" class="btn btn-warning">${L('settings.restart')}</button>
+            </section>
         </div>
     `;
 }
@@ -1767,10 +1821,10 @@ socket.on('rtcm_realtime_data', function(data) {
                         
                         
                         const rtcmSatellites = data.sats.map(sat => ({
-                            name: sat.id || sat.prn || 'Unknown',
+                            name: sat.id || sat.prn || t('common.unknown'),
                             signalStrength: sat.snr || sat.signal_strength || 0,
                             frequency: sat.frequency || 0,
-                            channel: sat.signal_type || 'Unknown'
+                            channel: sat.signal_type || t('common.unknown')
                         }));
                         
                         
@@ -1818,18 +1872,18 @@ socket.on('rtcm_realtime_data', function(data) {
                     // 如果还是空状态，先创建基础结构
                     // console.log('[地理信息调试] 检测到empty-state，创建基础结构');
                     const stationData = {
-                        name: data.mount_name || data.mount || 'Unknown',
-                        id: data.station_id || 'Unknown',
-                        country: data.country || 'Unknown',
-                        city: data.city || 'Unknown',
+                        name: data.mount_name || data.mount || t('common.unknown'),
+                        id: data.station_id || t('common.unknown'),
+                        country: data.country || t('common.unknown'),
+                        city: data.city || t('common.unknown'),
                         latitude: data.lat || 0,
                         longitude: data.lon || 0,
-                        height: data.height || 'Unknown',
+                        height: data.height || t('common.unknown'),
                         x: data.x || 0,
                         y: data.y || 0,
                         z: data.z || 0,
-                        receiver: { name: 'Unknown', firmware: 'Unknown' },
-                        antenna: { name: 'Unknown', serial: 'Unknown' }
+                        receiver: { name: t('common.unknown'), firmware: t('common.unknown') },
+                        antenna: { name: t('common.unknown'), serial: t('common.unknown') }
                     };
                     // console.log('[地理信息调试] 准备显示基准站信息:', stationData);
                     displayStationInfo(stationData);
@@ -1882,7 +1936,7 @@ socket.on('rtcm_realtime_data', function(data) {
                     // country
                     if (data.country || data.country_name) {
                         // console.log('[地理信息调试] 更新国家:', data.country_name || data.country);
-                        updateElement('station-country', data.country_name || 'Unknown');
+                        updateElement('station-country', data.country_name || t('common.unknown'));
                     }
                     
                     // city
@@ -1950,39 +2004,30 @@ function updateElement(id, value) {
 
 function updateSystemStats(stats) {
     if (!stats) return;
-    
-    const timestamp = new Date().toLocaleString('zh-CN');
-    updateElement('dashboard-timestamp', `Last Updated: ${timestamp}`);
-    
+
+    updateElement('dashboard-timestamp',
+        t('dash.updated', { time: new Date().toLocaleTimeString() }));
+
     if (stats.uptime !== undefined) {
         updateElement('system-uptime', formatUptime(stats.uptime));
     }
-    
+
     if (stats.cpu_percent !== undefined) {
-        updateElement('system-cpu', `${stats.cpu_percent.toFixed(1)}%`);
+        updateElement('system-cpu', `${Number(stats.cpu_percent).toFixed(1)}%`);
     }
-    
+
     if (stats.memory) {
-        const memUsed = (stats.memory.used / (1024 * 1024 * 1024)).toFixed(1);
-        const memTotal = (stats.memory.total / (1024 * 1024 * 1024)).toFixed(1);
-        const memPercent = stats.memory.percent.toFixed(1);
-        updateElement('system-memory', `${memPercent}%`);
-        updateElement('system-memory-detail', `${memUsed}GB / ${memTotal}GB`);
+        const memUsed = (stats.memory.used / 1073741824).toFixed(1);
+        const memTotal = (stats.memory.total / 1073741824).toFixed(1);
+        updateElement('system-memory', `${Number(stats.memory.percent).toFixed(1)}%`);
+        updateElement('system-memory-detail', ` · ${memUsed} / ${memTotal} GB`);
     }
-    
+
     if (stats.network_bandwidth) {
-        const bandwidth = stats.network_bandwidth;
-        let bandwidthText = '';
-        if (bandwidth.sent_rate || bandwidth.recv_rate) {
-            const sent = formatBytes(bandwidth.sent_rate);
-            const recv = formatBytes(bandwidth.recv_rate);
-            bandwidthText = `↑${sent}/s ↓${recv}/s`;
-        } else {
-            bandwidthText = '0 B/s';
-        }
-        updateElement('system-bandwidth', bandwidthText);
+        const sent = formatBytes(stats.network_bandwidth.sent_rate || 0);
+        const recv = formatBytes(stats.network_bandwidth.recv_rate || 0);
+        updateElement('system-bandwidth', `↑${sent}/s ↓${recv}/s`);
     }
-    
 
     if (stats.connections) {
         const conn = stats.connections;
@@ -1991,20 +2036,36 @@ function updateSystemStats(stats) {
         updateElement('total-connections', conn.total || 0);
         updateElement('rejected-connections', conn.rejected || 0);
     }
-    
-    if (stats.mounts) {
-        updateElement('total-mounts', Object.keys(stats.mounts).length);
-        updateMountDetails(stats.mounts);
-    }
-    
-    if (stats.users) {
-        updateElement('total-users', Object.keys(stats.users).length);
-    }
-    
+
+    // 计数口径以后端 counts 为准：mounts=在线挂载点，users=在线账号，
+    // connections=在线连接。老版本没有 counts，才退回自己数数组长度。
+    const counts = stats.counts || {};
+    const mountList = stats.mounts || [];
+    const userList = stats.users || [];
+    const mountCount = counts.mounts !== undefined
+        ? counts.mounts
+        : (Array.isArray(mountList) ? mountList.length : Object.keys(mountList).length);
+    const connCount = counts.connections !== undefined
+        ? counts.connections
+        : (Array.isArray(userList) ? userList.length : Object.keys(userList).length);
+    const userCount = counts.users !== undefined
+        ? counts.users
+        : new Set((Array.isArray(userList) ? userList : Object.values(userList))
+            .map(u => u && u.username).filter(Boolean)).size;
+
+    updateElement('total-mounts', mountCount);
+    updateElement('dashboard-active-mounts', mountCount);
+    updateElement('total-users', connCount);
+    updateElement('dashboard-online-users', userCount);
+    updateElement('dashboard-user-connections',
+        t(connCount === 1 ? 'dash.connectionOne' : 'dash.connections', { n: connCount }));
+
     if (stats.data_transfer) {
-        const transfer = stats.data_transfer;
-        const totalData = formatBytes(transfer.total_bytes || 0);
-        updateElement('total-data', totalData);
+        updateElement('total-data', formatBytes(stats.data_transfer.total_bytes || 0));
+    }
+
+    if (mountList) {
+        updateMountDetails(mountList);
     }
 }
 
@@ -2041,35 +2102,39 @@ async function fetchSystemStats() {
 function updateMountDetails(mounts) {
     const container = document.getElementById('mounts-detail');
     if (!container) return;
-    
-    if (!mounts || mounts.length === 0) {
-        container.innerHTML = '<div class="loading-text">No mount point data available</div>';
+
+    // 后端历史上有时给数组、有时给 {name: info}，两种都接住
+    const list = Array.isArray(mounts) ? mounts : Object.values(mounts || {});
+
+    if (list.length === 0) {
+        container.innerHTML = `<div class="empty-state"><i class="fas fa-satellite-dish"></i><p>${escapeHtml(t('dash.noMounts'))}</p></div>`;
         return;
     }
-    
-    const mountsHtml = mounts.map(mount => {
-        const mountName = mount.mount_name || 'Unknown';
+
+    const mountsHtml = list.map(mount => {
+        const mountName = mount.mount_name || mount.mount || t('common.unknown');
         const userCount = mount.user_count || 0;
         const dataCount = mount.data_count || 0;
-        const uptime = mount.uptime || 0;
+        const bytes = mount.total_bytes || 0;
+        const rate = mount.data_rate || 0;
+        const uptimeStr = formatUptime(mount.uptime || 0);
         const status = mount.status || 'unknown';
-        
-        // time
-        const uptimeStr = formatUptime(uptime);
-        
+
         return `
             <div class="mount-item">
-                <div class="mount-name">${mountName}</div>
+                <div class="mount-name">${escapeHtml(mountName)}</div>
                 <div class="mount-stats">
-                    <div>👤 ${userCount} Users</div>
-            <div>📈 ${dataCount} Data Packets</div>
-                    <div>⏱️ ${uptimeStr}</div>
-                    <div>⚙️ ${status}</div>
+                    <span><i class="fas fa-user"></i> ${escapeHtml(String(userCount))}</span>
+                    <span><i class="fas fa-box"></i> ${escapeHtml(String(dataCount))}</span>
+                    <span><i class="fas fa-database"></i> ${escapeHtml(formatBytes(bytes))}</span>
+                    <span><i class="fas fa-tachometer-alt"></i> ${escapeHtml(formatBytes(rate))}/s</span>
+                    <span><i class="fas fa-clock"></i> ${escapeHtml(uptimeStr)}</span>
+                    <span class="mount-status">${escapeHtml(status)}</span>
                 </div>
             </div>
         `;
     }).join('');
-    
+
     container.innerHTML = mountsHtml;
 }
 
@@ -2095,7 +2160,9 @@ function formatUptime(seconds) {
 
 // 
 function updateOnlineStatus() {
-    
+    const onlineHtml = `<span class="status-online">● ${escapeHtml(t('users.online'))}</span>`;
+    const offlineHtml = `<span class="status-offline">○ ${escapeHtml(t('users.offline'))}</span>`;
+
     if (currentPage === 'users') {
         const userRows = document.querySelectorAll('.user-row');
         userRows.forEach(row => {
@@ -2104,9 +2171,7 @@ function updateOnlineStatus() {
             if (statusElement) {
                 if (window.onlineUsers) {
                     const isOnline = username in window.onlineUsers;
-                    statusElement.innerHTML = isOnline ? 
-                        '<span style="color: #28a745; font-weight: bold;">● Online</span>' : 
-                        '<span style="color: #6c757d;">○ Offline</span>';
+                    statusElement.innerHTML = isOnline ? onlineHtml : offlineHtml;
                 }
             }
         });
@@ -2122,9 +2187,7 @@ function updateOnlineStatus() {
                 
                 if (window.onlineMounts) {
                     const isOnline = mountName in window.onlineMounts;
-                    statusElement.innerHTML = isOnline ? 
-                        '<span style="color: #28a745; font-weight: bold;">● Online</span>' : 
-                        '<span style="color: #6c757d;">○ Offline</span>';
+                    statusElement.innerHTML = isOnline ? onlineHtml : offlineHtml;
                 }
             }
         });
@@ -2161,15 +2224,15 @@ function updateMonitorData() {
         const strDataElement = document.getElementById('str-data');
         if (strDataElement) {
             if (Object.keys(window.strData).length === 0) {
-                strDataElement.innerHTML = '<div class="empty-state"><i class="fas fa-table"></i><p>No STR table data available</p></div>';
+                strDataElement.innerHTML = `<div class="empty-state"><i class="fas fa-table"></i><p>${escapeHtml(t('monitor.strEmpty'))}</p></div>`;
             } else {
                 let strHtml = '';
                 Object.entries(window.strData).forEach(([mountName, strContent]) => {
                     strHtml += `
                         <div class="str-row">
-                            <button class="str-info-btn" data-mount="${mountName}">INFO</button>
+                            <button class="str-info-btn" data-mount="${escapeHtml(mountName)}">${escapeHtml(t('monitor.info'))}</button>
                             <div class="str-content-wrapper">
-                                <div class="str-content-inline">${strContent || 'No data available'}</div>
+                                <div class="str-content-inline">${escapeHtml(strContent) || escapeHtml(t('monitor.noData'))}</div>
                             </div>
                         </div>
                     `;
@@ -2187,7 +2250,7 @@ function updateMonitorData() {
 function refreshSTRData() {
     const strContainer = document.getElementById('str-data');
     if (strContainer) {
-        strContainer.innerHTML = '<p class="loading-text"><i class="fas fa-spinner fa-spin"></i> Refreshing STR table data...</p>';
+        strContainer.innerHTML = `<p class="loading-text"><i class="fas fa-spinner fa-spin"></i> ${escapeHtml(t('monitor.strRefreshing'))}</p>`;
     }
     
     
@@ -2201,7 +2264,7 @@ function updateMonitorStatus(systemStatus) {
     
     const connectionStatus = document.getElementById('connection-status-monitor');
     if (connectionStatus) {
-        connectionStatus.textContent = socket && socket.connected ? 'Connected' : 'Disconnected';
+        connectionStatus.textContent = socket && socket.connected ? t('rt.connected') : t('rt.disconnected');
     }
     
     
@@ -2226,10 +2289,10 @@ function updateStationStatus(hasData) {
         
         if (hasData) {
             statusDot.className = 'status-dot online';
-            statusText.textContent = 'Selected';
+            statusText.textContent = t('monitor.selected');
         } else {
             statusDot.className = 'status-dot waiting';
-            statusText.textContent = 'Waiting for selection';
+            statusText.textContent = t('monitor.waitSelect');
         }
     }
 }
@@ -2243,10 +2306,10 @@ function updateSatelliteStatus(hasData) {
         
         if (hasData) {
             statusDot.className = 'status-dot online';
-            statusText.textContent = 'Receiving';
+            statusText.textContent = t('monitor.receiving');
         } else {
             statusDot.className = 'status-dot waiting';
-            statusText.textContent = 'Waiting for data';
+            statusText.textContent = t('monitor.waitData');
         }
     }
 }
@@ -2255,16 +2318,80 @@ function updateSatelliteStatus(hasData) {
 function validateAlphanumeric(input, fieldName) {
    
     const validPattern = /^[a-zA-Z0-9_-]+$/;
+    // fieldName 传的是已翻译好的字段名（如 t('field.username')）
+    const label = fieldName || '';
     
     if (!input || input.trim() === '') {
-        return { valid: false, message: `${fieldName} cannot be empty` };
+        return { valid: false, message: t('valid.required', { field: label }) };
     }
     
     if (!validPattern.test(input)) {
-        return { valid: false, message: `${fieldName} can only contain English letters, numbers, underscores and hyphens, no other special symbols, Chinese characters or other characters are allowed` };
+        return { valid: false, message: t('valid.charset', { field: label }) };
     }
     
     return { valid: true, message: '' };
+}
+
+// ===== 表单实时校验（方案①：输入即提示，红边框 + 内联错误文字）=====
+// 约定：需要实时校验的输入框带 data-validate="alnum" 属性，可选 data-min / data-max
+// 以及 data-optional="1"（编辑表单里允许留空，留空时不报错）
+function liveValidateField(input) {
+    if (!input || !input.getAttribute('data-validate')) return { valid: true, message: '' };
+
+    const value = input.value;
+    const optional = input.getAttribute('data-optional') === '1';
+    const label = input.getAttribute('data-label') || '';
+    const min = parseInt(input.getAttribute('data-min'), 10);
+    const max = parseInt(input.getAttribute('data-max'), 10);
+
+    // 可选字段留空 = 通过（不校验）
+    if (optional && value.trim() === '') {
+        return { valid: true, message: '' };
+    }
+
+    const base = validateAlphanumeric(value, label);
+    if (!base.valid) return base;
+
+    // 长度校验（有 data-min/data-max 时）
+    if (!isNaN(min) && !isNaN(max) && (value.length < min || value.length > max)) {
+        return { valid: false, message: (label === t('field.username'))
+            ? t('valid.userNameLen')
+            : (label === t('field.mountName') ? t('valid.mountNameLen') : t('valid.passwordLen')) };
+    }
+
+    return { valid: true, message: '' };
+}
+
+// 更新单个输入框的实时错误提示（在 .form-group 内插入/更新 .field-error）
+function setFieldError(input, message) {
+    if (!input) return;
+    const group = input.closest('.form-group');
+    if (!group) return;
+
+    // 移除旧的错误提示
+    const old = group.querySelector('.field-error');
+    if (old) old.remove();
+
+    if (message) {
+        input.classList.add('input-invalid');
+        const small = document.createElement('small');
+        small.className = 'field-error';
+        small.textContent = message;
+        input.insertAdjacentElement('afterend', small);
+    } else {
+        input.classList.remove('input-invalid');
+    }
+}
+
+// 全局 input 事件委托：实时校验所有带 data-validate 的输入框
+function initLiveValidation() {
+    document.addEventListener('input', function (e) {
+        const el = e.target;
+        if (el && el.getAttribute && el.getAttribute('data-validate')) {
+            const res = liveValidateField(el);
+            setFieldError(el, res.valid ? '' : res.message);
+        }
+    });
 }
 
 // Add log line
@@ -2315,8 +2442,29 @@ function addLogLine(message, type = 'info') {
 
 // Initialization after page load completion
 document.addEventListener('DOMContentLoaded', function() {
+    // 图标字体走 CDN：内网/离线环境拿不到时，<i class="fas"> 会渲染成空方块（tofu），
+    // 比没有图标更难看。这里检测一次，加载失败就给 <html> 加 no-icons，由 CSS 隐藏。
+    try {
+        if (document.fonts && !document.fonts.check('900 16px "Font Awesome 5 Free"')) {
+            setTimeout(function() {
+                if (!document.fonts.check('900 16px "Font Awesome 5 Free"')) {
+                    document.documentElement.classList.add('no-icons');
+                }
+            }, 2500);
+        }
+    } catch (e) {
+        // 老浏览器不支持 Font Loading API，忽略
+    }
+
+    // 表单实时校验：全局 input 委托（弹窗动态插入的输入框也能生效）
+    initLiveValidation();
+
     // Initialize page
-    navigateTo('dashboard');
+    // 登录页在认证成功后会带着 ?page=users|mounts|settings 跳回（见 /login 的 redirect 处理），
+    // 这里必须消费这个参数，否则"点管理页被拦去登录"之后永远落在 dashboard
+    const initialPage = new URLSearchParams(window.location.search).get('page');
+    const allowedPages = ['dashboard', 'users', 'mounts', 'monitor', 'settings'];
+    navigateTo(allowedPages.includes(initialPage) ? initialPage : 'dashboard');
     
     // Load frequency mapping table
     loadFrequencyMap();
@@ -2336,6 +2484,21 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    // 用户列表编辑/删除按钮事件委托（列表分页后 tbody 会重建，故用全局委托）
+    document.addEventListener('click', function (e) {
+        const editBtn = e.target.closest('.edit-user-btn');
+        if (editBtn) {
+            const username = editBtn.getAttribute('data-username');
+            if (username) editUser(username);
+            return;
+        }
+        const delBtn = e.target.closest('.delete-user-btn');
+        if (delBtn) {
+            const username = delBtn.getAttribute('data-username');
+            if (username) deleteUser(username);
+        }
+    });
 });
 
 // User management functions
@@ -2343,18 +2506,20 @@ function showAddUserForm() {
     const formHtml = `
         <div class="modal-overlay" id="userModal">
             <div class="modal-content">
-                <h4>Add User</h4>
+                <h4>${escapeHtml(t('users.addTitle'))}</h4>
                 <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" id="newUsername" placeholder="Enter username" maxlength="50">
+                    <label>${escapeHtml(t('users.col.username'))}</label>
+                    <input class="form-control" type="text" id="newUsername" placeholder="${escapeHtml(t('ph.username'))}" maxlength="50"
+                           data-validate="alnum" data-min="3" data-max="50" data-label="${escapeHtml(t('field.username'))}">
                 </div>
                 <div class="form-group">
-                    <label>Password</label>
-                    <input type="password" id="newPassword" placeholder="Enter password" maxlength="100">
+                    <label>${escapeHtml(t('login.password'))}</label>
+                    <input class="form-control" type="password" id="newPassword" placeholder="${escapeHtml(t('ph.password'))}" maxlength="100"
+                           data-validate="alnum" data-min="6" data-max="100" data-label="${escapeHtml(t('field.password'))}">
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-secondary" onclick="closeModal('userModal')">Cancel</button>
-                    <button class="btn btn-success" onclick="submitAddUser()">Add</button>
+                    <button class="btn btn-secondary" onclick="closeModal('userModal')">${escapeHtml(t('common.cancel'))}</button>
+                    <button class="btn btn-success" onclick="submitAddUser()">${escapeHtml(t('common.add'))}</button>
                 </div>
             </div>
         </div>
@@ -2367,26 +2532,26 @@ function submitAddUser() {
     const password = document.getElementById('newPassword').value;
     
     // username
-    const usernameValidation = validateAlphanumeric(username, 'Username');
+    const usernameValidation = validateAlphanumeric(username, t('field.username'));
     if (!usernameValidation.valid) {
         showAlert(usernameValidation.message, 'error');
         return;
     }
     
     if (username.length < 3 || username.length > 50) {
-        showAlert('Username length must be between 3-50 characters', 'error');
+        showAlert(t('valid.userNameLen'), 'error');
         return;
     }
     
     // password
-    const passwordValidation = validateAlphanumeric(password, 'Password');
+    const passwordValidation = validateAlphanumeric(password, t('field.password'));
     if (!passwordValidation.valid) {
         showAlert(passwordValidation.message, 'error');
         return;
     }
     
     if (password.length < 6 || password.length > 100) {
-        showAlert('Password length must be between 6-100 characters', 'error');
+        showAlert(t('valid.passwordLen'), 'error');
         return;
     }
     
@@ -2407,8 +2572,8 @@ async function addUser(username, password) {
         const result = await handleApiResponse(response);
         loadPageContent('users'); // Refresh user list
     } catch (error) {
-        if (error.message !== 'Unauthorized access') {
-            showAlert('Failed to add user: ' + error.message, 'error');
+        if (!error.isAuthError) {
+            showAlert(t('msg.userAddFailed', { error: error.message }), 'error');
         }
     }
 }
@@ -2418,26 +2583,28 @@ function editUser(username) {
     const formHtml = `
         <div class="modal-overlay" id="editUserModal">
             <div class="modal-content">
-                <h4>Edit User - ${username}</h4>
+                <h4>${escapeHtml(t('users.editTitle'))} - ${escapeHtml(username)}</h4>
                 ${!isAdmin ? `
                 <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" id="editUsername" value="${username}" maxlength="50">
+                    <label>${escapeHtml(t('users.col.username'))}</label>
+                    <input class="form-control" type="text" id="editUsername" value="${escapeHtml(username)}" maxlength="50"
+                           data-validate="alnum" data-min="3" data-max="50" data-label="${escapeHtml(t('field.username'))}">
                 </div>
                 ` : `
                 <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" value="${username}" disabled>
-                    <small>Administrator username cannot be modified</small>
+                    <label>${escapeHtml(t('users.col.username'))}</label>
+                    <input class="form-control" type="text" value="${escapeHtml(username)}" disabled>
+                    <small>${escapeHtml(t('users.adminLocked'))}</small>
                 </div>
                 `}
                 <div class="form-group">
-                    <label>New Password (Optional)</label>
-                    <input type="password" id="editPassword" placeholder="Leave blank to keep current password" maxlength="100">
+                    <label>${escapeHtml(t('users.newPasswordOptional'))}</label>
+                    <input class="form-control" type="password" id="editPassword" placeholder="${escapeHtml(t('ph.keepPassword'))}" maxlength="100"
+                           data-validate="alnum" data-min="6" data-max="100" data-label="${escapeHtml(t('field.password'))}" data-optional="1">
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-secondary" onclick="closeModal('editUserModal')">Cancel</button>
-                    <button class="btn btn-success" onclick="submitEditUser('${username}')">Save</button>
+                    <button class="btn btn-secondary" onclick="closeModal('editUserModal')">${escapeHtml(t('common.cancel'))}</button>
+                    <button class="btn btn-success" onclick="submitEditUser('${username}')">${escapeHtml(t('common.save'))}</button>
                 </div>
             </div>
         </div>
@@ -2453,13 +2620,13 @@ function submitEditUser(originalUsername) {
     
     // If password is entered, validate and add to update data
     if (newPassword) {
-        const passwordValidation = validateAlphanumeric(newPassword, 'Password');
+        const passwordValidation = validateAlphanumeric(newPassword, t('field.password'));
         if (!passwordValidation.valid) {
             showAlert(passwordValidation.message, 'error');
             return;
         }
         if (newPassword.length < 6 || newPassword.length > 100) {
-            showAlert('Password length must be between 6-100 characters', 'error');
+            showAlert(t('valid.passwordLen'), 'error');
             return;
         }
         updateData.password = newPassword;
@@ -2467,13 +2634,13 @@ function submitEditUser(originalUsername) {
     
     // If not admin and username has changed
     if (originalUsername !== 'admin' && newUsername && newUsername !== originalUsername) {
-        const usernameValidation = validateAlphanumeric(newUsername, 'Username');
+        const usernameValidation = validateAlphanumeric(newUsername, t('field.username'));
         if (!usernameValidation.valid) {
             showAlert(usernameValidation.message, 'error');
             return;
         }
         if (newUsername.length < 3 || newUsername.length > 50) {
-            showAlert('Username length must be between 3-50 characters', 'error');
+            showAlert(t('valid.userNameLen'), 'error');
             return;
         }
         updateData.username = newUsername;
@@ -2481,7 +2648,7 @@ function submitEditUser(originalUsername) {
     
     // Check if there are any updates
     if (Object.keys(updateData).length === 0) {
-        showAlert('No changes made', 'warning');
+        showAlert(t('valid.noChanges'), 'warning');
         return;
     }
     
@@ -2499,11 +2666,11 @@ async function updateUser(username, data) {
             body: JSON.stringify(data)
         });                
         const result = await handleApiResponse(response);
-        showAlert(result.message, 'success');
+        showAlert(localizeServerMessage(result.message), 'success');
         loadPageContent('users'); // Refresh user list
     } catch (error) {
-        if (error.message !== 'Unauthorized access') {
-            showAlert('Failed to update user: ' + error.message, 'error');
+        if (!error.isAuthError) {
+            showAlert(t('msg.userUpdateFailed', { error: error.message }), 'error');
         }
     }
 }
@@ -2511,8 +2678,8 @@ async function updateUser(username, data) {
 function deleteUser(username) {
     // console.log('deleteUser called with username:', username);
     showConfirmDialog(
-        'Confirm Delete User',
-        `Are you sure you want to delete user "${username}"? This action cannot be undone.`,
+        t('users.confirmDeleteTitle'),
+        t('users.confirmDelete', { name: username }),
         () => {
             // console.log('User confirmed deletion');
             removeUser(username);
@@ -2538,8 +2705,8 @@ async function removeUser(username) {
         loadPageContent('users'); // Refresh user list
     } catch (error) {
         // console.error('Error in removeUser:', error);
-        if (error.message !== 'Unauthorized access') {
-            showAlert('Failed to delete user: ' + error.message, 'error');
+        if (!error.isAuthError) {
+            showAlert(t('msg.userDeleteFailed', { error: error.message }), 'error');
         }
     }
 }
@@ -2547,13 +2714,13 @@ async function removeUser(username) {
 // Mount point management functions
 async function showAddMountForm() {
     // Get user list for dropdown selection
-    let usersOptions = '<option value="">No user binding</option>';
+    let usersOptions = `<option value="">${escapeHtml(t('mounts.noBinding'))}</option>`;
     try {
         const response = await fetch('/api/users');
         if (response.ok) {
             const users = await response.json();
             users.forEach(user => {
-                usersOptions += `<option value="${user.id}">${user.username}</option>`;
+                usersOptions += `<option value="${user.id}">${escapeHtml(user.username)}</option>`;
             });
         }
     } catch (error) {
@@ -2563,24 +2730,26 @@ async function showAddMountForm() {
     const formHtml = `
         <div class="modal-overlay" id="mountModal">
             <div class="modal-content">
-                <h4>Add Mount Point</h4>
+                <h4>${escapeHtml(t('mounts.addTitle'))}</h4>
                 <div class="form-group">
-                    <label>Mount Point Name</label>
-                    <input type="text" id="newMountName" placeholder="Enter mount point name" maxlength="50">
+                    <label>${escapeHtml(t('mounts.name'))}</label>
+                    <input class="form-control" type="text" id="newMountName" placeholder="${escapeHtml(t('ph.mountName'))}" maxlength="50"
+                           data-validate="alnum" data-min="3" data-max="50" data-label="${escapeHtml(t('field.mountName'))}">
                 </div>
                 <div class="form-group">
-                    <label>Password (NTRIP 1.0)</label>
-                    <input type="password" id="newMountPassword" placeholder="Enter password" maxlength="100">
+                    <label>${escapeHtml(t('mounts.password'))}</label>
+                    <input class="form-control" type="password" id="newMountPassword" placeholder="${escapeHtml(t('ph.password'))}" maxlength="100"
+                           data-validate="alnum" data-min="6" data-max="100" data-label="${escapeHtml(t('field.password'))}">
                 </div>
                 <div class="form-group">
-                    <label>Bind User (NTRIP 2.0)</label>
+                    <label>${escapeHtml(t('mounts.bindUser'))}</label>
                     <select id="newMountUser">
                         ${usersOptions}
                     </select>
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-secondary" onclick="closeModal('mountModal')">Cancel</button>
-                    <button class="btn btn-success" onclick="submitAddMount()">Add</button>
+                    <button class="btn btn-secondary" onclick="closeModal('mountModal')">${escapeHtml(t('common.cancel'))}</button>
+                    <button class="btn btn-success" onclick="submitAddMount()">${escapeHtml(t('common.add'))}</button>
                 </div>
             </div>
         </div>
@@ -2594,26 +2763,26 @@ function submitAddMount() {
     const userId = document.getElementById('newMountUser').value;
     
     // Validate mount point name
-    const mountNameValidation = validateAlphanumeric(mountName, 'Mount point name');
+    const mountNameValidation = validateAlphanumeric(mountName, t('field.mountName'));
     if (!mountNameValidation.valid) {
         showAlert(mountNameValidation.message, 'error');
         return;
     }
     
     // Validate password
-    const passwordValidation = validateAlphanumeric(password, 'Password');
+    const passwordValidation = validateAlphanumeric(password, t('field.password'));
     if (!passwordValidation.valid) {
         showAlert(passwordValidation.message, 'error');
         return;
     }
     
     if (mountName.length < 3 || mountName.length > 50) {
-        showAlert('Mount point name length must be between 3-50 characters', 'error');
+        showAlert(t('valid.mountNameLen'), 'error');
         return;
     }
     
     if (password.length < 6 || password.length > 100) {
-        showAlert('Password length must be between 6-100 characters', 'error');
+        showAlert(t('valid.passwordLen'), 'error');
         return;
     }
     
@@ -2639,8 +2808,8 @@ async function addMount(mountData) {
         const result = await handleApiResponse(response);
         loadPageContent('mounts'); // Refresh mount point list
     } catch (error) {
-        if (error.message !== 'Unauthorized access') {
-            showAlert('Failed to add mount point: ' + error.message, 'error');
+        if (!error.isAuthError) {
+            showAlert(t('msg.mountAddFailed', { error: error.message }), 'error');
         }
     }
 }
@@ -2655,17 +2824,11 @@ async function editMount(mount) {
         if (mountResponse.ok) {
             const mounts = await mountResponse.json();
             currentMountData = mounts.find(m => m.mount === mount);
-        }
-        
-        // If mount point is bound to a user, get username
-        if (currentMountData && currentMountData.user_id) {
-            const usersResponse = await fetch('/api/users');
-            if (usersResponse.ok) {
-                const users = await usersResponse.json();
-                const currentUser = users.find(u => u.id === currentMountData.user_id);
-                if (currentUser) {
-                    currentUsername = currentUser.username;
-                }
+            // /api/mounts 已经直接返回绑定用户名，不必再查一次用户表
+            // （原来多打一次 /api/users，一旦这次请求失败 currentUsername 就是空，
+            //  保存口令时会顺手把绑定清掉）
+            if (currentMountData && currentMountData.username) {
+                currentUsername = currentMountData.username;
             }
         }
     } catch (error) {
@@ -2675,22 +2838,24 @@ async function editMount(mount) {
     const formHtml = `
         <div class="modal-overlay" id="editMountModal">
             <div class="modal-content">
-                <h4>Edit Mount Point - ${mount}</h4>
+                <h4>${escapeHtml(t('mounts.editTitle'))} - ${escapeHtml(mount)}</h4>
                 <div class="form-group">
-                    <label>Mount Point Name</label>
-                    <input type="text" id="editMountName" value="${mount}" maxlength="50">
+                    <label>${escapeHtml(t('mounts.name'))}</label>
+                    <input class="form-control" type="text" id="editMountName" value="${escapeHtml(mount)}" data-original="${escapeHtml(mount)}" maxlength="50"
+                           data-validate="alnum" data-min="3" data-max="50" data-label="${escapeHtml(t('field.mountName'))}">
                 </div>
                 <div class="form-group">
-                    <label>New Password (NTRIP 1.0)</label>
-                    <input type="password" id="editMountPassword" placeholder="Leave blank to keep current password" maxlength="100">
+                    <label>${escapeHtml(t('mounts.newPassword'))}</label>
+                    <input class="form-control" type="password" id="editMountPassword" placeholder="${escapeHtml(t('ph.keepPassword'))}" maxlength="100"
+                           data-validate="alnum" data-min="6" data-max="100" data-label="${escapeHtml(t('field.password'))}" data-optional="1">
                 </div>
                 <div class="form-group">
-                    <label>Bind User (NTRIP 2.0)</label>
-                    <input type="text" id="editMountUser" value="${currentUsername}" placeholder="Enter username, leave blank for no binding" maxlength="50">
+                    <label>${escapeHtml(t('mounts.bindUser'))}</label>
+                    <input class="form-control" type="text" id="editMountUser" value="${escapeHtml(currentUsername)}" data-original="${escapeHtml(currentUsername)}" placeholder="${escapeHtml(t('ph.bindUser'))}" maxlength="50">
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-secondary" onclick="closeModal('editMountModal')">Cancel</button>
-                    <button class="btn btn-success" onclick="submitEditMount('${mount}')">Save</button>
+                    <button class="btn btn-secondary" onclick="closeModal('editMountModal')">${escapeHtml(t('common.cancel'))}</button>
+                    <button class="btn btn-success" onclick="submitEditMount('${escapeHtml(mount)}')">${escapeHtml(t('common.save'))}</button>
                 </div>
             </div>
         </div>
@@ -2707,13 +2872,13 @@ async function submitEditMount(originalMount) {
     
     // If password is entered, validate and add to update data
     if (newPassword) {
-        const passwordValidation = validateAlphanumeric(newPassword, 'Password');
+        const passwordValidation = validateAlphanumeric(newPassword, t('field.password'));
         if (!passwordValidation.valid) {
             showAlert(passwordValidation.message, 'error');
             return;
         }
         if (newPassword.length < 6 || newPassword.length > 100) {
-            showAlert('Password length must be between 6-100 characters', 'error');
+            showAlert(t('valid.passwordLen'), 'error');
             return;
         }
         updateData.password = newPassword;
@@ -2721,31 +2886,37 @@ async function submitEditMount(originalMount) {
     
     // If mount point name has changed and is not empty
     if (newMountName && newMountName !== originalMount) {
-        const mountNameValidation = validateAlphanumeric(newMountName, 'Mount point name');
+        const mountNameValidation = validateAlphanumeric(newMountName, t('field.mountName'));
         if (!mountNameValidation.valid) {
             showAlert(mountNameValidation.message, 'error');
             return;
         }
         if (newMountName.length < 3 || newMountName.length > 50) {
-            showAlert('Mount point name length must be between 3-50 characters', 'error');
+            showAlert(t('valid.mountNameLen'), 'error');
             return;
         }
         updateData.mount_name = newMountName;
     }
     
     // Handle username binding
-    if (username) {
-        const usernameValidation = validateAlphanumeric(username, 'Username');
+    const userInput = document.getElementById('editMountUser');
+    const originalUsername = userInput ? (userInput.dataset.original || '') : '';
+    if (username && username !== originalUsername) {
+        const usernameValidation = validateAlphanumeric(username, t('field.username'));
         if (!usernameValidation.valid) {
             showAlert(usernameValidation.message, 'error');
             return;
         }
     }
-    updateData.username = username || "";
+    // 只有绑定真的变了才提交：否则把"原值为空/读取失败"当成解绑写进库，
+    // 用户明明只想改口令，绑定却被清掉了
+    if (username !== originalUsername) {
+        updateData.username = username;
+    }
     
     // Check if there are any updates
     if (Object.keys(updateData).length === 0) {
-        showAlert('No changes made', 'warning');
+        showAlert(t('valid.noChanges'), 'warning');
         return;
     }
     
@@ -2764,19 +2935,19 @@ async function updateMount(mount, data) {
         });
         
         const result = await handleApiResponse(response);
-        showAlert(result.message, 'success');
+        showAlert(localizeServerMessage(result.message), 'success');
         loadPageContent('mounts'); // Refresh mount point list
     } catch (error) {
-        if (error.message !== 'Unauthorized access') {
-            showAlert('Failed to update mount point: ' + error.message, 'error');
+        if (!error.isAuthError) {
+            showAlert(t('msg.mountUpdateFailed', { error: error.message }), 'error');
         }
     }
 }
 
 function deleteMount(mount) {
     showConfirmDialog(
-        'Confirm Delete Mount Point',
-        `Are you sure you want to delete mount point "${mount}"? This action cannot be undone.`,
+        t('mounts.confirmDeleteTitle'),
+        t('mounts.confirmDelete', { name: mount }),
         () => {
             removeMount(mount);
         },
@@ -2796,8 +2967,8 @@ async function removeMount(mount) {
             // Refresh list directly after successful deletion, no success popup
             loadPageContent('mounts'); // Refresh mount point list
         } catch (error) {
-            if (error.message !== 'Unauthorized access') {
-                showAlert('Failed to delete mount point: ' + error.message, 'error');
+            if (!error.isAuthError) {
+                showAlert(t('msg.mountDeleteFailed', { error: error.message }), 'error');
             }
         }
     }
@@ -2809,36 +2980,36 @@ async function removeMount(mount) {
         const confirmPassword = document.getElementById('confirm-password').value;
         
         if (!newPassword || !confirmPassword) {
-            showAlert('Please enter new password and confirm password', 'warning');
+            showAlert(t('valid.passwordRequired'), 'warning');
             return;
         }
         
         // Validate new password
-        const passwordValidation = validateAlphanumeric(newPassword, 'New password');
+        const passwordValidation = validateAlphanumeric(newPassword, t('field.newPassword'));
         if (!passwordValidation.valid) {
             showAlert(passwordValidation.message, 'error');
             return;
         }
         
         // Validate confirm password
-        const confirmPasswordValidation = validateAlphanumeric(confirmPassword, 'Confirm password');
+        const confirmPasswordValidation = validateAlphanumeric(confirmPassword, t('field.confirmPassword'));
         if (!confirmPasswordValidation.valid) {
             showAlert(confirmPasswordValidation.message, 'error');
             return;
         }
         
         if (newPassword !== confirmPassword) {
-            showAlert('The two passwords entered do not match', 'error');
+            showAlert(t('valid.passwordMismatch'), 'error');
             return;
         }
         
         if (newPassword.length < 6) {
-            showAlert('Password must be at least 6 characters long', 'error');
+            showAlert(t('valid.passwordTooShort'), 'error');
             return;
         }
         
         try {
-            const response = await fetch('/api/users/admin', {
+            const response = await fetch('/api/admin/password', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -2849,22 +3020,24 @@ async function removeMount(mount) {
             const result = await response.json();
             
             if (response.ok) {
-                showAlert('Administrator password changed successfully', 'success');
+                showAlert(t('msg.passwordChanged'), 'success');
                 document.getElementById('admin-password').value = '';
                 document.getElementById('confirm-password').value = '';
             } else {
-                showAlert('Error: ' + result.error, 'error');
+                showAlert(t('msg.httpError', {
+                    error: localizeServerMessage(result.error) || `HTTP ${response.status}`
+                }), 'error');
             }
         } catch (error) {
             // console.error('Failed to change password:', error);
-            showAlert('Failed to change password: ' + error.message, 'error');
+            showAlert(t('msg.passwordChangeFailed', { error: error.message }), 'error');
         }
     }
     
     async function restartProgram() {
         showConfirmDialog(
-        'Confirm Restart',
-        'Are you sure you want to restart the program? All connections will be disconnected after restart, please proceed with caution!',
+        t('settings.confirmRestartTitle'),
+        t('settings.confirmRestart'),
         async function() {
             // Execute restart logic
             await performRestart();
@@ -2883,20 +3056,110 @@ async function performRestart() {
             });
             
             if (response.ok) {
-                showAlert('Program restart command sent, system will restart in 3 seconds...', 'success');
+                showAlert(t('settings.restartSent'), 'success');
                 // Refresh page after 3 seconds
                 setTimeout(() => {
                     window.location.reload();
                 }, 3000);
             } else {
                 const result = await response.json();
-                showAlert('Restart failed: ' + (result.error || 'Unknown error'), 'error');
+                showAlert(t('settings.restartFailed', {
+                    error: localizeServerMessage(result.error) || t('err.unknown')
+                }), 'error');
             }
         } catch (error) {
             // console.error('Failed to restart program:', error);
-            showAlert('Failed to restart program: ' + error.message, 'error');
+            showAlert(t('msg.restartInvokeFailed', { error: error.message }), 'error');
         }
     }
+
+
+/* ==========================================================================
+   打赏弹窗：支付宝 / 微信收款码
+   --------------------------------------------------------------------------
+   图片放在 static/img/ 下（Dockerfile 已整体拷贝 static 目录），不依赖外网 CDN。
+   打开时先移除旧节点，切换语言后可直接重调本函数重建一份新语言的弹窗。
+   ========================================================================== */
+const DONATE_QR = [
+    { key: 'alipay', img: '/static/img/donate-alipay.jpg', name: 'donate.alipay', hint: 'donate.scanAlipay', icon: 'fas fa-qrcode', cls: 'donate-alipay' },
+    { key: 'wechat', img: '/static/img/donate-wechat.jpg', name: 'donate.wechat', hint: 'donate.scanWechat', icon: 'fas fa-comment-dots', cls: 'donate-wechat' }
+];
+
+function openDonateModal() {
+    const modalId = 'donateModal';
+    const existing = document.getElementById(modalId);
+    if (existing) {
+        existing.remove();
+    }
+
+    const cards = DONATE_QR.map(item => `
+        <figure class="donate-card">
+            <a href="${item.img}" target="_blank" rel="noopener" title="${escapeHtml(t(item.hint))}">
+                <img src="${item.img}" alt="${escapeHtml(t(item.name))}" loading="lazy">
+            </a>
+            <figcaption>
+                <span class="donate-name ${item.cls}"><i class="${item.icon}"></i> ${escapeHtml(t(item.name))}</span>
+                <span class="donate-hint">${escapeHtml(t(item.hint))}</span>
+            </figcaption>
+        </figure>
+    `).join('');
+
+    const modalHtml = `
+        <div class="modal-overlay" id="${modalId}" role="dialog" aria-modal="true">
+            <div class="modal-content donate-modal">
+                <button type="button" class="modal-close" onclick="closeModal('${modalId}')"
+                        aria-label="${escapeHtml(t('common.close'))}">&times;</button>
+                <h4 class="donate-title"><i class="fas fa-heart"></i> ${escapeHtml(t('donate.title'))}</h4>
+                <p class="donate-subtitle">${escapeHtml(t('donate.subtitle'))}</p>
+                <div class="donate-grid">${cards}</div>
+                <p class="donate-thanks">${escapeHtml(t('donate.thanks'))}</p>
+                <p class="donate-note">${escapeHtml(t('donate.note'))}</p>
+                <div class="form-actions" style="justify-content: center;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('${modalId}')">${escapeHtml(t('donate.close'))}</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) {
+                closeModal(modalId);
+            }
+        });
+    }
+}
+
+/* 语言切换：静态文案由 i18n.js 处理，这里负责重绘动态区域 */
+window.addEventListener('i18n:changed', function () {
+    // 延到下一个任务执行：i18n.js 自己也监听该事件刷新静态文案（data-i18n），
+    // 若同步执行，随后的 applyI18n() 会把 #realtime-status 又重置成“连接中…”，
+    // 覆盖掉这里算出来的真实连接状态。
+    setTimeout(function () {
+        try {
+            // 已渲染的提示/确认框文案不会自动更新，直接关掉，避免中英混排
+            document.querySelectorAll('#alertDialog, #confirmDialog, #userModal, #editUserModal, #mountModal, #editMountModal')
+                .forEach(el => el.remove());
+
+            const donateOpen = !!document.getElementById('donateModal');
+            if (donateOpen) {
+                openDonateModal();
+            }
+
+            updateConnectionStatus();
+
+            // 当前页内容整体重建（内部所有文案都走 t()）
+            if (currentPage) {
+                loadPageContent(currentPage);
+            }
+        } catch (error) {
+            console.warn('[i18n] re-render failed:', error);
+        }
+    }, 0);
+});
 
 
 function closeModal(modalId) {
@@ -2934,9 +3197,9 @@ function showAlert(message, type = 'info') {
         <div class="modal-overlay" id="${modalId}">
             <div class="modal-content" style="max-width: 400px; text-align: center;">
                 <div style="font-size: 2rem; margin-bottom: 1rem;">${iconMap[type] || iconMap['info']}</div>
-                <p style="margin-bottom: 2rem; color: #666; line-height: 1.5; font-size: 1.1rem;">${message}</p>
+                <p style="margin-bottom: 2rem; color: #666; line-height: 1.5; font-size: 1.1rem;">${escapeHtml(message)}</p>
                 <div style="display: flex; justify-content: center;">
-                    <button class="btn" style="background: ${colorMap[type] || colorMap['info']}; color: white; border: none;" onclick="closeModal('${modalId}')">OK</button>
+                    <button class="btn" style="background: ${colorMap[type] || colorMap['info']}; color: white; border: none;" onclick="closeModal('${modalId}')">${escapeHtml(t('common.ok'))}</button>
                 </div>
             </div>
         </div>
@@ -2974,11 +3237,11 @@ function showConfirmDialog(title, message, onConfirm, onCancel) {
     const modalHtml = `
         <div class="modal-overlay" id="${modalId}">
             <div class="modal-content" style="max-width: 400px;">
-                <h4>${title}</h4>
-                <p style="margin-bottom: 2rem; color: #666; line-height: 1.5;">${message}</p>
+                <h4>${escapeHtml(title)}</h4>
+                <p style="margin-bottom: 2rem; color: #666; line-height: 1.5;">${escapeHtml(message)}</p>
                 <div style="display: flex; gap: 1rem; justify-content: flex-end;">
-                    <button class="btn btn-secondary" onclick="cancelConfirm()">Cancel</button>
-                    <button class="btn btn-primary" onclick="confirmAction()">YES</button>
+                    <button class="btn btn-secondary" onclick="cancelConfirm()">${escapeHtml(t('common.cancel'))}</button>
+                    <button class="btn btn-primary" onclick="confirmAction()">${escapeHtml(t('common.confirm'))}</button>
                 </div>
             </div>
         </div>
@@ -3039,8 +3302,8 @@ function cancelConfirm() {
     function logout() {
         // Simplified logout process, execute logout operation directly
         showConfirmDialog(
-            'Confirm Logout',
-            'Are you sure you want to logout?',
+            t('confirm.logoutTitle'),
+            t('confirm.logout'),
             () => {
                 fetch('/logout', {
                     method: 'POST',

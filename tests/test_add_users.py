@@ -8,11 +8,12 @@ import requests
 import json
 import time
 import sys
+import os
 
-# 服务器配置
-WEB_SERVER_URL = "http://192.168.1.4:5757"
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
+# 服务器配置（可用环境变量覆盖，避免把真实地址/口令写进仓库）
+WEB_SERVER_URL = os.environ.get("NTRIP_WEB_URL", "http://127.0.0.1:5757")
+ADMIN_USERNAME = os.environ.get("NTRIP_ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.environ.get("NTRIP_ADMIN_PASSWORD", "admin123")
 
 def login_admin():
     """管理员登录"""

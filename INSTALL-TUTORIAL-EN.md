@@ -51,8 +51,8 @@ sudo chmod +x install.sh
 sudo ./install.sh
 
 # 3. Start service
-sudo systemctl start ntripcaster
-sudo systemctl enable ntripcaster
+sudo systemctl start 2rtk
+sudo systemctl enable 2rtk
 ```
 
 ## Detailed Installation Steps
@@ -149,33 +149,33 @@ sudo zypper install -y \
 
 ```bash
 # Create dedicated user
-sudo useradd -r -s /bin/false -d /opt/ntripcaster ntripcaster
+sudo useradd -r -s /bin/false -d /opt/2rtk 2rtk
 
 # Create application directories
-sudo mkdir -p /opt/ntripcaster
-sudo mkdir -p /var/log/ntripcaster
-sudo mkdir -p /etc/ntripcaster
+sudo mkdir -p /opt/2rtk
+sudo mkdir -p /var/log/2rtk
+sudo mkdir -p /etc/2rtk
 
 # Set directory permissions
-sudo chown -R ntripcaster:ntripcaster /opt/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /var/log/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
+sudo chown -R 2rtk:2rtk /opt/2rtk
+sudo chown -R 2rtk:2rtk /var/log/2rtk
+sudo chown -R 2rtk:2rtk /etc/2rtk
 ```
 
 ### 3. Download and Install Application
 
 ```bash
 # Switch to application directory
-cd /opt/ntripcaster
+cd /opt/2rtk
 
 # Download source code
-sudo -u ntripcaster git clone https://github.com/Rampump/NTRIPcaster.git .
+sudo -u 2rtk git clone https://github.com/Rampump/NTRIPcaster.git .
 
 # Create Python virtual environment
-sudo -u ntripcaster python3 -m venv venv
+sudo -u 2rtk python3 -m venv venv
 
 # Activate virtual environment and install dependencies
-sudo -u ntripcaster bash -c '
+sudo -u 2rtk bash -c '
     source venv/bin/activate
     pip install --upgrade pip setuptools wheel
     pip install -r requirements.txt
@@ -186,10 +186,10 @@ sudo -u ntripcaster bash -c '
 
 ```bash
 # Copy configuration file
-sudo -u ntripcaster cp config.ini.example /etc/ntripcaster/config.ini
+sudo -u 2rtk cp config.ini.example /etc/2rtk/config.ini
 
 # Edit configuration file
-sudo nano /etc/ntripcaster/config.ini
+sudo nano /etc/2rtk/config.ini
 ```
 
 #### Main Configuration Items:
@@ -197,7 +197,7 @@ sudo nano /etc/ntripcaster/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.1.9
+version = 2.2.0
 description = Ntrip Caster
 author = 2rtk
 contact = your-email@example.com
@@ -205,41 +205,46 @@ website = https://your-domain.com
 
 [network]
 host = 0.0.0.0
-ntrip_port = 2101
-web_port = 5757
+max_connections = 5000
+
+[ntrip]
+port = 2101
+
+[web]
+port = 5757
 
 [database]
-path = /opt/ntripcaster/data/2rtk.db
+path = /opt/2rtk/data/2rtk.db
 
 [logging]
-log_dir = /var/log/ntripcaster
+log_dir = /var/log/2rtk
 log_level = INFO
-log_file = main.log
-log_format = %(asctime)s - %(name)s - %(levelname)s - %(message)s
-log_max_size = 10485760
-log_backup_count = 5
+main_log_file = main.log
+log_format = %%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s
+max_log_size = 10485760
+backup_count = 5
 
 [security]
 secret_key = $(openssl rand -hex 32)
-password_hash_rounds = 12
+password_hash_rounds = 3
 session_timeout = 3600
 ```
 
 ### 5. Generate Keys and Initialize Database
 
 ```bash
-# Generate security key
+# Generate security key (secret_key auto-generates when left empty; can also set manually)
 SECRET_KEY=$(openssl rand -hex 32)
-sudo sed -i "s/your-secret-key-here/$SECRET_KEY/g" /etc/ntripcaster/config.ini
+sudo sed -i "s/^secret_key = *$/secret_key = $SECRET_KEY/" /etc/2rtk/config.ini
 
 # Create data directory
-sudo -u ntripcaster mkdir -p /opt/ntripcaster/data
+sudo -u 2rtk mkdir -p /opt/2rtk/data
 
-# Initialize database (if application supports it)
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+# Initialize database (main.py creates tables on first run; no manual init required)
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
-    python -c "from src.database import init_db; init_db()"
+    python3 -c "from src.database import DatabaseManager; DatabaseManager().init_database()"
 '
 ```
 
@@ -247,7 +252,7 @@ sudo -u ntripcaster bash -c '
 
 ```bash
 # Create service file
-sudo tee /etc/systemd/system/ntripcaster.service > /dev/null <<EOF
+sudo tee /etc/systemd/system/2rtk.service > /dev/null <<EOF
 [Unit]
 Description=NTRIP Caster Service
 After=network.target
@@ -255,12 +260,12 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=ntripcaster
-Group=ntripcaster
-WorkingDirectory=/opt/ntripcaster
-Environment=NTRIP_CONFIG_FILE=/etc/ntripcaster/config.ini
-Environment=PYTHONPATH=/opt/ntripcaster
-ExecStart=/opt/ntripcaster/venv/bin/python /opt/ntripcaster/main.py
+User=2rtk
+Group=2rtk
+WorkingDirectory=/opt/2rtk
+Environment=NTRIP_CONFIG_FILE=/etc/2rtk/config.ini
+Environment=PYTHONPATH=/opt/2rtk
+ExecStart=/opt/2rtk/venv/bin/python /opt/2rtk/main.py
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=10
@@ -272,7 +277,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/ntripcaster/data /var/log/ntripcaster /etc/ntripcaster
+ReadWritePaths=/opt/2rtk/data /var/log/2rtk /etc/2rtk
 
 # Resource limits
 LimitNOFILE=65536
@@ -340,11 +345,11 @@ sudo service iptables save
 You can override configuration file settings using environment variables:
 
 ```bash
-# Add to /etc/systemd/system/ntripcaster.service
+# Add to /etc/systemd/system/2rtk.service
 Environment=NTRIP_PORT=2101
 Environment=WEB_PORT=5757
-Environment=DEBUG_MODE=false
-Environment=DATABASE_PATH=/opt/ntripcaster/data/2rtk.db
+Environment=DEBUG=false
+Environment=DATABASE_PATH=/opt/2rtk/data/2rtk.db
 Environment=LOG_LEVEL=INFO
 ```
 
@@ -352,17 +357,17 @@ Environment=LOG_LEVEL=INFO
 
 ```bash
 # Configure logrotate
-sudo tee /etc/logrotate.d/ntripcaster > /dev/null <<EOF
-/var/log/ntripcaster/*.log {
+sudo tee /etc/logrotate.d/2rtk > /dev/null <<EOF
+/var/log/2rtk/*.log {
     daily
     missingok
     rotate 30
     compress
     delaycompress
     notifempty
-    create 644 ntripcaster ntripcaster
+    create 644 2rtk 2rtk
     postrotate
-        systemctl reload ntripcaster
+        systemctl reload 2rtk
     endscript
 }
 EOF
@@ -374,48 +379,48 @@ EOF
 
 ```bash
 # Start service
-sudo systemctl start ntripcaster
+sudo systemctl start 2rtk
 
 # Stop service
-sudo systemctl stop ntripcaster
+sudo systemctl stop 2rtk
 
 # Restart service
-sudo systemctl restart ntripcaster
+sudo systemctl restart 2rtk
 
 # Reload configuration
-sudo systemctl reload ntripcaster
+sudo systemctl reload 2rtk
 
 # Check service status
-sudo systemctl status ntripcaster
+sudo systemctl status 2rtk
 
 # Enable auto-start on boot
-sudo systemctl enable ntripcaster
+sudo systemctl enable 2rtk
 
 # Disable auto-start on boot
-sudo systemctl disable ntripcaster
+sudo systemctl disable 2rtk
 ```
 
 ### Log Viewing
 
 ```bash
 # View service logs
-sudo journalctl -u ntripcaster
+sudo journalctl -u 2rtk
 
 # Follow logs in real-time
-sudo journalctl -u ntripcaster -f
+sudo journalctl -u 2rtk -f
 
 # View application logs
-sudo tail -f /var/log/ntripcaster/main.log
+sudo tail -f /var/log/2rtk/main.log
 
 # View error logs
-sudo grep ERROR /var/log/ntripcaster/main.log
+sudo grep ERROR /var/log/2rtk/main.log
 ```
 
 ### Service Monitoring
 
 ```bash
 # Check if service is running
-sudo systemctl is-active ntripcaster
+sudo systemctl is-active 2rtk
 
 # Check port listening
 sudo netstat -tlnp | grep -E ':(2101|5757)'
@@ -423,7 +428,7 @@ sudo netstat -tlnp | grep -E ':(2101|5757)'
 sudo ss -tlnp | grep -E ':(2101|5757)'
 
 # Check processes
-sudo ps aux | grep ntripcaster
+sudo ps aux | grep 2rtk
 ```
 
 ## Common Issues
@@ -434,25 +439,25 @@ sudo ps aux | grep ntripcaster
 
 ```bash
 # View detailed error information
-sudo journalctl -u ntripcaster -n 50
+sudo journalctl -u 2rtk -n 50
 
 # Check configuration file syntax
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
-    python -c "import configparser; c=configparser.ConfigParser(); c.read("/etc/ntripcaster/config.ini")"
+    python3 -c "import configparser; c=configparser.ConfigParser(); c.read("/etc/2rtk/config.ini")"
 '
 
 # Check file permissions
-sudo ls -la /opt/ntripcaster/
-sudo ls -la /etc/ntripcaster/
-sudo ls -la /var/log/ntripcaster/
+sudo ls -la /opt/2rtk/
+sudo ls -la /etc/2rtk/
+sudo ls -la /var/log/2rtk/
 
 # Test manual startup
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
-    NTRIP_CONFIG_FILE=/etc/ntripcaster/config.ini python main.py
+    NTRIP_CONFIG_FILE=/etc/2rtk/config.ini python3 main.py
 '
 ```
 
@@ -467,16 +472,16 @@ sudo lsof -i :5757
 sudo kill -9 <PID>
 
 # Or modify ports in configuration file
-sudo nano /etc/ntripcaster/config.ini
+sudo nano /etc/2rtk/config.ini
 ```
 
 ### Q3: Permission issues
 
 ```bash
 # Reset permissions
-sudo chown -R ntripcaster:ntripcaster /opt/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /var/log/ntripcaster
-sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster
+sudo chown -R 2rtk:2rtk /opt/2rtk
+sudo chown -R 2rtk:2rtk /var/log/2rtk
+sudo chown -R 2rtk:2rtk /etc/2rtk
 
 # Check SELinux (CentOS/RHEL)
 sudo getenforce
@@ -487,8 +492,8 @@ sudo setsebool -P httpd_can_network_connect 1
 
 ```bash
 # Reinstall dependencies
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
     pip install --upgrade pip
     pip install -r requirements.txt --force-reinstall
@@ -509,18 +514,19 @@ sudo apt install python3.11 python3.11-venv python3.11-dev
 
 ```bash
 # Check database file
-sudo ls -la /opt/ntripcaster/data/
+sudo ls -la /opt/2rtk/data/
 
-# Reinitialize database
-sudo -u ntripcaster bash -c '
-    cd /opt/ntripcaster
+# Reinitialize database (restart service after removing; main.py auto-creates tables)
+sudo -u 2rtk bash -c '
+    cd /opt/2rtk
     source venv/bin/activate
     rm -f data/2rtk.db
-    python -c "from src.database import init_db; init_db()"
 '
+# Restart service, main.py will recreate tables automatically
+sudo systemctl restart 2rtk
 
 # Check database integrity
-sudo -u ntripcaster sqlite3 /opt/ntripcaster/data/2rtk.db "PRAGMA integrity_check;"
+sudo -u 2rtk sqlite3 /opt/2rtk/data/2rtk.db "PRAGMA integrity_check;"
 ```
 
 ## Performance Optimization
@@ -530,10 +536,10 @@ sudo -u ntripcaster sqlite3 /opt/ntripcaster/data/2rtk.db "PRAGMA integrity_chec
 ```bash
 # Optimize file descriptor limits
 sudo tee -a /etc/security/limits.conf > /dev/null <<EOF
-ntripcaster soft nofile 65536
-ntripcaster hard nofile 65536
-ntripcaster soft nproc 4096
-ntripcaster hard nproc 4096
+2rtk soft nofile 65536
+2rtk hard nofile 65536
+2rtk soft nproc 4096
+2rtk hard nproc 4096
 EOF
 
 # Optimize network parameters
@@ -553,7 +559,7 @@ sudo sysctl -p
 
 ### 2. Application Optimization
 
-Edit configuration file `/etc/ntripcaster/config.ini`:
+Edit configuration file `/etc/2rtk/config.ini`:
 
 ```ini
 [performance]
@@ -584,35 +590,34 @@ buffer_size = 8192
 
 [tcp]
 # TCP Keep-Alive settings
-keepalive_enable = true
+keepalive_enabled = true
 keepalive_idle = 600
 keepalive_interval = 60
 keepalive_count = 3
 
 # Socket timeout
 socket_timeout = 30
-connection_timeout = 10
 ```
 
 ### 3. Monitoring Script
 
-Create monitoring script `/opt/ntripcaster/monitor.sh`:
+Create monitoring script `/opt/2rtk/monitor.sh`:
 
 ```bash
 #!/bin/bash
 
 # NTRIP Caster monitoring script
 
-LOG_FILE="/var/log/ntripcaster/monitor.log"
-PID_FILE="/var/run/ntripcaster.pid"
+LOG_FILE="/var/log/2rtk/monitor.log"
+PID_FILE="/var/run/2rtk.pid"
 
 # Check service status
 check_service() {
-    if ! systemctl is-active --quiet ntripcaster; then
+    if ! systemctl is-active --quiet 2rtk; then
         echo "$(date): NTRIP Caster service is not running, attempting to restart..." >> $LOG_FILE
-        systemctl start ntripcaster
+        systemctl start 2rtk
         sleep 5
-        if systemctl is-active --quiet ntripcaster; then
+        if systemctl is-active --quiet 2rtk; then
             echo "$(date): NTRIP Caster service restarted successfully" >> $LOG_FILE
         else
             echo "$(date): Failed to restart NTRIP Caster service" >> $LOG_FILE
@@ -633,7 +638,7 @@ check_ports() {
 
 # Check memory usage
 check_memory() {
-    MEMORY_USAGE=$(ps -o pid,ppid,cmd,%mem --sort=-%mem -C python3 | grep ntripcaster | awk '{print $4}' | head -1)
+    MEMORY_USAGE=$(ps -o pid,ppid,cmd,%mem --sort=-%mem -C python3 | grep 2rtk | awk '{print $4}' | head -1)
     if [ ! -z "$MEMORY_USAGE" ] && (( $(echo "$MEMORY_USAGE > 80" | bc -l) )); then
         echo "$(date): High memory usage detected: ${MEMORY_USAGE}%" >> $LOG_FILE
     fi
@@ -651,12 +656,12 @@ Set up scheduled task:
 
 ```bash
 # Set execution permissions
-sudo chmod +x /opt/ntripcaster/monitor.sh
+sudo chmod +x /opt/2rtk/monitor.sh
 
 # Add to crontab
 sudo crontab -e
 # Add the following line (check every 5 minutes)
-*/5 * * * * /opt/ntripcaster/monitor.sh
+*/5 * * * * /opt/2rtk/monitor.sh
 ```
 
 ## Security Configuration
@@ -667,36 +672,36 @@ sudo crontab -e
 
 ```bash
 # Create certificate directory
-sudo mkdir -p /etc/ntripcaster/ssl
+sudo mkdir -p /etc/2rtk/ssl
 
 # Generate private key
-sudo openssl genrsa -out /etc/ntripcaster/ssl/server.key 2048
+sudo openssl genrsa -out /etc/2rtk/ssl/server.key 2048
 
 # Generate certificate signing request
-sudo openssl req -new -key /etc/ntripcaster/ssl/server.key -out /etc/ntripcaster/ssl/server.csr
+sudo openssl req -new -key /etc/2rtk/ssl/server.key -out /etc/2rtk/ssl/server.csr
 
 # Generate self-signed certificate
-sudo openssl x509 -req -days 365 -in /etc/ntripcaster/ssl/server.csr -signkey /etc/ntripcaster/ssl/server.key -out /etc/ntripcaster/ssl/server.crt
+sudo openssl x509 -req -days 365 -in /etc/2rtk/ssl/server.csr -signkey /etc/2rtk/ssl/server.key -out /etc/2rtk/ssl/server.crt
 
 # Set permissions
-sudo chown -R ntripcaster:ntripcaster /etc/ntripcaster/ssl
-sudo chmod 600 /etc/ntripcaster/ssl/server.key
-sudo chmod 644 /etc/ntripcaster/ssl/server.crt
+sudo chown -R 2rtk:2rtk /etc/2rtk/ssl
+sudo chmod 600 /etc/2rtk/ssl/server.key
+sudo chmod 644 /etc/2rtk/ssl/server.crt
 ```
 
 #### Configure Nginx Reverse Proxy
 
 ```bash
 # Create Nginx configuration
-sudo tee /etc/nginx/sites-available/ntripcaster > /dev/null <<EOF
+sudo tee /etc/nginx/sites-available/2rtk > /dev/null <<EOF
 server {
     listen 80;
     listen 443 ssl http2;
     server_name your-domain.com;
 
     # SSL configuration
-    ssl_certificate /etc/ntripcaster/ssl/server.crt;
-    ssl_certificate_key /etc/ntripcaster/ssl/server.key;
+    ssl_certificate /etc/2rtk/ssl/server.crt;
+    ssl_certificate_key /etc/2rtk/ssl/server.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
@@ -728,7 +733,7 @@ server {
 EOF
 
 # Enable site
-sudo ln -s /etc/nginx/sites-available/ntripcaster /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/2rtk /etc/nginx/sites-enabled/
 
 # Test configuration
 sudo nginx -t
@@ -745,19 +750,19 @@ sudo apt install fail2ban  # Debian/Ubuntu
 sudo yum install fail2ban  # CentOS/RHEL
 
 # Create fail2ban configuration
-sudo tee /etc/fail2ban/jail.d/ntripcaster.conf > /dev/null <<EOF
-[ntripcaster]
+sudo tee /etc/fail2ban/jail.d/2rtk.conf > /dev/null <<EOF
+[2rtk]
 enabled = true
 port = 2101,5757
-filter = ntripcaster
-logpath = /var/log/ntripcaster/main.log
+filter = 2rtk
+logpath = /var/log/2rtk/main.log
 maxretry = 5
 bantime = 3600
 findtime = 600
 EOF
 
 # Create filter rules
-sudo tee /etc/fail2ban/filter.d/ntripcaster.conf > /dev/null <<EOF
+sudo tee /etc/fail2ban/filter.d/2rtk.conf > /dev/null <<EOF
 [Definition]
 failregex = ^.*Authentication failed.*from <HOST>.*$
             ^.*Invalid credentials.*from <HOST>.*$
@@ -771,34 +776,34 @@ sudo systemctl restart fail2ban
 
 ### 3. Regular Backup
 
-Create backup script `/opt/ntripcaster/backup.sh`:
+Create backup script `/opt/2rtk/backup.sh`:
 
 ```bash
 #!/bin/bash
 
 # NTRIP Caster backup script
 
-BACKUP_DIR="/opt/backups/ntripcaster"
+BACKUP_DIR="/opt/backups/2rtk"
 DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="ntripcaster_backup_$DATE.tar.gz"
+BACKUP_FILE="2rtk_backup_$DATE.tar.gz"
 
 # Create backup directory
 mkdir -p $BACKUP_DIR
 
 # Stop service
-systemctl stop ntripcaster
+systemctl stop 2rtk
 
 # Create backup
 tar -czf $BACKUP_DIR/$BACKUP_FILE \
-    /opt/ntripcaster \
-    /etc/ntripcaster \
-    /var/log/ntripcaster
+    /opt/2rtk \
+    /etc/2rtk \
+    /var/log/2rtk
 
 # Start service
-systemctl start ntripcaster
+systemctl start 2rtk
 
 # Delete backups older than 30 days
-find $BACKUP_DIR -name "ntripcaster_backup_*.tar.gz" -mtime +30 -delete
+find $BACKUP_DIR -name "2rtk_backup_*.tar.gz" -mtime +30 -delete
 
 echo "Backup completed: $BACKUP_DIR/$BACKUP_FILE"
 ```
@@ -807,12 +812,12 @@ Set up scheduled backup:
 
 ```bash
 # Set execution permissions
-sudo chmod +x /opt/ntripcaster/backup.sh
+sudo chmod +x /opt/2rtk/backup.sh
 
 # Add to crontab (backup daily at 2 AM)
 sudo crontab -e
 # Add the following line
-0 2 * * * /opt/ntripcaster/backup.sh
+0 2 * * * /opt/2rtk/backup.sh
 ```
 
 ## Uninstallation
@@ -821,24 +826,24 @@ To completely uninstall NTRIP Caster:
 
 ```bash
 # Stop and disable service
-sudo systemctl stop ntripcaster
-sudo systemctl disable ntripcaster
+sudo systemctl stop 2rtk
+sudo systemctl disable 2rtk
 
 # Remove service file
-sudo rm /etc/systemd/system/ntripcaster.service
+sudo rm /etc/systemd/system/2rtk.service
 sudo systemctl daemon-reload
 
 # Remove application files
-sudo rm -rf /opt/ntripcaster
-sudo rm -rf /etc/ntripcaster
-sudo rm -rf /var/log/ntripcaster
+sudo rm -rf /opt/2rtk
+sudo rm -rf /etc/2rtk
+sudo rm -rf /var/log/2rtk
 
 # Remove user
-sudo userdel ntripcaster
+sudo userdel 2rtk
 
 # Remove Nginx configuration (if configured)
-sudo rm /etc/nginx/sites-enabled/ntripcaster
-sudo rm /etc/nginx/sites-available/ntripcaster
+sudo rm /etc/nginx/sites-enabled/2rtk
+sudo rm /etc/nginx/sites-available/2rtk
 sudo systemctl restart nginx
 
 # Remove firewall rules
@@ -850,8 +855,8 @@ sudo ufw delete allow 5757/tcp
 
 If you encounter issues during installation or usage:
 
-1. **Check Logs**: `sudo journalctl -u ntripcaster -f`
-2. **Check Status**: `sudo systemctl status ntripcaster`
+1. **Check Logs**: `sudo journalctl -u 2rtk -f`
+2. **Check Status**: `sudo systemctl status 2rtk`
 3. **View Documentation**: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
 4. **Report Issues**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 5. **Contact Author**: i@jia.by

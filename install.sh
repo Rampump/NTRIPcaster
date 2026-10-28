@@ -75,18 +75,13 @@ if [ -f $INSTALL_DIR/config.ini.example ]; then
     # 复制并修改配置文件
     cp $INSTALL_DIR/config.ini.example $CONFIG_DIR/config.ini
     
-    # 更新配置文件中的路径
-    sed -i "s|path = /app/data/2rtk.db|path = $INSTALL_DIR/data/2rtk.db|g" $CONFIG_DIR/config.ini
-    sed -i "s|main_log = /app/logs/main.log|main_log = $LOG_DIR/main.log|g" $CONFIG_DIR/config.ini
-    sed -i "s|ntrip_log = /app/logs/ntrip.log|ntrip_log = $LOG_DIR/ntrip.log|g" $CONFIG_DIR/config.ini
-    sed -i "s|error_log = /app/logs/errors.log|error_log = $LOG_DIR/errors.log|g" $CONFIG_DIR/config.ini
+    # 更新配置文件中的路径（config.ini.example 里的实际字段名）
+    sed -i "s|^path = .*|path = $INSTALL_DIR/data/2rtk.db|g" $CONFIG_DIR/config.ini
+    sed -i "s|^log_dir = .*|log_dir = $LOG_DIR|g" $CONFIG_DIR/config.ini
     
-    # 设置生产环境配置
-    sed -i "s|debug = true|debug = false|g" $CONFIG_DIR/config.ini
-    
-    # 生成随机密钥
+    # 生成随机密钥（example 里 secret_key 为空，替换空值行）
     RANDOM_KEY=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
-    sed -i "s|secret_key = your-secret-key-change-this-in-production|secret_key = $RANDOM_KEY|g" $CONFIG_DIR/config.ini
+    sed -i "s|^secret_key = *$|secret_key = $RANDOM_KEY|g" $CONFIG_DIR/config.ini
     
     echo -e "${GREEN}配置文件已更新${NC}"
 else

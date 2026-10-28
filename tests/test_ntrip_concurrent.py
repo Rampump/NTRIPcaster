@@ -12,15 +12,16 @@ import random
 import base64
 import hashlib
 import sys
+import os
 import psutil
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-# NTRIP服务器配置
-NTRIP_SERVER = "192.168.1.4"
-NTRIP_PORT = 2101
-MOUNT_POINTS = ["RTKGL", "RTKHL"]
+# NTRIP服务器配置（环境变量可覆盖）
+NTRIP_SERVER = os.environ.get("NTRIP_HOST", "127.0.0.1")
+NTRIP_PORT = int(os.environ.get("NTRIP_PORT", "2101"))
+MOUNT_POINTS = os.environ.get("NTRIP_MOUNTS", "RTKGL,RTKHL").split(",")
 TEST_DURATION = 99999  # 测试时长（秒），保持长连接
 MAX_CONCURRENT_CONNECTIONS = 1500  # 最大并发连接数
 TARGET_CONNECTIONS = [1000, 1200, 1500]  # 目标连接数列表
@@ -92,7 +93,9 @@ def get_server_stats():
     """获取NTRIP服务器统计信息"""
     try:
         # 尝试从服务器API获取统计信息
-        response = requests.get(f"http://{NTRIP_SERVER}:5757/api/stats", timeout=5)
+        response = requests.get(
+            f"http://{NTRIP_SERVER}:{os.environ.get('NTRIP_WEB_PORT', '5757')}/api/system/stats",
+            timeout=5)
         if response.status_code == 200:
             return response.json()
     except Exception as e:
@@ -135,11 +138,12 @@ def create_ntrip_request(mount_point, username, password, protocol="basic"):
             f"\r\n"
         )
     elif protocol == "digest":
-        # Digest认证（简化版，实际应用中需要先获取challenge）
+        # 仅用于验证"服务端拒绝 Digest"的分支：只发请求头，不带任何凭据
         request = (
             f"GET /{mount_point} HTTP/1.1\r\n"
             f"Host: {NTRIP_SERVER}:{NTRIP_PORT}\r\n"
             f"User-Agent: NTRIP-Test-Client/1.0\r\n"
+            f"Authorization: Digest username=\"{username}\", realm=\"NTRIP\", nonce=\"abc\", uri=\"/{mount_point}\", response=\"deadbeef\"\r\n"
             f"Connection: close\r\n"
             f"\r\n"
         )

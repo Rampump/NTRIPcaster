@@ -1,156 +1,143 @@
-# NTRIP Caster 配置文件示例
-# 复制此文件为 config.ini 并根据需要修改配置
+# NTRIPcaster 配置示例
+#
+# 用法：
+#   cp config.ini.example config.ini
+# 然后把 secret_key / admin.password 改成自己的值。
+#
+# 优先级：环境变量 > 本文件 > 代码内默认值
+#   支持的环境变量：NTRIP_CONFIG_FILE、DATABASE_PATH、LOG_DIR、DATA_DIR、
+#                    NTRIP_HOST、NTRIP_PORT、WEB_PORT、SECRET_KEY
+#
+# 注意：config.ini 已被 .gitignore 忽略，不要提交到版本库。
 
-[NTRIP]
-# NTRIP 服务器配置
+[app]
+# 应用基本信息
+name = 2RTK Ntrip Caster
+version = 2.2.0
+description = Ntrip Caster
+author = 2rtk
+contact = i@jia.by
+website = https://2rtk.com
+
+[caster]
+# 默认地理位置（写入 SOURCETABLE 的 STR 记录）
+country = CHN
+latitude = 25.20341154
+longitude = 110.277492
+
+[development]
+# 开发模式，正式环境必须为 false
+debug_mode = false
+
+[network]
+# 监听地址与连接上限
 host = 0.0.0.0
+max_connections = 5000
+buffer_size = 81920
+max_buffer_size = 655360
+
+[ntrip]
 port = 2101
-max_connections = 1000
-connection_timeout = 30
-data_timeout = 60
+supported_versions = 1.0,2.0
+default_version = 1.0
+max_user_connections_per_mount = 3000
+max_users_per_mount = 3000
+max_connections_per_user = 3
+# 拉流是否强制校验"挂载点-用户"绑定关系
+# false = 兼容旧行为（任何有效用户可拉流）；true = 只能拉自己绑定的挂载点
+download_enforce_user_binding = false
+mount_timeout = 1800
+client_timeout = 300
+connection_timeout = 1800
 
-# 服务器信息
-server_name = 2RTK NTRIP Caster
-server_version = 2.1.8
-server_description = High-performance NTRIP Caster with RTCM parsing
-
-[WEB]
-# Web 管理界面配置
-host = 0.0.0.0
+[web]
 port = 5757
-debug = false
-secret_key = your-secret-key-change-this
+realtime_push_interval = 3
+page_refresh_interval = 30
 
-# 会话配置
+[database]
+# SQLite 数据库路径；容器内建议用绝对路径（如 /app/data/2rtk.db）并挂卷
+path = 2rtk.db
+# 连接池容量（复用的连接数上限）
+pool_size = 10
+timeout = 30
+
+[logging]
+log_dir = logs
+main_log_file = main.log
+ntrip_log_file = ntrip.log
+error_log_file = errors.log
+log_level = WARNING
+# 注意：% 需要写成 %%（configparser 会做插值）
+log_format = %%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s
+max_log_size = 10485760
+backup_count = 5
+log_frequent_status = false
+
+[security]
+# 留空或保持示例值时，程序启动会自动生成随机密钥并落盘到 <DATA_DIR>/.secret_key
+secret_key =
+password_hash_rounds = 3
 session_timeout = 3600
-remember_me_duration = 2592000
+# 登录失败限流：同一 IP+用户名 连续失败 login_max_attempts 次后锁定
+login_max_attempts = 5
+login_lockout_seconds = 300
+# 通过 HTTPS 部署时设为 true（Session Cookie 加 Secure）
+session_cookie_secure = false
+# 在 Nginx 等反向代理后面时设为 true，才信任 X-Forwarded-For
+trust_proxy_headers = false
 
-[DATABASE]
-# 数据库配置
-type = sqlite
-path = /app/data/2rtk.db
+[admin]
+# 首次启动时创建的管理员账号，登录后请立即修改密码
+username = admin
+password = admin123
 
-# 连接池配置（仅适用于 PostgreSQL/MySQL）
-# host = localhost
-# port = 5432
-# username = ntrip
-# password = your-password
-# database = ntrip_caster
-# pool_size = 10
-# max_overflow = 20
+[tcp]
+keepalive_enabled = true
+keepalive_idle = 60
+keepalive_interval = 10
+keepalive_count = 3
+socket_timeout = 120
 
-[LOGGING]
-# 日志配置
-level = INFO
-max_size = 50MB
-max_files = 5
-log_format = %(asctime)s - %(name)s - %(levelname)s - %(message)s
+[data_forwarding]
+# 环形缓冲：保留最近 N 秒的数据，同时限制最多 ring_buffer_max_chunks 块
+ring_buffer_size = 60
+ring_buffer_max_chunks = 3000
+# 广播间隔（秒）
+broadcast_interval = 0.01
+# 单客户端待发队列上限（块数），超出后丢弃积压并跳到最新
+client_send_queue_size = 200
+# 发送线程数：广播线程只入队，实际写 socket 由这组线程完成
+sender_threads = 8
+# 单客户端积压字节上限，超出后丢弃最老的数据
+client_pending_max_bytes = 1048576
+# 发送超时（秒），超过即认为客户端失联
+data_send_timeout = 5
+client_health_check_interval = 120
 
-# 日志文件路径
-main_log = /app/logs/main.log
-ntrip_log = /app/logs/ntrip.log
-error_log = /app/logs/errors.log
+[rtcm]
+parse_interval = 5
+buffer_size = 1000
+parse_duration = 30
 
-[SECURITY]
-# 安全配置
-enable_rate_limiting = true
-max_requests_per_minute = 60
-max_login_attempts = 5
-lockout_duration = 300
+[websocket]
+# 同源部署时保持注释；需要跨域时显式写白名单，不要用 *
+# cors_allowed_origins = https://your.domain
+ping_timeout = 120
+ping_interval = 15
+enabled = true
 
-# IP 白名单（可选，留空表示允许所有IP）
-allowed_ips = 
+[performance]
+thread_pool_size = 5000
+max_workers = 5000
+connection_queue_size = 5000
+max_memory_usage = 2048
+cpu_warning_threshold = 80
+memory_warning_threshold = 80
+# 收到 SIGTERM 后等待优雅退出的秒数，超时强制退出
+shutdown_timeout = 15
 
-# IP 黑名单
-blocked_ips = 
-
-[RTCM]
-# RTCM 数据处理配置
-enable_parsing = true
-max_message_size = 1024
-buffer_size = 4096
-
-# 支持的 RTCM 消息类型
-supported_messages = 1001,1002,1003,1004,1005,1006,1007,1008,1009,1010,1011,1012,1013,1019,1020,1033,1074,1075,1076,1077,1084,1085,1086,1087,1094,1095,1096,1097,1124,1125,1126,1127,1230
-
-[PERFORMANCE]
-# 性能配置
-thread_pool_size = 100
-max_queue_size = 1000
-enable_compression = true
-compression_level = 6
-
-# 缓存配置
-enable_cache = true
-cache_size = 1000
-cache_ttl = 300
-
-[MONITORING]
-# 监控配置
-enable_metrics = true
-metrics_port = 9090
-metrics_path = /metrics
-
-# 健康检查
-health_check_interval = 30
-health_check_timeout = 10
-
-[WEBSOCKET]
-# WebSocket 配置（用于实时数据推送）
-enable_websocket = true
-ping_interval = 25
-ping_timeout = 60
-max_message_size = 1048576
-
-# 已移除 CORS 配置（安全漏洞修复）
-# cors_allowed_origins = *
-
-[BACKUP]
-# 数据备份配置
-enable_auto_backup = true
-backup_interval = 86400
-backup_retention = 7
-backup_path = /app/data/backups
-
-[ALERTS]
-# 告警配置
-enable_alerts = false
-smtp_server = smtp.gmail.com
-smtp_port = 587
-smtp_username = your-email@gmail.com
-smtp_password = your-app-password
-alert_recipients = admin@example.com
-
-# 告警阈值
-max_connection_threshold = 900
-high_cpu_threshold = 80
-high_memory_threshold = 80
-disk_space_threshold = 90
-
-[FEATURES]
-# 功能开关
-enable_user_registration = false
-enable_mount_point_auto_discovery = true
-enable_statistics = true
-enable_real_time_monitoring = true
-
-# 实验性功能
-enable_clustering = false
-enable_load_balancing = false
-
-[ADVANCED]
-# 高级配置
-tcp_keepalive = true
-tcp_nodelay = true
-socket_timeout = 30
-buffer_size = 8192
-
-# 系统限制
-max_memory_usage = 1073741824  # 1GB
-max_cpu_usage = 80
-max_disk_usage = 90
-
-# 调试选项
-enable_debug_mode = false
-debug_log_level = DEBUG
-enable_profiling = false
+[payment]
+# 可选：管理端展示的收款二维码（留空则不显示）
+alipay_qr_code =
+wechat_qr_code =

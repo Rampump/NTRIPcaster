@@ -6,17 +6,26 @@ config.py - 配置文件
 
 import os
 import socket
+import secrets
 import configparser
 from pathlib import Path
 from typing import List, Tuple
 
-CONFIG_FILE = os.environ.get('NTRIP_CONFIG_FILE', 
-                            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.ini'))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+CONFIG_FILE = os.environ.get('NTRIP_CONFIG_FILE', os.path.join(_PROJECT_ROOT, 'config.ini'))
+EXAMPLE_CONFIG_FILE = os.path.join(_PROJECT_ROOT, 'config.ini.example')
 
 config = configparser.ConfigParser()
 
 if os.path.exists(CONFIG_FILE):
     print(f"加载配置文件: {CONFIG_FILE}")
+    config.read(CONFIG_FILE, encoding='utf-8')
+elif os.path.exists(EXAMPLE_CONFIG_FILE):
+    # config.ini 属于本地部署配置（含密钥/数据库路径），不再纳入版本库；
+    # 缺失时回退到 config.ini.example，保证首次运行可用。
+    print(f"未找到 {CONFIG_FILE}，回退使用示例配置 {EXAMPLE_CONFIG_FILE}（请复制为 config.ini 后按需修改）")
+    CONFIG_FILE = EXAMPLE_CONFIG_FILE
     config.read(CONFIG_FILE, encoding='utf-8')
 else:
     raise FileNotFoundError(f"配置文件 {CONFIG_FILE} 不存在")
@@ -158,13 +167,14 @@ MAX_BUFFER_SIZE = get_config_value('network', 'max_buffer_size', 655360, int) # 
 
 # ==================== 数据库配置 ====================
 
-DATABASE_PATH = get_config_value('database', 'path', '2rtk.db')
+# 环境变量优先于配置文件：容器部署时数据/日志必须落在持久卷内
+DATABASE_PATH = os.environ.get('DATABASE_PATH') or get_config_value('database', 'path', '2rtk.db')
 DB_POOL_SIZE = get_config_value('database', 'pool_size', 10, int)
 DB_TIMEOUT = get_config_value('database', 'timeout', 30, int)
 
 # ==================== 日志配置 ====================
 
-LOG_DIR = get_config_value('logging', 'log_dir', 'logs')
+LOG_DIR = os.environ.get('LOG_DIR') or get_config_value('logging', 'log_dir', 'logs')
 LOG_FILES = {
     'main': get_config_value('logging', 'main_log_file', 'main.log'),
     'ntrip': get_config_value('logging', 'ntrip_log_file', 'ntrip.log'), 
@@ -181,13 +191,59 @@ LOG_BACKUP_COUNT = get_config_value('logging', 'backup_count', 5, int)  # 保留
 
 LOG_FREQUENT_STATUS = get_config_value('logging', 'log_frequent_status', False, bool)
 
-# Flask密钥 (生产环境中请修改)
-SECRET_KEY = get_config_value('security', 'secret_key', '8f4a9c2e7d1b6f3a5e8d7c9b2a4f6e3d5c8b7a9f2e4d6c8b3a5f7e9d1c2b4a6')
+# Flask密钥（生产环境请通过 config.ini / SECRET_KEY 环境变量提供；
+# 若仍是仓库里的示例值，则自动生成随机密钥并存盘，避免所有人都用同一把会话密钥）
+_INSECURE_SECRET_KEYS = {
+    '',
+    'your-secret-key-change-this',
+    'your-secret-key-change-this-in-production',
+    '8f4a9c2e7d1b6f3a5e8d7c9b2a4f6e3d5c8b7a9f2e4d6c8b3a5f7e9d1c2b4a6',
+}
+
+
+def _load_or_create_secret_key(configured_key):
+    """载入持久化的随机会话密钥；不存在则生成"""
+    if configured_key and configured_key not in _INSECURE_SECRET_KEYS:
+        return configured_key
+
+    key_dir = os.environ.get('DATA_DIR') or os.path.join(_PROJECT_ROOT, 'data')
+    key_file = Path(key_dir) / '.secret_key'
+    try:
+        if key_file.exists():
+            existing = key_file.read_text(encoding='utf-8').strip()
+            if existing and existing not in _INSECURE_SECRET_KEYS:
+                return existing
+        new_key = secrets.token_hex(32)
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(new_key, encoding='utf-8')
+        try:
+            os.chmod(key_file, 0o600)
+        except OSError:
+            pass
+        print(f"已自动生成会话密钥并保存到 {key_file}（建议在 config.ini 中显式配置 secret_key）")
+        return new_key
+    except Exception as exc:
+        # 落盘失败时退化为进程内随机密钥：重启后会话失效，但不会使用弱密钥
+        print(f"警告: 无法保存会话密钥({exc})，将使用进程内随机密钥，重启后需重新登录")
+        return secrets.token_hex(32)
+
+
+SECRET_KEY = _load_or_create_secret_key(
+    os.environ.get('SECRET_KEY') or get_config_value('security', 'secret_key', '')
+)
 FLASK_SECRET_KEY = SECRET_KEY  # Flask应用密钥
 
 # 密码哈希配置
 PASSWORD_HASH_ROUNDS = get_config_value('security', 'password_hash_rounds', 3, int)
 SESSION_TIMEOUT = get_config_value('security', 'session_timeout', 3600, int)  # 1小时
+
+# 登录防爆破与会话安全
+LOGIN_MAX_ATTEMPTS = get_config_value('security', 'login_max_attempts', 5, int)
+LOGIN_LOCKOUT_SECONDS = get_config_value('security', 'login_lockout_seconds', 300, int)
+# HTTPS 部署时应置 True，浏览器只在 HTTPS 下回传会话 Cookie
+SESSION_COOKIE_SECURE = get_config_value('security', 'session_cookie_secure', False, bool)
+# 仅在确实位于可信反向代理（Nginx）之后时启用，否则客户端可伪造 X-Forwarded-For
+TRUST_PROXY_HEADERS = get_config_value('security', 'trust_proxy_headers', False, bool)
 
 # 默认管理员账户
 DEFAULT_ADMIN = {
@@ -204,6 +260,10 @@ DEFAULT_NTRIP_VERSION = get_config_value('ntrip', 'default_version', '1.0')
 MAX_USER_CONNECTIONS_PER_MOUNT = get_config_value('ntrip', 'max_user_connections_per_mount', 3000, int)
 MAX_USERS_PER_MOUNT = get_config_value('ntrip', 'max_users_per_mount', 3000, int)  # 每个挂载点每个用户的最大连接数
 MAX_CONNECTIONS_PER_USER = get_config_value('ntrip', 'max_connections_per_user', 3, int)  # 每个用户的最大连接数
+# 取流是否校验"用户-挂载点绑定"：
+#   False（默认，兼容旧行为）= 任一有效用户可拉取任意挂载点
+#   True                      = 仅当挂载点未绑定或绑定到本人时才允许取流
+DOWNLOAD_ENFORCE_USER_BINDING = get_config_value('ntrip', 'download_enforce_user_binding', False, bool)
 MOUNT_TIMEOUT = get_config_value('ntrip', 'mount_timeout', 1800, int)  # 30分钟
 CLIENT_TIMEOUT = get_config_value('ntrip', 'client_timeout', 300, int)  # 5分钟
 CONNECTION_TIMEOUT = get_config_value('ntrip', 'connection_timeout', 1800, int)  # 连接超时时间 (秒)
@@ -222,11 +282,26 @@ SOCKET_TIMEOUT = get_config_value('tcp', 'socket_timeout', 120, int)
 # ==================== 数据转发配置 ====================
 
 # 环形缓冲区配置
-RING_BUFFER_SIZE = get_config_value('data_forwarding', 'ring_buffer_size', 60, int)  # 缓冲区大小
+RING_BUFFER_SIZE = get_config_value('data_forwarding', 'ring_buffer_size', 60, int)  # 保留最近多少秒的数据
+# 硬上限：单挂载点最多缓存的数据块数，防止上游高频小包把内存打满
+RING_BUFFER_MAX_CHUNKS = get_config_value('data_forwarding', 'ring_buffer_max_chunks', 3000, int)
 
 BROADCAST_INTERVAL = get_config_value('data_forwarding', 'broadcast_interval', 0.01, float)  # 广播间隔 (秒)
 
 DATA_SEND_TIMEOUT = get_config_value('data_forwarding', 'data_send_timeout', 5, int)  # 数据发送超时时间（秒）
+
+# 每个客户端的待发队列上限（数据块数）。
+# 客户端 TCP 窗口被打满时队列会积压，超过上限就直接丢弃积压、跳到最新数据，
+# 避免"内存涨爆 + 延迟越拖越长"（实时差分数据过期即无用）。
+CLIENT_SEND_QUEUE_SIZE = get_config_value('data_forwarding', 'client_send_queue_size', 200, int)
+
+# 发送线程数。广播线程只负责切片入队，实际 sendall 由这组线程完成，
+# 一个慢客户端最多占住其中一个线程，不再拖死广播轮次。
+SENDER_THREADS = get_config_value('data_forwarding', 'sender_threads', 8, int)
+
+# 单客户端已取出但未写完的字节上限（含内核没吃下的部分）。
+# 超过即判定客户端长期追不上，丢弃积压、跳到最新数据，防止内存被慢客户端吃光。
+CLIENT_PENDING_MAX_BYTES = get_config_value('data_forwarding', 'client_pending_max_bytes', 1048576, int)
 
 CLIENT_HEALTH_CHECK_INTERVAL = get_config_value('data_forwarding', 'client_health_check_interval', 120, int)  # 客户端健康检查间隔（秒）
 
@@ -310,6 +385,9 @@ CPU_WARNING_THRESHOLD = get_config_value('performance', 'cpu_warning_threshold',
 
 MEMORY_WARNING_THRESHOLD = get_config_value('performance', 'memory_warning_threshold', 80, int)
 
+# 优雅关闭时等待线程退出的最长秒数，超时后强制继续（避免 docker stop 被 SIGKILL）
+SHUTDOWN_TIMEOUT = get_config_value('performance', 'shutdown_timeout', 10, int)
+
 def load_from_env():
     """从环境变量加载配置"""
     global NTRIP_PORT, WEB_PORT, DEBUG, DATABASE_PATH
@@ -338,8 +416,9 @@ def load_from_env():
     
     # 密钥
     if 'SECRET_KEY' in os.environ:
-        global SECRET_KEY
+        global SECRET_KEY, FLASK_SECRET_KEY
         SECRET_KEY = os.environ['SECRET_KEY']
+        FLASK_SECRET_KEY = SECRET_KEY
 
 # ==================== 配置验证 ====================
 

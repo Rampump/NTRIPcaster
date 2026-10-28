@@ -1,0 +1,63 @@
+# Docker Compose 开发环境覆盖配置
+# 用法: docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+# 提供开发调试工具：Adminer(数据库)、Dozzle(日志)、cAdvisor(容器监控)
+
+services:
+  # 数据库管理界面（SQLite 不常用，但保留作为通用数据库工具）
+  adminer:
+    image: adminer:4.8.1
+    container_name: ntrip-adminer
+    hostname: ntrip-adminer
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.60
+    profiles:
+      - dev
+
+  # 日志查看器
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: ntrip-dozzle
+    hostname: ntrip-dozzle
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.61
+    profiles:
+      - dev
+
+  # 容器监控
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: ntrip-cadvisor
+    hostname: ntrip-cadvisor
+    restart: unless-stopped
+    ports:
+      - "8083:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      ntrip-network:
+        ipv4_address: 172.20.0.62
+    profiles:
+      - dev

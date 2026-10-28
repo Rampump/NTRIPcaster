@@ -19,8 +19,35 @@ It used to be a single file 2rtk.py,https://github.com/Rampump/2RTKcaster   . bu
 - This NTRIP caster is still far from the caster in my mind. I will gradually improve it in my spare time.
 - It supports most systems with Python environment, including debian, ubuntu, centos, armbian, etc.
 - Supports Docker deployment.
+- Bilingual web UI: 中文 / English, switchable in the header (the choice is remembered; `?lang=zh|en` forces it). Server-side messages are localized too.
+- "Support the author" entry in the header/footer shows the Alipay and WeChat donation QR codes.
 
 ## Installation Tutorials
+
+### Source Installation (tar.gz, simplest)
+No Docker required, works on any Linux/macOS/Windows with Python 3.8+.
+
+```bash
+# 1. Unpack
+tar -xzf ntripcaster-full.tar.gz
+cd ntripcaster
+
+# 2. Create the config file from the example (then edit the admin password)
+cp config.ini.example config.ini
+
+# 3. Install dependencies (a virtualenv is recommended)
+python3 -m venv venv
+source venv/bin/activate
+python3 -m pip install -r requirements.txt
+
+# 4. Run
+python3 main.py
+```
+
+- The web UI is at `http://yourserverip:5757` (default account `admin` / `admin123` — change it right away).
+- On first run, an empty `secret_key` auto-generates into `data/.secret_key`.
+- **One-click installer (Debian/Ubuntu, installs systemd service)**: `sudo ./install.sh`
+- **Detailed native install guide**: [Linux Native Installation Guide](INSTALL-TUTORIAL-EN.md)
 
 ### Docker Deployment (Recommended)
 Recommended one-click deployment, no manual configuration required.
@@ -105,20 +132,31 @@ For cloud server deployment, please open ports 5757 and 2101 in security setting
 
 ```ini
 [ntrip]
-port = 2101                    # NTRIP service port
-max_connections = 5000         # Maximum connections
+port = 2101                        # NTRIP service port
+download_enforce_user_binding = false  # Require mount<->user binding for downloads
 
-[web] 
-port = 5757                    # Web management port
-refresh_interval = 10          # Data refresh interval
+[web]
+port = 5757                        # Web management port
+realtime_push_interval = 3         # Realtime push interval (seconds)
+
+[database]
+path = 2rtk.db                     # SQLite path; use /app/data/2rtk.db inside Docker
+pool_size = 10                     # Connection pool size
+
+[data_forwarding]
+ring_buffer_size = 60              # Ring buffer window (seconds)
+ring_buffer_max_chunks = 3000      # Max cached chunks per mount
+sender_threads = 8                 # Sender thread count
+client_send_queue_size = 200       # Per-client outbox limit (chunks)
+client_pending_max_bytes = 1048576 # Per-client backlog byte limit
 
 [performance]
-thread_pool_size = 5000        # Concurrent connection thread pool size
-max_workers = 5000             # Maximum worker threads
-ring_buffer_size = 60          # Ring buffer size
+thread_pool_size = 5000            # Concurrent connection thread pool size
 
 [security]
-secret_key = your-secret-key   # Please change the default key in production
+secret_key =                       # Leave empty to auto-generate into data/.secret_key
+login_max_attempts = 5             # Failed login limit before lockout
+login_lockout_seconds = 300        # Lockout duration
 ```
 
 ```ini
@@ -126,6 +164,23 @@ secret_key = your-secret-key   # Please change the default key in production
 username = admin               # Administrator username
 password = admin123            # Administrator password (change in production)
 ```
+
+### Security Notes
+
+- **Only HTTP Basic authentication is supported; Digest has been removed entirely.**
+  NTRIP 1.0 authenticates with the mount password, NTRIP 2.0 with user credentials.
+  The previous Digest implementation never worked (nonces were never validated, and
+  only PBKDF2 hashes are stored, so no HA1 can be derived), and fixing it would have
+  opened a replay window. Digest requests now get a 401 that advertises Basic only,
+  so clients must be reconfigured.
+- **Mount and user passwords are stored as PBKDF2 hashes**; the admin UI can reset but
+  never reveal them, and the API returns a mask. Legacy plaintext rows are migrated on
+  the next password change.
+- **`/classic` has been removed** and now 302-redirects to the SPA dashboard.
+- **`config.ini` is no longer tracked** (it contains the session key and admin
+  password). Run `cp config.ini.example config.ini` on first deploy.
+- Behind a reverse proxy set `[security] trust_proxy_headers = true`; with HTTPS also
+  enable `session_cookie_secure`.
 
 ### Common Issue Diagnosis
 
@@ -161,18 +216,18 @@ curl http://localhost:5757/        # Test Web port
 #### High Concurrency Configuration
 ```ini
 # config.ini optimization configuration
-[ntrip]
+[network]
 max_connections = 10000            # Maximum connections
+
+[ntrip]
 port = 2101
 
 [performance]
 thread_pool_size = 10000           # Thread pool size
 max_workers = 10000                # Maximum worker threads
-ring_buffer_size = 60              # Ring buffer
 
-[network]
-buffer_size = 16384                # Network buffer
-timeout = 30                       # Connection timeout
+[data_forwarding]
+ring_buffer_size = 60              # Ring buffer
 ```
 
 #### System-level Optimization
@@ -193,10 +248,10 @@ sudo sysctl -p
 ```ini
 # config.ini log configuration
 [logging]
-level = INFO                       # DEBUG, INFO, WARNING, ERROR
-format = json                      # json, text
-rotate_size = 100MB               # Log rotation size
-rotate_count = 10                 # Number of log files to keep
+log_level = WARNING                 # DEBUG, INFO, WARNING, ERROR
+log_format = %%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s
+max_log_size = 10485760             # Log rotation size (bytes)
+backup_count = 5                    # Number of log files to keep
 ```
 ## Contributing
 
@@ -213,21 +268,23 @@ This project uses the following excellent open source libraries and tools, and w
 
 | Library | Version | Purpose | License |
 |---------|---------|---------|----------|
-| **Flask** | 2.3.3 | Web framework, providing HTTP services and APIs | BSD-3-Clause |
+| **Flask** | 3.0.3 | Web framework, providing HTTP services and APIs | BSD-3-Clause |
 | **Flask-SocketIO** | 5.3.6 | WebSocket real-time communication support | MIT |
 | **python-socketio** | 5.8.0 | Socket.IO protocol implementation | MIT |
 | **psutil** | 5.9.5 | System performance monitoring and resource statistics | BSD-3-Clause |
-| **pyproj** | 3.6.1 | Geographic coordinate system conversion and projection calculation | MIT |
+| **pyrtcm** | 1.1.8 | RTCM 3.x message parsing (MSM support) | BSD-3-Clause |
+| **pyproj** | 3.7.2 | Geographic coordinate system conversion and projection calculation | MIT |
+| **reverse-geocode** | 1.6.6 | Offline reverse geocoding (STR location info) | MIT |
 
 ### RTCM Parsing Library
 
 **pyrtcm** - Core RTCM message parsing library
-- **Source**: Integrated based on standard [pyrtcm](https://github.com/semuconsulting/pyrtcm) library source code
-- **Version**: Integrated version (to prevent upstream repository deletion risk)
+- **Source**: Installed via pip from the standard [pyrtcm](https://github.com/semuconsulting/pyrtcm) package
+- **Version**: 1.1.8 (pinned for reproducible builds)
 - **Author**: semuconsulting
 - **License**: BSD-3-Clause
-- **Purpose**: Provides complete RTCM 3.x message parsing, encoding and decoding functions
-- **Note**: To ensure project stability, it is recommended to directly integrate the pyrtcm library source code into the project to avoid external dependency risks
+- **Purpose**: Provides complete RTCM 3.x message parsing (MSM4/5/7 for GPS/GLONASS/Galileo/BeiDou)
+- **Note**: The dependency is declared in `requirements.txt`; there is no vendored copy in the repo.
 
 ## Open Source License
 

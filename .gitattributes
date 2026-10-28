@@ -1,1 +1,20 @@
 * text eol=lf
+
+# 二进制文件不要做换行转换，否则 Windows 下 checkout 会把 PNG/ICO 里的
+# 0D 0A 字节序列当换行删掉，图片被静默损坏（原文件只有 * text eol=lf 一条规则）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.bmp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.db binary
+*.sqlite binary

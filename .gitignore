@@ -1,0 +1,51 @@
+# ===== 运行时数据（绝对不要入库）=====
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+logs/
+*.log
+
+# ===== 本地配置与密钥 =====
+# config.ini 含 secret_key、数据库路径、管理员口令，只保留 config.ini.example
+config.ini
+.env
+.env.*
+!.env.example
+.secret_key
+*.pem
+*.key
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ===== 测试产物 =====
+tests/test_users.json
+tests/*.out
+nginx/ssl/*.pem
+
+# ===== 工作区辅助数据 =====
+.workbuddy/

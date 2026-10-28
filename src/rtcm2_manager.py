@@ -23,11 +23,14 @@ class RTCM2ParserManager:
     def start_parser(self, mount_name: str, mode: str = "str_fix", duration: int = 30, 
                      push_callback: Optional[Callable[[Dict], None]] = None) -> bool:
         """启动解析器（兼容原接口）"""
+        # 先停掉旧解析器，且不要在持锁状态下 join 线程：
+        # stop() 需要等解析线程退出，持锁会连带堵住所有 get_result/stop_parser 调用。
         with self.lock:
-            # 如果已存在解析器，先停止
-            if mount_name in self.parsers:
-                self.stop_parser(mount_name)
-            
+            has_existing = mount_name in self.parsers
+        if has_existing:
+            self.stop_parser(mount_name)
+
+        with self.lock:
             try:
                 # 动态导入避免循环导入
                 from .rtcm2 import start_str_fix_parser, start_web_parser
@@ -52,24 +55,30 @@ class RTCM2ParserManager:
                 return False
 
     def stop_parser(self, mount_name: str):
-        """停止解析器（兼容原接口）"""
+        """停止解析器（兼容原接口）
+
+        只在锁内摘除引用，parser.stop() 放到锁外：stop 会 join 解析线程，
+        持锁 join 会把 get_result / start_parser 等调用一起卡住。
+        """
         with self.lock:
-            if mount_name in self.parsers:
-                parser = self.parsers[mount_name]
-                parser.stop()
-                del self.parsers[mount_name]
-                
-                # 从对应的分类字典中删除
-                if mount_name in self.web_parsers:
-                    del self.web_parsers[mount_name]
-                    log_info(f"Web端对[挂载点: {mount_name}]RTCM数据解析已关闭")
+            parser = self.parsers.pop(mount_name, None)
+            in_web = self.web_parsers.pop(mount_name, None) is not None
+            in_str = self.str_parsers.pop(mount_name, None) is not None
 
-                elif mount_name in self.str_parsers:
-                    del self.str_parsers[mount_name]
-                    log_info(f"已关闭对[挂载点: {mount_name}]的STR修正解析")
+        if parser is None:
+            return
 
-                else:
-                    log_info(f"已关闭对[挂载点: {mount_name}]的RTCM数据解析")
+        try:
+            parser.stop()
+        except Exception as e:
+            log_warning(f"停止解析器失败 [挂载点: {mount_name}]: {e}")
+
+        if in_web:
+            log_info(f"Web端对[挂载点: {mount_name}]RTCM数据解析已关闭")
+        elif in_str:
+            log_info(f"已关闭对[挂载点: {mount_name}]的STR修正解析")
+        else:
+            log_info(f"已关闭对[挂载点: {mount_name}]的RTCM数据解析")
              
     def get_result(self, mount_name: str) -> Optional[Dict]:
         """获取解析结果（兼容原接口）"""

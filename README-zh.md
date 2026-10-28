@@ -19,8 +19,35 @@
 - 这个NTRIP caster和我心中的caster还很远。我会在空闲的时间慢慢去完善它。
 - 它支持大多数装有python环境的系统，包括debian、ubuntu、centos、armbian等。
 - 支持docker部署。
+- Web 界面中英双语，顶栏可一键切换（选择会被记住，也可用 `?lang=zh|en` 强制指定），后端返回的提示语同样会跟着切换。
+- 顶栏/页脚的“打赏作者”入口会展示支付宝与微信收款码。
 
 ## 安装教程
+
+### 源码安装（tar.gz，最简单）
+无需 Docker，任何装有 Python 3.8+ 的 Linux / macOS / Windows 均可。
+
+```bash
+# 1. 解压
+tar -xzf ntripcaster-full.tar.gz
+cd ntripcaster
+
+# 2. 从示例复制出配置文件（然后记得改管理员密码）
+cp config.ini.example config.ini
+
+# 3. 安装依赖（推荐用虚拟环境）
+python3 -m venv venv
+source venv/bin/activate
+python3 -m pip install -r requirements.txt
+
+# 4. 启动
+python3 main.py
+```
+
+- Web 管理界面地址 `http://yourserverip:5757`，默认账号 `admin` / `admin123`（登录后请立即修改）。
+- 首次启动时，`secret_key` 留空会自动生成并落盘到 `data/.secret_key`。
+- **一键安装脚本（Debian/Ubuntu，自动装 systemd 服务）**：`sudo ./install.sh`
+- **详细原生安装教程**：[Linux 系统原生安装教程](INSTALL-TUTORIAL.md)
 
 ### Docker 部署（推荐）
 推荐一键部署，无需手动配置。
@@ -105,25 +132,51 @@ docker run -d \
 
 ```ini
 [ntrip]
-port = 2101                    # NTRIP服务端口
-max_connections = 5000         # 最大连接数
+port = 2101                        # NTRIP服务端口
+max_connections = 5000             # 最大连接数（在 [network] 段）
+download_enforce_user_binding = false  # 拉流是否强制校验挂载点与用户的绑定关系
 
-[web] 
-port = 5757                    # Web管理端口
-refresh_interval = 10          # 数据刷新间隔
+[web]
+port = 5757                        # Web管理端口
+realtime_push_interval = 3         # 实时数据推送间隔
+
+[database]
+path = 2rtk.db                     # SQLite 路径，容器内请用 /app/data/2rtk.db
+pool_size = 10                     # 连接池容量
+
+[data_forwarding]
+ring_buffer_size = 60              # 环形缓冲保留秒数
+ring_buffer_max_chunks = 3000      # 单挂载点最大缓存块数
+sender_threads = 8                 # 发送线程数
+client_send_queue_size = 200       # 单客户端待发队列上限（块）
+client_pending_max_bytes = 1048576 # 单客户端积压字节上限
 
 [performance]
-thread_pool_size = 5000        # 并发连接线程池大小
-max_workers = 5000             # 最大工作线程
-ring_buffer_size = 60          # 环形缓冲区大小
+thread_pool_size = 5000            # 并发连接线程池大小
 
 [security]
-secret_key = your-secret-key   # 生产环境请修改默认的key
+secret_key =                       # 留空则自动生成并落盘到 data/.secret_key
+login_max_attempts = 5             # 登录失败次数上限
+login_lockout_seconds = 300        # 锁定时长
 
 [admin]
-username = admin               # 管理员用户名
-password = admin123            # 管理员密码（生产环境请修改）
+username = admin                   # 管理员用户名
+password = admin123                # 管理员密码（生产环境请修改）
 ```
+
+### 安全说明（重要）
+
+- **认证方式只有 HTTP Basic，Digest 已从代码中彻底移除**。NTRIP 1.0 用挂载点口令，
+  NTRIP 2.0 用用户账号口令。原因：仓库原实现的 Digest 从未生效（nonce 不校验，
+  且库里只有 PBKDF2 哈希、算不出客户端期望的 HA1），修好校验反而会引入重放面。
+  现在收到 Digest 请求会直接返回 401 并只宣告 Basic，客户端需改配置。
+- **挂载点口令与用户口令都以 PBKDF2 入库**，管理端只能重置、不能回读；
+  接口返回的是掩码。历史明文数据在下次修改口令时自动迁移。
+- **`/classic` 页面已下线**，访问会 302 跳转到新版单页管理端。
+- **`config.ini` 不再纳入版本库**（含密钥与管理员口令）。首次部署请
+  `cp config.ini.example config.ini` 后再改。
+- 反向代理部署时把 `[security] trust_proxy_headers` 打开，HTTPS 下同时打开
+  `session_cookie_secure`。
 
 ### 常见问题诊断
 
@@ -196,18 +249,18 @@ top -p $(pgrep -f "python.*main.py")
 #### 高并发配置
 ```ini
 # config.ini 优化配置
-[ntrip]
+[network]
 max_connections = 10000            # 最大连接数
+
+[ntrip]
 port = 2101
 
 [performance]
 thread_pool_size = 10000           # 线程池大小
 max_workers = 10000                # 最大工作线程
-ring_buffer_size = 60              # 环形缓冲区
 
-[network]
-buffer_size = 16384                # 网络缓冲区
-timeout = 30                       # 连接超时
+[data_forwarding]
+ring_buffer_size = 60              # 环形缓冲区
 ```
 
 ### 监控和日志
@@ -216,10 +269,10 @@ timeout = 30                       # 连接超时
 ```ini
 # config.ini 日志配置
 [logging]
-level = INFO                       # DEBUG, INFO, WARNING, ERROR
-format = json                      # json, text
-rotate_size = 100MB               # 日志轮转大小
-rotate_count = 10                 # 保留日志文件数
+log_level = WARNING                # DEBUG, INFO, WARNING, ERROR
+log_format = %%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s
+max_log_size = 10485760            # 日志轮转大小（字节）
+backup_count = 5                   # 保留日志文件数
 ```
 
 ## 贡献
@@ -235,20 +288,22 @@ rotate_count = 10                 # 保留日志文件数
 
 | 库 | 版本 | 用途 | 许可证 |
 |----|------|------|--------|
-| **Flask** | 2.3.3 | Web框架，提供HTTP服务和API | BSD-3-Clause |
+| **Flask** | 3.0.3 | Web框架，提供HTTP服务和API | BSD-3-Clause |
 | **Flask-SocketIO** | 5.3.6 | WebSocket实时通信支持 | MIT |
 | **python-socketio** | 5.8.0 | Socket.IO协议实现 | MIT |
 | **psutil** | 5.9.5 | 系统性能监控和资源统计 | BSD-3-Clause |
-| **pyproj** | 3.6.1 | 地理坐标系统转换和投影计算 | MIT |
+| **pyrtcm** | 1.1.8 | RTCM 3.x消息解析（支持MSM消息） | BSD-3-Clause |
+| **pyproj** | 3.7.2 | 地理坐标系统转换和投影计算 | MIT |
+| **reverse-geocode** | 1.6.6 | 离线反向地理编码（STR位置信息） | MIT |
 
 ### RTCM解析库
 
 **pyrtcm** - 核心RTCM消息解析库
-- **来源**: 基于标准 [pyrtcm](https://github.com/semuconsulting/pyrtcm) 库源码集成
-- **版本**: 集成版本（防止上游仓库删除风险）
+- **来源**: 通过 pip 安装的标准 [pyrtcm](https://github.com/semuconsulting/pyrtcm) 包
+- **版本**: 1.1.8（锁定版本，保证构建可复现）
 - **作者**: semuconsulting
 - **许可证**: BSD-3-Clause
-- **用途**: 提供完整的RTCM 3.x消息解析、编码和解码功能
+- **用途**: 提供完整的RTCM 3.x消息解析（GPS/GLONASS/Galileo/北斗的 MSM4/5/7）
 - **说明**: 为确保项目稳定性，建议直接将pyrtcm库源码集成到项目中，避免外部依赖风险
 
 ## 开源许可证

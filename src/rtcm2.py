@@ -650,9 +650,18 @@ class RTCMParserThread(threading.Thread):
 
     # -------------------------- 线程控制 --------------------------
     def stop(self) -> None:
-        """停止解析线程"""
+        """停止解析线程
+
+        先打断阻塞在 pipe 上的读再 join：解析线程只在循环顶部检查 running，
+        直接 join 必须等满读超时（5s），而调用方往往正持有锁（源站重连路径），
+        会把整个服务卡住 5 秒。shutdown 写端让读端立刻收到 EOF。
+        """
         self.running.clear()
-        self.join(timeout=5)
+        try:
+            self.pipe_w.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        self.join(timeout=2)
         log_info(f"[挂载点: {self.mount_name}解析线程已关闭]")
 
 

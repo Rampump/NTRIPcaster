@@ -11,14 +11,14 @@ import psutil
 import re
 from datetime import datetime
 from functools import wraps
-from threading import Thread
+from threading import Thread, Lock
 
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, send_from_directory
 # from flask_cors import CORS  # 已移除，不需要CORS功能
 import os
 from flask_socketio import SocketIO, emit, join_room
 
-from .database import DatabaseManager
+from .database import DatabaseManager, KEEP_USER_BINDING
 from . import config
 from . import logger
 from .logger import log_debug, log_info, log_warning, log_error, log_critical, log_web_request, log_system_event
@@ -49,9 +49,8 @@ class WebManager:
         self.data_forwarder = data_forwarder
         self.start_time = start_time
         
-        # 创建连接管理器实例
-        global rtcm
-        rtcm = connection.ConnectionManager()
+        # 注意：不再额外创建 connection.ConnectionManager() 实例，
+        # 全文件统一使用 connection.get_connection_manager() 单例，避免重复状态。
         
         # 模板目录和静态文件目录
         self.template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
@@ -60,6 +59,19 @@ class WebManager:
         # 创建Flask应用
         self.app = Flask(__name__, static_folder=self.static_dir, static_url_path='/static')
         self.app.secret_key = config.FLASK_SECRET_KEY
+        
+        # 会话安全：HttpOnly + SameSite=Lax（阻断跨站表单提交携带 Cookie）+ 空闲超时
+        from datetime import timedelta
+        self.app.config.update(
+            SESSION_COOKIE_HTTPONLY=True,
+            SESSION_COOKIE_SAMESITE='Lax',
+            SESSION_COOKIE_SECURE=bool(getattr(config, 'SESSION_COOKIE_SECURE', False)),
+            PERMANENT_SESSION_LIFETIME=timedelta(seconds=config.SESSION_TIMEOUT),
+        )
+        
+        # 登录失败计数：{(ip, username): {'count': n, 'locked_until': ts}}
+        self._login_state = {}
+        self._login_state_lock = Lock()
         
         # 配置CORS - 已移除，项目为同域部署，不需要CORS功能
         # CORS(self.app, origins="*" if config.DEBUG else config.WEBSOCKET_CONFIG['cors_allowed_origins'])
@@ -102,6 +114,54 @@ class WebManager:
         except:
             return "0分钟"
     
+    def _client_ip(self):
+        """获取客户端 IP
+
+        只有显式开启 TRUST_PROXY_HEADERS 时才信任 X-Forwarded-For，
+        否则客户端可以随意伪造该头绕过登录限流。
+        """
+        if getattr(config, 'TRUST_PROXY_HEADERS', False):
+            forwarded = request.headers.get('X-Forwarded-For', '')
+            if forwarded:
+                return forwarded.split(',')[0].strip()
+        return request.remote_addr or 'unknown'
+
+    def _login_lock_remaining(self, username):
+        """返回剩余锁定秒数，0 表示未锁定"""
+        key = (self._client_ip(), (username or '').lower())
+        now = time.time()
+        with self._login_state_lock:
+            state = self._login_state.get(key)
+            if not state:
+                return 0
+            remaining = state.get('locked_until', 0) - now
+            if remaining > 0:
+                return int(remaining) + 1
+            # 锁定期已过，重置计数
+            if state.get('locked_until'):
+                self._login_state.pop(key, None)
+            return 0
+
+    def _record_login_failure(self, username):
+        """记录一次登录失败，达到阈值后锁定"""
+        key = (self._client_ip(), (username or '').lower())
+        now = time.time()
+        with self._login_state_lock:
+            state = self._login_state.setdefault(key, {'count': 0, 'locked_until': 0})
+            state['count'] += 1
+            if state['count'] >= config.LOGIN_MAX_ATTEMPTS:
+                state['locked_until'] = now + config.LOGIN_LOCKOUT_SECONDS
+                log_warning(f"登录失败次数过多，已锁定 {config.LOGIN_LOCKOUT_SECONDS}s: ip={key[0]}, user={username}")
+            # 简单防止字典无限增长
+            if len(self._login_state) > 10000:
+                for k in [k for k, v in self._login_state.items() if v.get('locked_until', 0) < now]:
+                    self._login_state.pop(k, None)
+
+    def _clear_login_failure(self, username):
+        key = (self._client_ip(), (username or '').lower())
+        with self._login_state_lock:
+            self._login_state.pop(key, None)
+
     def _validate_alphanumeric(self, value, field_name):
         """验证输入是否只包含英文字母、数字、下划线和中横线"""
         if not value:
@@ -130,12 +190,41 @@ class WebManager:
     def _register_routes(self):
         """注册Flask路由"""
         
+        # 默认拒绝：/api/ 下的接口一律要求登录，白名单放行少数公开接口。
+        # 之前靠逐个接口手加 @require_login，漏加过 /api/system/stats 等 4 个敏感接口。
+        PUBLIC_API_PATHS = {'/api/login', '/api/app_info'}
+        
+        @self.app.before_request
+        def _enforce_api_login():
+            path = request.path
+            if not path.startswith('/api/'):
+                return None
+            if path in PUBLIC_API_PATHS:
+                return None
+            if session.get('admin_logged_in'):
+                return None
+            return jsonify({'error': '未登录或登录已过期'}), 401
+        
         @self.app.route('/static/<path:filename>')
         def static_files(filename):
             """静态文件服务"""
             static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static')
             return send_from_directory(static_dir, filename)
         
+        @self.app.route('/health')
+        def health():
+            """健康检查端点
+
+            供 Docker HEALTHCHECK、compose 的 service_healthy 依赖以及负载均衡探活使用。
+            不要求登录，也不访问数据库，避免探活本身成为压力源。
+            """
+            uptime = time.time() - self.start_time if self.start_time else 0
+            return jsonify({
+                'status': 'ok',
+                'version': config.APP_VERSION,
+                'uptime': round(uptime, 3)
+            }), 200
+
         @self.app.route('/')
         def index():
             """主页 - SPA应用"""
@@ -152,32 +241,9 @@ class WebManager:
                                      website_url='2RTK.COM')
         
         @self.app.route('/classic')
-        @self.require_login
         def classic_index():
-            """经典主页 - 系统状态和挂载点信息"""
-            # 获取系统信息
-            cpu_percent = psutil.cpu_percent(interval=1)
-            memory = psutil.virtual_memory()
-            uptime = time.time() - self.start_time
-            
-            # 获取运行中的挂载点
-            running_mounts = self.db_manager.get_running_mounts()
-            
-            # 获取在线用户
-            online_users = connection.get_connection_manager().get_online_users()
-            
-            # 获取RTCM解析数据
-            parsed_data = connection.get_statistics().get('mounts', {})
-            
-            return self._load_template('index.html', 
-                                        cpu_percent=cpu_percent,
-                                        memory_percent=memory.percent,
-                                        memory_used=memory.used // (1024*1024),
-                                        memory_total=memory.total // (1024*1024),
-                                        uptime=self._format_uptime(uptime),
-                                        running_mounts=running_mounts,
-                                        online_users=online_users,
-                                        parsed_data=parsed_data)
+            """经典页面已并入 SPA，保留路由做重定向（原实现加载不存在的 index.html，必然 404）"""
+            return redirect('/')
         
         @self.app.route('/login', methods=['GET', 'POST'])
         def login():
@@ -208,7 +274,14 @@ class WebManager:
                 if not password_valid:
                     return self._load_template('login.html', error=password_error)
                 
+                # 登录失败限流（按 IP + 用户名）
+                remaining = self._login_lock_remaining(username)
+                if remaining > 0:
+                    return self._load_template('login.html', error=f"登录失败次数过多，请 {remaining} 秒后再试")
+                
                 if self.db_manager.verify_admin(username, password):
+                    self._clear_login_failure(username)
+                    session.permanent = True   # 启用 PERMANENT_SESSION_LIFETIME 空闲超时
                     session['admin_logged_in'] = True
                     session['admin_username'] = username
                     
@@ -219,6 +292,7 @@ class WebManager:
                     
                     return redirect(url_for('index'))
                 else:
+                    self._record_login_failure(username)
                     return self._load_template('login.html', error="用户名或密码错误")
             
             return self._load_template('login.html')
@@ -257,7 +331,14 @@ class WebManager:
                 if any(char in username for char in ["'", '"', ';', '--', '/*', '*/', 'xp_']):
                     return jsonify({'error': '用户名包含非法字符'}), 400
                 
+                # 登录失败限流（按 IP + 用户名）
+                remaining = self._login_lock_remaining(username)
+                if remaining > 0:
+                    return jsonify({'error': f'登录失败次数过多，请 {remaining} 秒后再试'}), 429
+                
                 if self.db_manager.verify_admin(username, password):
+                    self._clear_login_failure(username)
+                    session.permanent = True
                     session['admin_logged_in'] = True
                     session['admin_username'] = username
                     return jsonify({
@@ -266,6 +347,7 @@ class WebManager:
                         'token': 'session_based'  # 使用session而不是JWT
                     })
                 else:
+                    self._record_login_failure(username)
                     return jsonify({'error': '用户名或密码错误'}), 401
             except Exception as e:
                     log_error(f"API登录失败: {e}")
@@ -303,10 +385,15 @@ class WebManager:
                 import threading
                 
                 def delayed_restart():
-                    """延迟重启程序"""
+                    """延迟重启程序：走正常关闭流程，由容器 restart 策略 / systemd 拉起"""
                     time.sleep(1)  # 给响应时间返回
-                    log_info("管理员请求重启程序")
-                    os._exit(0)  # 强制退出程序
+                    log_info("管理员请求重启程序，发送 SIGTERM 触发优雅关闭")
+                    try:
+                        import signal as _signal
+                        _signal.raise_signal(_signal.SIGTERM)
+                    except Exception as exc:
+                        log_error(f"发送重启信号失败，回退为强制退出: {exc}")
+                        os._exit(0)
                 
                 # 在新线程中执行重启
                 restart_thread = threading.Thread(target=delayed_restart)
@@ -343,13 +430,26 @@ class WebManager:
         @self.app.route('/api/mount/initialize', methods=['POST'])
         @self.require_login
         def api_initialize_mount():
-            """初始化挂载点"""
+            """初始化挂载点（仅调试用）
+
+            这个接口不接真实源站，只在内存里登记一个"在线"挂载点。生产环境一旦被调用，
+            SOURCETABLE 里就会出现永远没有数据的幽灵挂载点，客户端连上后干等。
+            因此仅在 debug_mode=true 时开放。
+            """
             try:
-                data = request.get_json()
-                mount_name = data.get('mount_name')
+                if not config.DEBUG:
+                    return jsonify({'error': '调试接口，仅在 debug_mode=true 时可用'}), 403
+
+                data = request.get_json() or {}
+                mount_name = (data.get('mount_name') or '').strip()
                 if not mount_name:
                     return jsonify({'error': 'Mount name is required'}), 400
-                
+
+                # 挂载点名会直接进在线列表与 STR 表，必须与 NTRIP 侧同一套白名单
+                valid, err = self._validate_alphanumeric(mount_name, "挂载点名称")
+                if not valid or len(mount_name) > 50:
+                    return jsonify({'error': err or '挂载点名称过长'}), 400
+
                 connection.get_connection_manager().add_mount_connection(mount_name, '127.0.0.1', 'Web Interface')
                 log_system_event(f"挂载点 {mount_name} 初始化成功")
                 return jsonify({'success': True, 'message': f'Mount {mount_name} initialized'})
@@ -376,12 +476,13 @@ class WebManager:
         @self.app.route('/api/mount/<mount_name>/simulate', methods=['POST'])
         @self.require_login
         def api_simulate_mount_data(mount_name):
-            """为挂载点模拟数据"""
+            """为挂载点模拟数据（原实现只打印日志却返回 success，属于误导，改为明确不支持）"""
             try:
-                # 模拟数据功能暂时不可用
-                log_system_event(f"挂载点 {mount_name} 数据模拟请求（功能暂时不可用）")
-                log_system_event(f"挂载点 {mount_name} 数据模拟启动成功")
-                return jsonify({'success': True, 'message': f'Data simulation started for {mount_name}'})
+                log_system_event(f"挂载点 {mount_name} 数据模拟请求：该功能未实现")
+                return jsonify({
+                    'success': False,
+                    'error': '数据模拟功能未实现，请使用真实 NTRIP 源站推流'
+                }), 501
             except Exception as e:
                 log_error(f"模拟挂载点数据失败: {e}")
                 return jsonify({'error': str(e)}), 500
@@ -564,6 +665,40 @@ class WebManager:
                 log_error(f"获取应用信息失败: {e}")
                 return jsonify({'error': str(e)}), 500
         
+        @self.app.route('/api/admin/password', methods=['PUT'])
+        @self.require_login
+        def api_admin_password():
+            """修改当前登录管理员的口令
+
+            设置页原来把用户名硬编码成 'admin' 再打 /api/users/admin；一旦部署时
+            config.ini 的 [admin] username 换成了别的名字，请求会掉进"普通用户"分支
+            （users 表里并没有这个管理员），返回"用户不存在"，管理员在界面上改不了口令。
+            这里直接以会话里的管理员名为准。
+            """
+            try:
+                data = request.get_json() or {}
+                new_password = (data.get('password') or '').strip()
+
+                if not new_password:
+                    return jsonify({'error': '新密码不能为空'}), 400
+
+                password_valid, password_error = self._validate_alphanumeric(new_password, "新密码")
+                if not password_valid:
+                    return jsonify({'error': password_error}), 400
+
+                if len(new_password) < 6 or len(new_password) > 100:
+                    return jsonify({'error': '新密码长度必须在6-100个字符之间'}), 400
+
+                admin_username = session.get('admin_username') or config.DEFAULT_ADMIN['username']
+                if not self.db_manager.update_admin_password(admin_username, new_password):
+                    return jsonify({'error': '管理员密码更新失败'}), 500
+
+                log_system_event(f"管理员 {admin_username} 修改了口令")
+                return jsonify({'message': '管理员口令更新成功'})
+            except Exception as e:
+                log_error(f"修改管理员口令失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/users', methods=['GET', 'POST'])
         @self.require_login
         def api_users():
@@ -634,6 +769,12 @@ class WebManager:
                     existing_users = [u[1] for u in self.db_manager.get_all_users()]
                     if username in existing_users:
                         return jsonify({'error': '用户名已存在'}), 400
+
+                    # 管理员账号在 admins 表里，users 表同名不会冲突，但管理页会出现一个
+                    # 同名"用户"：点编辑会走到管理员分支，改掉的是真正的管理员口令。
+                    admin_name = str(config.DEFAULT_ADMIN.get('username') or '')
+                    if admin_name and username.lower() == admin_name.lower():
+                        return jsonify({'error': '该用户名已被管理员账号占用'}), 400
                     
                     success, message = self.db_manager.add_user(username, password)
                     if success:
@@ -683,59 +824,64 @@ class WebManager:
                         else:
                             return jsonify({'error': '管理员密码更新失败'}), 500
                     else:
-                        # 普通用户可以修改密码和用户名
+                        # 普通用户：用户名和口令可以在同一次保存里一起改
+                        # （编辑框就是这样提交的，原来写成 if 用户名 / elif 口令，
+                        #  同时提交时口令会被静默丢弃，界面还提示改名成功）
+                        if not new_username and not new_password:
+                            return jsonify({'error': '请提供要更新的密码或用户名'}), 400
+
+                        users = self.db_manager.get_all_users()
+                        user_id = None
+                        for user in users:
+                            if user[1] == username:
+                                user_id = user[0]
+                                break
+
+                        if user_id is None:
+                            return jsonify({'error': '用户不存在'}), 400
+
                         if new_username:
-                            # 修改用户名
-                            # 验证用户名字符
                             username_valid, username_error = self._validate_alphanumeric(new_username, "用户名")
                             if not username_valid:
                                 return jsonify({'error': username_error}), 400
-                            
+
                             if len(new_username) < 2 or len(new_username) > 50:
                                 return jsonify({'error': '用户名长度必须在2-50个字符之间'}), 400
-                            
-                            # 检查新用户名是否已存在
-                            existing_users = [u[1] for u in self.db_manager.get_all_users()]
+
+                            existing_users = [u[1] for u in users]
                             if new_username in existing_users and new_username != username:
                                 return jsonify({'error': '用户名已存在'}), 400
-                            
-                            # 强制下线用户
-                            forwarder.force_disconnect_user(username)
-                            
-                            # 获取用户ID和当前密码
-                            users = self.db_manager.get_all_users()
-                            user_id = None
-                            current_password = None
-                            for user in users:
-                                if user[1] == username:
-                                    user_id = user[0]
-                                    current_password = user[2]  # 获取当前密码哈希
-                                    break
-                            
-                            if user_id is None:
-                                return jsonify({'error': '用户不存在'}), 400
-                            
-                            # 更新用户名（保持原密码）
-                            success, message = self.db_manager.update_user(user_id, new_username, current_password)
-                            if success:
-                                return jsonify({'message': f'用户名从 {username} 更新为 {new_username}'})
-                            else:
-                                return jsonify({'error': message}), 400
-                        
-                        elif new_password:
-                            # 修改密码
+
+                            admin_name = str(config.DEFAULT_ADMIN.get('username') or '')
+                            if admin_name and new_username.lower() == admin_name.lower():
+                                return jsonify({'error': '该用户名已被管理员账号占用'}), 400
+
+                        if new_password:
+                            # 与新增用户同一套校验，避免出现"能改出来但建不出来"的口令
+                            password_valid, password_error = self._validate_alphanumeric(new_password, "新密码")
+                            if not password_valid:
+                                return jsonify({'error': password_error}), 400
                             if len(new_password) < 6 or len(new_password) > 100:
                                 return jsonify({'error': '新密码长度必须在6-100个字符之间'}), 400
-                            
-                            # 强制下线用户
-                            forwarder.force_disconnect_user(username)
-                            success, message = self.db_manager.update_user_password(username, new_password)
-                            if success:
-                                return jsonify({'message': f'用户 {username} 密码更新成功'})
-                            else:
-                                return jsonify({'error': message}), 400
-                        else:
-                            return jsonify({'error': '请提供要更新的密码或用户名'}), 400
+
+                        # 改名或改口令都必须让旧会话失效
+                        forwarder.force_disconnect_user(username)
+
+                        # password=None 表示保留原口令
+                        success, message = self.db_manager.update_user(
+                            user_id,
+                            new_username or username,
+                            new_password or None,
+                        )
+                        if not success:
+                            return jsonify({'error': message}), 400
+
+                        parts = []
+                        if new_username and new_username != username:
+                            parts.append(f'用户名从 {username} 更新为 {new_username}')
+                        if new_password:
+                            parts.append('口令已更新')
+                        return jsonify({'message': '；'.join(parts) if parts else message})
                     
                 except Exception as e:
                     log_error(f"更新用户失败: {e}")
@@ -785,7 +931,9 @@ class WebManager:
                         mount_dict = {
                             'id': mount[0],
                             'mount': mount_name,
-                            'password': mount[2],
+                            # 不回传明文密码：列表接口一旦泄露等于交出全部挂载点口令
+                            'password': '******' if mount[2] else '',
+                            'password_set': bool(mount[2]),
                             'username': mount[4] if len(mount) > 4 else None,  # 用户名
                             'lat': mount[5] if len(mount) > 5 and mount[5] is not None else 0,
                             'lon': mount[6] if len(mount) > 6 and mount[6] is not None else 0,
@@ -810,6 +958,11 @@ class WebManager:
                     mount = data.get('mount', '').strip()
                     password = data.get('password', '').strip()
                     user_id = data.get('user_id')  # 可选的用户ID参数
+                    bind_username = data.get('username')  # 可选的用户名绑定（与 PUT 保持一致）
+                    if isinstance(bind_username, str):
+                        bind_username = bind_username.strip()
+                    else:
+                        bind_username = None
                     
                     # 表单验证
                     if not mount or not password:
@@ -840,6 +993,14 @@ class WebManager:
                                 return jsonify({'error': '指定的用户不存在'}), 400
                         except (ValueError, TypeError):
                             return jsonify({'error': '用户ID格式错误'}), 400
+                    # 也允许直接传用户名（写入路径只认 user_id，但前端/脚本两种写法都存在，
+                    # 以前传 username 会被静默忽略，建出来的挂载点是"未绑定"状态）
+                    elif bind_username:
+                        users = self.db_manager.get_all_users()
+                        matched = [u for u in users if u[1] == bind_username]
+                        if not matched:
+                            return jsonify({'error': f'用户 "{bind_username}" 不存在'}), 400
+                        user_id = matched[0][0]
                     
                     # 检查挂载点是否已存在
                     existing_mounts = [m[1] for m in self.db_manager.get_all_mounts()]
@@ -871,6 +1032,8 @@ class WebManager:
                     new_mount_name = data.get('mount_name', '').strip()
                     new_user_id = data.get('user_id')
                     username = data.get('username')
+                    # 请求体里没有绑定信息时，必须"保持原绑定"，不能把 None 当成解绑
+                    binding_provided = ('user_id' in data) or ('username' in data)
                     
                     # 验证新挂载点名称
                     if new_mount_name:
@@ -931,35 +1094,52 @@ class WebManager:
                         if len(new_password) < 6 or len(new_password) > 100:
                             return jsonify({'error': '新密码长度必须在6-100个字符之间'}), 400
                     
-                    # 强制下线挂载点
-                    forwarder.force_disconnect_mount(mount_name)
-                    
-                    # 获取挂载点ID
+                    # 强制下线挂载点：读当前记录（既用于判断是否真的变了，也用于改名后清理旧在线条目）
                     mounts = self.db_manager.get_all_mounts()
-                    mount_id = None
+                    current = None
                     for mount in mounts:
                         if mount[1] == mount_name:  # mount[1] 是挂载点名称
-                            mount_id = mount[0]  # mount[0] 是ID
+                            current = mount
                             break
                     
-                    if mount_id is None:
+                    if current is None:
                         return jsonify({'error': '挂载点不存在'}), 400
+                    
+                    mount_id = current[0]
+                    old_user_id = current[3]
                     
                     # 使用update_mount函数更新挂载点信息
                     success, result = self.db_manager.update_mount(
                         mount_id, 
                         new_mount_name if new_mount_name else None,
                         new_password if new_password else None,
-                        new_user_id
+                        new_user_id if binding_provided else KEEP_USER_BINDING
                     )
                     if success:
+                        # 名称/口令/绑定任何一项变了，都必须让现有连接失效：
+                        # 旧口令的源站继续推流等于口令修改没生效，改名后旧名字还会残留在
+                        # 在线表与 STR 表里（管理页出现一个注册表中并不存在的挂载点）。
+                        renamed = bool(new_mount_name) and new_mount_name != mount_name
+                        binding_changed = binding_provided and new_user_id != old_user_id
+                        if renamed or binding_changed or new_password:
+                            try:
+                                cm = connection.get_connection_manager()
+                                # 先断开源站（upload 端），再清理下载端与缓冲区
+                                cm.remove_mount_connection(
+                                    mount_name,
+                                    '挂载点已重命名为 %s' % new_mount_name if renamed else '挂载点配置已更新'
+                                )
+                                forwarder.force_disconnect_mount(mount_name)
+                            except Exception as cleanup_error:
+                                log_warning(f"更新挂载点后清理在线连接失败: {cleanup_error}")
+                        
                         # 构建返回消息
                         messages = []
                         if new_mount_name:
                             messages.append(f'挂载点名称从 {mount_name} 更新为 {new_mount_name}')
                         if new_password:
                             messages.append('挂载点密码已更新')
-                        if 'username' in data or new_user_id is not None:
+                        if binding_provided:
                             if new_user_id is None:
                                 messages.append('挂载点所属用户已清除')
                             else:
@@ -1032,6 +1212,7 @@ class WebManager:
                 return jsonify({'error': str(e)}), 500
         
         @self.app.route('/api/system/stats')
+        @self.require_login
         def api_system_stats():
             """获取系统统计数据"""
             try:
@@ -1049,6 +1230,7 @@ class WebManager:
                 return jsonify({'error': str(e)}), 500
         
         @self.app.route('/api/str-table', methods=['GET'])
+        @self.require_login
         def api_str_table():
             """获取实时STR表数据"""
             try:
@@ -1073,6 +1255,7 @@ class WebManager:
                 }), 500
         
         @self.app.route('/api/mounts/online', methods=['GET'])
+        @self.require_login
         def api_online_mounts_detailed():
             """获取详细的在线挂载点信息"""
             try:
@@ -1096,7 +1279,7 @@ class WebManager:
                     'timestamp': time.time()
                 })
             except Exception as e:
-                log_error(f"获取挂载点{mount_name}历史数据失败: {e}")
+                log_error(f"获取在线挂载点详细信息失败: {e}")
                 return jsonify({
                     'success': False,
                     'error': str(e)
@@ -1133,10 +1316,13 @@ class WebManager:
         """注册SocketIO事件"""
         
         @self.socketio.on('connect')
-        def handle_connect():
-            """客户端连接"""
-            from flask import session
-            client_id = session.get('sid', 'unknown')
+        def handle_connect(auth=None):
+            """客户端连接：必须先登录，否则直接拒绝握手"""
+            from flask import session as flask_session
+            if not flask_session.get('admin_logged_in'):
+                log_warning(f"拒绝未登录的 WebSocket 连接: {request.remote_addr}")
+                return False
+            client_id = flask_session.get('sid', 'unknown')
             log_web_request('websocket', 'connect', client_id, 'WebSocket客户端连接')
             # 将客户端加入到数据推送房间
             join_room('data_push')
@@ -1244,50 +1430,61 @@ class WebManager:
             log_system_event('Web实时数据推送已停止')
     
     def _push_data_loop(self):
-        """实时数据推送循环"""
+        """实时数据推送循环
+
+        原实现每 3 秒无差别推一遍四份数据：
+        - 挂载点/用户上下线最多要等 3 秒才反映到界面（"断线了但页面还显示在线"）；
+        - 统计里的运行时长/连接数取自 10 秒缓存，跳变更明显。
+        现在改成两档：
+        1) 每 0.5 秒比对一次"拓扑签名"（挂载点名集合 + 用户连接数），一有变化立刻推；
+        2) 每 REALTIME_PUSH_INTERVAL 秒仍然全量推一次（统计、STR 表、心跳）。
+        """
         log_info("数据推送循环已启动")
+        tick = 0.5
+        last_users_sig = None
+        last_mounts_sig = None
+        last_full_push = 0.0
+
         while self.push_running:
             try:
-                # 推送系统统计数据
-                server = get_server_instance()
-                if server and hasattr(server, 'get_system_stats'):
-                    stats = server.get_system_stats()
+                cm = connection.get_connection_manager()
+                now = time.time()
+
+                # 先比签名（只读名字，不深拷贝），有变化才去取完整快照
+                mounts_sig, users_sig = cm.get_online_signature()
+                changed = (users_sig != last_users_sig) or (mounts_sig != last_mounts_sig)
+                full_due = (now - last_full_push) >= config.REALTIME_PUSH_INTERVAL
+
+                if changed or full_due:
+                    self.socketio.emit('online_users_update', {
+                        'users': cm.get_online_users(),
+                        'timestamp': now
+                    }, to='data_push')
+                    self.socketio.emit('online_mounts_update', {
+                        'mounts': cm.get_online_mounts(),
+                        'timestamp': now
+                    }, to='data_push')
+                    last_users_sig = users_sig
+                    last_mounts_sig = mounts_sig
+
+                if full_due:
+                    last_full_push = now
+
+                    server = get_server_instance()
+                    stats = server.get_system_stats() if server and hasattr(server, 'get_system_stats') else None
                     if stats:
                         self.socketio.emit('system_stats_update', {
                             'stats': stats,
-                            'timestamp': time.time()
+                            'timestamp': now
                         }, to='data_push')
-                        # 移除调试日志输出
-                pass
-                
-                # 推送在线用户列表
-                online_users = connection.get_connection_manager().get_online_users()
-                self.socketio.emit('online_users_update', {
-                    'users': online_users,
-                    'timestamp': time.time()
-                }, to='data_push')
-                # 移除调试日志输出
-                pass
-                
-                # 推送在线挂载点列表
-                online_mounts = connection.get_connection_manager().get_online_mounts()
-                self.socketio.emit('online_mounts_update', {
-                    'mounts': online_mounts,
-                    'timestamp': time.time()
-                }, to='data_push')
-                # 移除调试日志输出
-                pass
-                
-                # 推送STR表数据
-                str_data = connection.get_connection_manager().get_all_str_data()
-                self.socketio.emit('str_data_update', {
-                    'str_data': str_data,
-                    'timestamp': time.time()
-                }, to='data_push')
-                # 移除调试日志输出
-                pass
-                
-                time.sleep(config.REALTIME_PUSH_INTERVAL)
+
+                    str_data = cm.get_all_str_data()
+                    self.socketio.emit('str_data_update', {
+                        'str_data': str_data,
+                        'timestamp': now
+                    }, to='data_push')
+
+                time.sleep(tick)
             except Exception as e:
                 log_error(f"数据推送异常: {e}", exc_info=True)
                 time.sleep(1)

@@ -22,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # 复制并安装Python依赖
 COPY requirements.txt .
 # 首先升级setuptools到安全版本以修复CVE-2025-47273和CVE-2024-6345
-RUN pip install --upgrade pip setuptools>=78.1.1 wheel && \
+RUN pip install --upgrade pip "setuptools>=78.1.1" wheel && \
     pip install --no-cache-dir -r requirements.txt
 
 # 生产镜像
@@ -45,7 +45,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH" \
     DEBIAN_FRONTEND=noninteractive \
-    TZ=UTC
+    TZ=UTC \
+    DATABASE_PATH=/app/data/2rtk.db \
+    LOG_DIR=/app/logs \
+    DATA_DIR=/app/data
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -69,12 +72,11 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 
 # 确保生产环境也使用安全版本的setuptools
-RUN pip install --upgrade setuptools>=78.1.1
+RUN pip install --upgrade "setuptools>=78.1.1"
 
 # 复制应用代码（选择性复制，避免复制不必要的文件）
 COPY --chown=ntrip:ntrip main.py healthcheck.py config.ini.example ./
 COPY --chown=ntrip:ntrip src/ ./src/
-COPY --chown=ntrip:ntrip pyrtcm/ ./pyrtcm/
 COPY --chown=ntrip:ntrip static/ ./static/
 COPY --chown=ntrip:ntrip templates/ ./templates/
 

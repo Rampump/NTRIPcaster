@@ -1,5 +1,5 @@
 #!/bin/bash
-# NTRIP Caster Docker部署脚本 v2.1.8
+# NTRIP Caster Docker部署脚本 v2.2.0
 # 支持开发、测试、生产环境的完整部署解决方案
 
 set -euo pipefail
@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 # 配置变量
 IMAGE_NAME="ntrip-caster"
-IMAGE_TAG="2.1.8"
+IMAGE_TAG="2.2.0"
 CONTAINER_NAME="ntrip-caster"
 NETWORK_NAME="ntrip-network"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,7 +62,7 @@ show_banner() {
     ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
 EOF
     echo -e "${NC}"
-    echo -e "${GREEN}    NTRIP Caster Docker 部署脚本 v2.1.8${NC}"
+    echo -e "${GREEN}    NTRIP Caster Docker 部署脚本 v2.2.0${NC}"
     echo -e "${BLUE}    环境: ${ENVIRONMENT} | 配置文件: ${COMPOSE_FILES}${NC}"
     echo
 }
@@ -231,7 +231,6 @@ WEB_PORT=5757
 
 # 日志配置
 LOG_LEVEL=INFO
-LOG_FORMAT=json
 
 # 数据库配置
 DATABASE_PATH=/app/data/2rtk.db
@@ -358,14 +357,13 @@ global:
   evaluation_interval: 15s
 
 rule_files:
-  # - "first_rules.yml"
-  # - "second_rules.yml"
+  - "/etc/prometheus/rules/*.yml"
 
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
-  
+
   - job_name: 'ntrip-caster'
     static_configs:
       - targets: ['ntrip-caster:5757']
@@ -493,7 +491,7 @@ view_status() {
 
 # 显示帮助信息
 show_help() {
-    echo "NTRIP Caster Docker部署脚本 v2.1.8"
+    echo "NTRIP Caster Docker部署脚本 v2.2.0"
     echo
     echo "用法: $0 [选项] [命令] [参数]"
     echo
@@ -536,7 +534,7 @@ show_help() {
 check_health() {
     log_info "检查服务健康状态..."
     
-    local services=("ntrip-caster" "ntrip-nginx" "ntrip-prometheus" "ntrip-grafana")
+    local services=("ntrip-caster" "nginx" "prometheus" "grafana")
     local healthy=true
     
     for service in "${services[@]}"; do

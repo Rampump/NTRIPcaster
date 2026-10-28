@@ -3,6 +3,7 @@
 
 import time
 import json
+import secrets
 import threading
 from threading import Lock, RLock, Thread
 from collections import defaultdict, deque
@@ -45,6 +46,11 @@ class MountInfo:
     data_rate: float = 0.0
     data_count: int = 0
     last_data_time: Optional[float] = None
+
+    # 近 10 秒的 (时间戳, 字节数) 样本，用于算"当前速率"。
+    # 原来 data_rate = total_bytes / uptime 是自连上以来的累计平均：
+    # 一条已经推了两小时的流，即使此刻完全没数据，速率也照样显示成正常值。
+    rate_samples: deque = field(default_factory=lambda: deque(maxlen=2000), repr=False, compare=False)
     
     # 状态信息
     status: str = 'online'  # 'online', 'offline'
@@ -142,58 +148,35 @@ class ConnectionManager:
             pass
     
     def force_refresh_connections(self):
-        """强制刷新连接状态并打印详细信息"""
-        # print("\n=== 强制刷新连接状态 ===")
-        # print(f"当前时间: {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
-        # 检查挂载点连接的有效性
-        invalid_mounts = []
-        for mount_name, mount_info in self.online_mounts.items():
-            idle_time = mount_info.idle_time
-            if idle_time > 60:  # 超过60秒没有数据
-                invalid_mounts.append(mount_name)
-                # print(f">>> 警告: 挂载点 {mount_name} 已空闲 {idle_time:.1f}秒")
+        """刷新连接状态
+
+        原实现遍历所有挂载点算了一遍 invalid_mounts 却直接丢弃，纯属空转；
+        这里保留接口但只做轻量清理，实际僵尸判定见 cleanup_zombie_connections()。
+        """
         self.print_active_connections()
     
     def cleanup_zombie_connections(self):
-        """清理僵尸连接 - 检查系统层面socket状态"""
-        import subprocess
-        import re
-        
+        """清理僵尸连接（纯应用层判定）
+
+        原实现在每个源站连接到来时 fork 一次 `netstat -an`，且硬编码端口 2101：
+        一旦改了 NTRIP 端口，established_ips 恒为空，会把所有在线挂载点误判为
+        "僵尸"并强杀（每次源站重连都会踢掉全部在线挂载点）。
+        这里改为基于应用层空闲时间的判定，不再依赖系统命令，也不再有端口硬编码。
+        """
         try:
-            # 获取系统层面的socket连接状态
-            result = subprocess.run(['netstat', '-an'], capture_output=True, text=True, shell=True)
-            if result.returncode != 0:
-                log_warning("无法获取系统socket状态")
-                return
-            
-            # 解析ESTABLISHED连接
-            established_ips = set()
-            for line in result.stdout.split('\n'):
-                if ':2101' in line and 'ESTABLISHED' in line:
-                    # 提取远程IP地址
-                    match = re.search(r'(\d+\.\d+\.\d+\.\d+):(\d+)\s+ESTABLISHED', line)
-                    if match:
-                        remote_ip = match.group(1)
-                        established_ips.add(remote_ip)
-            
-            # 检查应用层连接状态
+            timeout = getattr(config, 'MOUNT_TIMEOUT', 1800)
             with self.mount_lock:
-                zombie_mounts = []
-                for mount_name, mount_info in self.online_mounts.items():
-                    if mount_info.ip_address not in established_ips:
-                        zombie_mounts.append(mount_name)
-                        log_warning(f"检测到僵尸连接: 挂载点 {mount_name}, IP {mount_info.ip_address}")
-                
-                # 清理僵尸连接
-                for mount_name in zombie_mounts:
-                    log_info(f"清理僵尸连接: {mount_name}")
-                    self.remove_mount_connection(mount_name, "僵尸连接清理")
-                
-                if zombie_mounts:
-                    log_info(f"已清理 {len(zombie_mounts)} 个僵尸连接")
-                else:
-                    log_debug("未发现僵尸连接")
-                    
+                zombie_mounts = [
+                    mount_name for mount_name, mount_info in self.online_mounts.items()
+                    if mount_info.idle_time > timeout
+                ]
+            
+            for mount_name in zombie_mounts:
+                log_warning(f"清理空闲超时的挂载点连接: {mount_name} (空闲超过 {timeout}s)")
+                self.remove_mount_connection(mount_name, "空闲超时清理")
+            
+            if zombie_mounts:
+                log_info(f"已清理 {len(zombie_mounts)} 个空闲超时连接")
         except Exception as e:
             log_error(f"清理僵尸连接时发生异常: {e}", exc_info=True)
     
@@ -204,6 +187,8 @@ class ConnectionManager:
                 log_debug(f"挂载点 {mount_name} 仍在线程表中，可能是相同IP重复连接的清理过程")
                
                 del self.online_mounts[mount_name]
+                # 重连场景：旧的下游订阅连接必须一并清理，否则 user_count 错位
+                self._drop_mount_subscribers(mount_name)
             
             log_debug(f"开始创建挂载点连接 - 名称: {mount_name}, IP: {ip_address}, User-Agent: {user_agent}, 协议版本: {protocol_version}")
             
@@ -220,18 +205,20 @@ class ConnectionManager:
             self.online_mounts[mount_name] = mount_info
             log_debug(f"挂载点 {mount_name} 已添加到在线列表，当前在线挂载点数量: {len(self.online_mounts)}")
             
-            # 生成初始STR表
+            # 生成初始STR表（只改内存字段，仍在锁内）
             self._generate_initial_str(mount_name)
-            
-            # 启动STR修正解析流程
-            self.start_str_correction(mount_name)
-            
-            log_info(f"挂载点 {mount_name} 已上线，IP: {ip_address}当前在线挂载点数量: {len(self.online_mounts)}")
-            log_debug(f"挂载点 {mount_name} 连接成功，初始状态: {mount_info.status}, 连接时间: {mount_info.connect_datetime}")
-            
-            self.print_active_connections()
-            
-            return True, "Mount point connected successfully"
+
+        # 启动STR修正解析流程必须放在锁外：它会创建/停掉解析线程，
+        # stop_parser 需要 join 旧线程，持 mount_lock 时源站重连会把所有
+        # 鉴权、在线查询、SOURCETABLE 一起堵住（最坏 5 秒）。
+        self.start_str_correction(mount_name)
+
+        log_info(f"挂载点 {mount_name} 已上线，IP: {ip_address}当前在线挂载点数量: {len(self.online_mounts)}")
+        log_debug(f"挂载点 {mount_name} 连接成功，初始状态: {mount_info.status}, 连接时间: {mount_info.connect_datetime}")
+        
+        self.print_active_connections()
+        
+        return True, "Mount point connected successfully"
     
     def remove_mount_connection(self, mount_name, reason="主动断开"):
         """移除挂载点连接（上传端断开）"""
@@ -258,7 +245,19 @@ class ConnectionManager:
                     actual_reason = "异常离线"
                 
                 del self.online_mounts[mount_name]
-                
+
+                mount_info.rate_samples.clear()
+                mount_info.data_rate = 0.0
+
+                # 挂载点（源站）下线时，把仍订阅它的下游连接一并清掉：
+                # mount_connection_count 统计的是"下游拉流连接数"，只应由
+                # add_user_connection(+1)/remove_user_connection(-1) 管理。
+                # 原来在这里直接 pop(mount_name)，会让"在线用户数"（来自 online_users）
+                # 与"挂载点详情的人头数"（来自 mount_connection_count）永久错位——
+                # 顶部显示有 1 个用户连接，挂载点详情却显示 0。
+                # 正确做法是断开下游连接，让 remove_user_connection 把两边计数同步减到 0。
+                self._drop_mount_subscribers(mount_name)
+
                 log_info(f"挂载点 {mount_name} 已下线，连接时长: {mount_info.uptime:.1f}秒，原因: {actual_reason}")
                 log_debug(f"挂载点 {mount_name} 移除完成，剩余在线挂载点数量: {len(self.online_mounts)}")
                 self.print_active_connections()
@@ -268,36 +267,79 @@ class ConnectionManager:
                 log_debug(f"尝试移除不存在的挂载点: {mount_name}")
                 return False
     
+    def _drop_mount_subscribers(self, mount_name):
+        """断开并清理所有订阅指定挂载点的下游连接。
+
+        源站下线时调用，让 user_connection_count / mount_connection_count 同步归零，
+        避免"在线用户数"与"挂载点详情人头数"错位。
+        只清理 connection 侧记录；socket 由 forwarder 侧的发送线程自行检测关闭，
+        这里同步关掉 conn['client_socket'] 让下游尽快感知断线。
+        """
+        with self.user_lock:
+            usernames = list(self.online_users.keys())
+            for username in usernames:
+                conns = self.online_users.get(username)
+                if not conns:
+                    continue
+                to_remove = [i for i, c in enumerate(conns) if c.get('mount_name') == mount_name]
+                if not to_remove:
+                    continue
+                for i in reversed(to_remove):
+                    conn = conns[i]
+                    try:
+                        if conn.get('client_socket'):
+                            conn['client_socket'].close()
+                    except Exception:
+                        pass
+                    self.mount_connection_count[mount_name] = max(
+                        0, self.mount_connection_count[mount_name] - 1)
+                    self.user_connection_count[username] = max(
+                        0, self.user_connection_count[username] - 1)
+                    del conns[i]
+                    log_debug(f"挂载点 {mount_name} 下线，清理下游用户 {username} 的连接")
+                if not conns:
+                    del self.online_users[username]
+                    self.user_connection_count.pop(username, None)
+    
     def _generate_initial_str(self, mount_name: str):
         """生成初始STR表"""
         parse_result = {}  
         self._process_str_data(mount_name, parse_result, mode="initial")
+    def _apply_data_stats(self, mount_info: MountInfo, data_size: int, now: float):
+        """累计字节并刷新"当前速率"（10 秒滑动窗口）
+
+        调用方必须已持有 mount_lock。
+        """
+        mount_info.last_update = now
+        mount_info.last_data_time = now
+        mount_info.total_bytes += data_size
+        mount_info.data_count += 1
+
+        samples = mount_info.rate_samples
+        samples.append((now, data_size))
+        horizon = now - 10.0
+        while samples and samples[0][0] < horizon:
+            samples.popleft()
+
+        window = now - samples[0][0] if samples else 0.0
+        # 样本跨度太短（刚连上/刚恢复）时不做除法，避免出现几 MB/s 的虚高尖峰
+        if window >= 1.0:
+            mount_info.data_rate = sum(size for _, size in samples) / window
+        else:
+            mount_info.data_rate = float(data_size)
+
     def _update_message_statistics(self, mount_name: str, parsed_messages, data_size: int) -> bool:
         """更新挂载点基本统计信息"""
-        if mount_name not in self.online_mounts:
-            log_debug(f"统计更新失败 - 挂载点 {mount_name} 不在线")
-            return False
-        
-        mount_info = self.online_mounts[mount_name]
         current_time = time.time()
-        old_total_bytes = mount_info.total_bytes
-        old_data_rate = mount_info.data_rate
-        
+
         with self.mount_lock:
-            
-            mount_info.last_update = current_time
-            mount_info.last_data_time = current_time
-            mount_info.total_bytes += data_size
-            mount_info.data_count += 1
-            
-            uptime = mount_info.uptime
-            if uptime > 0:
-                mount_info.data_rate = mount_info.total_bytes / uptime
-            
-            # 移除频繁的统计更新debug日志，避免刷屏
-            # log_debug(f"挂载点 {mount_name} 统计更新: 数据包大小={data_size}B, 累计字节={mount_info.total_bytes}B (增加{data_size}B), 数据速率={mount_info.data_rate:.2f}B/s (原{old_data_rate:.2f}B/s)")
-            # log_debug(f"挂载点 {mount_name} 计数更新: 数据包数={mount_info.data_count}, 运行时间={uptime:.1f}秒, 空闲时间={mount_info.idle_time:.1f}秒")
-        
+            mount_info = self.online_mounts.get(mount_name)
+            if mount_info is None:
+                log_debug(f"统计更新失败 - 挂载点 {mount_name} 不在线")
+                return False
+
+            self._apply_data_stats(mount_info, data_size, current_time)
+
         return True
     
     def update_mount_data(self, mount_name: str, data_size: int) -> bool:
@@ -309,9 +351,9 @@ class ConnectionManager:
     
     def get_mount_str_data(self, mount_name: str) -> Optional[str]:
         """获取挂载点的STR表数据"""
-        if mount_name in self.online_mounts:
-            return self.online_mounts[mount_name].str_data
-        return None
+        with self.mount_lock:
+            mount_info = self.online_mounts.get(mount_name)
+            return mount_info.str_data if mount_info is not None else None
     
     def get_all_str_data(self) -> Dict[str, str]:
         """获取所有挂载点的STR表数据"""
@@ -326,7 +368,9 @@ class ConnectionManager:
     def add_user_connection(self, username, mount_name, ip_address, user_agent="", protocol_version="1.0", client_socket=None):
         """添加用户连接"""
         with self.user_lock:
-            connection_id = f"{username}_{mount_name}_{int(time.time())}"
+            # 连接 ID 必须唯一：原来只用秒级时间戳，同一秒内的多条连接会撞 ID，
+            # 关闭其中一条时按 ID 匹配会误删同用户同挂载点的其他连接。
+            connection_id = f"{username}_{mount_name}_{int(time.time())}_{secrets.token_hex(3)}"
             
             socket_info = "无socket" if client_socket is None else f"端口:{getattr(client_socket, 'getpeername', lambda: ('未知', '未知'))()[1] if hasattr(client_socket, 'getpeername') else '未知'}"
             log_debug(f"创建用户连接 - 用户: {username}, 挂载点: {mount_name}, IP: {ip_address}, {socket_info}, User-Agent: {user_agent}")
@@ -385,7 +429,10 @@ class ConnectionManager:
                 
                 if should_remove:
                     connections_to_remove.append(i)
-                    self.mount_connection_count[conn['mount_name']] -= 1
+                    # 计数器兜底不为负：重复清理（socket 已断 + 转发器再断一次）
+                    # 会把数字压到 -1，前端就一直显示错的在线数
+                    self.mount_connection_count[conn['mount_name']] = max(
+                        0, self.mount_connection_count[conn['mount_name']] - 1)
                     
                     
                     if conn.get('client_socket'):
@@ -399,7 +446,8 @@ class ConnectionManager:
 
             for i in reversed(connections_to_remove):
                 del self.online_users[username][i]
-                self.user_connection_count[username] -= 1
+                self.user_connection_count[username] = max(
+                    0, self.user_connection_count[username] - 1)
             
             if not self.online_users[username]:
                 del self.online_users[username]
@@ -408,15 +456,18 @@ class ConnectionManager:
             return len(connections_to_remove) > 0
     
     def update_mount_data_stats(self, mount_name, data_size):
-        """更新挂载点数据统计"""
-        if mount_name in self.online_mounts:
-            mount_info = self.online_mounts[mount_name]
-            mount_info.data_count += 1
-            mount_info.last_data_time = time.time()
-            mount_info.total_bytes += data_size
-            uptime = mount_info.uptime
-            if uptime > 0:
-                mount_info.data_rate = mount_info.total_bytes / uptime
+        """更新挂载点数据统计
+
+        由源站接收线程逐块调用，必须持锁：原来在锁外先判断再改，
+        与 remove_mount_connection 并发时会 KeyError（源站刚断、包还在路上）。
+        """
+        now = time.time()
+        with self.mount_lock:
+            mount_info = self.online_mounts.get(mount_name)
+            if mount_info is None:
+                return False
+            self._apply_data_stats(mount_info, data_size, now)
+            return True
     
     def update_user_activity(self, username, connection_id, bytes_sent=0):
         """更新用户状态"""
@@ -451,7 +502,8 @@ class ConnectionManager:
     
     def get_user_connection_count(self, username):
         """获取用户连接数"""
-        return self.user_connection_count.get(username, 0)
+        with self.user_lock:
+            return self.user_connection_count.get(username, 0)
     
     def get_user_connect_time(self, username):
         """获取用户最新连接时间"""
@@ -464,7 +516,8 @@ class ConnectionManager:
     
     def get_mount_connection_count(self, mount_name):
         """获取挂载点连接数"""
-        return self.mount_connection_count.get(mount_name, 0)
+        with self.mount_lock:
+            return self.mount_connection_count.get(mount_name, 0)
     
     def get_online_mounts(self):
         """获取在线挂载点列表"""
@@ -472,15 +525,34 @@ class ConnectionManager:
             return {name: info.to_dict() for name, info in self.online_mounts.items()}
     
     def get_online_users(self):
-        """获取在线用户列表"""
+        """获取在线用户列表
+
+        剔除 socket 对象：返回结果会被直接 emit 到前端，只要混进一个不可序列化的
+        对象，整条 online_users_update 就会失败（前端列表永远不更新）。
+        """
         with self.user_lock:
-            return dict(self.online_users)
+            return {
+                name: [{k: v for k, v in conn.items() if k != 'client_socket'} for conn in conns]
+                for name, conns in self.online_users.items()
+            }
+
+    def get_online_signature(self):
+        """轻量签名，用于判断"上下线有没有变化"
+
+        推送循环每 0.5 秒比对一次。签名只取名字和连接数，不构造 to_dict()，
+        3000 个挂载点下比每次全量深拷贝便宜两个数量级。
+        """
+        with self.mount_lock:
+            mounts = tuple(sorted(self.online_mounts.keys()))
+        with self.user_lock:
+            users = tuple(sorted((name, len(conns)) for name, conns in self.online_users.items()))
+        return mounts, users
     
     def get_mount_info(self, mount_name):
-        """获取挂载点信息"""
-        if mount_name in self.online_mounts:
-            return self.online_mounts[mount_name].to_dict()
-        return None
+        """获取挂载点信息（持锁：字典可能被另一个线程并发增删）"""
+        with self.mount_lock:
+            mount_info = self.online_mounts.get(mount_name)
+            return mount_info.to_dict() if mount_info is not None else None
     
     def get_user_connections(self, username):
         """获取用户连接信息"""
@@ -488,18 +560,19 @@ class ConnectionManager:
     
     def get_mount_statistics(self, mount_name: str) -> Optional[Dict[str, Any]]:
         """获取挂载点统计信息"""
-        if mount_name not in self.online_mounts:
-            return None
-        
-        mount_info = self.online_mounts[mount_name]
-        return {
-            'mount_name': mount_name,
-            'status': mount_info.status,
-            'uptime': mount_info.uptime,
-            'total_bytes': mount_info.total_bytes,
-            'data_rate': mount_info.data_rate,
-            'data_count': mount_info.data_count
-        }
+        with self.mount_lock:
+            mount_info = self.online_mounts.get(mount_name)
+            if mount_info is None:
+                return None
+            
+            return {
+                'mount_name': mount_name,
+                'status': mount_info.status,
+                'uptime': mount_info.uptime,
+                'total_bytes': mount_info.total_bytes,
+                'data_rate': mount_info.data_rate,
+                'data_count': mount_info.data_count
+            }
     
     def generate_mount_list(self):
         """生成挂载点列表数据"""
@@ -541,10 +614,17 @@ class ConnectionManager:
         return mount_list
     
     def get_statistics(self):
-        """获取总体统计信息"""
+        """获取总体统计信息
+
+        口径说明（前端"用户数"曾经对不上就出在这里）：
+        - total_users       在线**账号**数（同一账号多条连接只算一个人）
+        - total_connections 在线**连接**数（每条 NTRIP 拉流连接算一条）
+        - users             逐连接的明细，长度等于 total_connections
+        """
         with self.mount_lock, self.user_lock:
             total_mounts = len(self.online_mounts)
-            total_users = sum(len(connections) for connections in self.online_users.values())
+            total_users = len(self.online_users)
+            total_connections = sum(len(connections) for connections in self.online_users.values())
             
             mount_stats = []
             for mount_name, mount_info in self.online_mounts.items():
@@ -575,6 +655,7 @@ class ConnectionManager:
             return {
                 'total_mounts': total_mounts,
                 'total_users': total_users,
+                'total_connections': total_connections,
                 'mounts': mount_stats,
                 'users': user_stats
             }

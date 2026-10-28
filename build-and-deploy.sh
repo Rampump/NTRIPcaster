@@ -14,6 +14,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 配置变量
+# Docker Hub 镜像名：2rtk/ntripcaster（与 README / DOCKER-TUTORIAL 中的发布镜像名一致）
 IMAGE_NAME="ntripcaster"
 IMAGE_TAG="2.2.0"
 REGISTRY_URL="2rtk"  # Docker Hub用户名/组织名
@@ -478,61 +479,43 @@ main() {
     echo "  跳过推送: ${SKIP_PUSH}"
     echo
     
-    try {
-        # 1. 检查依赖
-        check_dependencies
-        
-        # 2. 构建保护版本的二进制文件
-        build_protected_binary
-        
-        # 3. 构建Docker镜像
-        build_docker_image
-        
-        # 4. 测试镜像（可选）
-        if [ "$SKIP_TEST" = false ]; then
-            test_image
-        fi
-        
-        # 5. 推送到仓库（可选）
-        if [ "$SKIP_PUSH" = false ]; then
-            push_to_registry
-        fi
-        
-        # 6. 生成部署文档
-        generate_deployment_docs
-        
-        # 7. 清理构建文件（可选）
-        if [ "$CLEANUP" = true ]; then
-            cleanup_build_files
-        fi
-        
-        echo
-        log_success "构建部署完成!"
-        echo
-        log_info "下一步:"
-        echo "  1. 查看部署文档: deployment_docs/README.md"
-        echo "  2. 使用部署脚本: cd deployment_docs && ./deploy.sh"
-        if [ -n "$REGISTRY_URL" ]; then
-            echo "  3. 分发镜像: ${REGISTRY_URL}/${REGISTRY_NAMESPACE:+${REGISTRY_NAMESPACE}/}${IMAGE_NAME}:${IMAGE_TAG}"
-        fi
-        echo
-        
-    } catch {
-        log_error "构建失败: $1"
-        exit 1
-    }
-}
-
-# Bash错误处理函数
-try() {
-    "$@"
-}
-
-catch() {
-    case $? in
-        0) ;; # 成功，什么都不做
-        *) "$@" ;; # 失败，执行catch块
-    esac
+    # 1. 检查依赖
+    check_dependencies
+    
+    # 2. 构建保护版本的二进制文件
+    build_protected_binary
+    
+    # 3. 构建Docker镜像
+    build_docker_image
+    
+    # 4. 测试镜像（可选）
+    if [ "$SKIP_TEST" = false ]; then
+        test_image
+    fi
+    
+    # 5. 推送到仓库（可选）
+    if [ "$SKIP_PUSH" = false ]; then
+        push_to_registry
+    fi
+    
+    # 6. 生成部署文档
+    generate_deployment_docs
+    
+    # 7. 清理构建文件（可选）
+    if [ "$CLEANUP" = true ]; then
+        cleanup_build_files
+    fi
+    
+    echo
+    log_success "构建部署完成!"
+    echo
+    log_info "下一步:"
+    echo "  1. 查看部署文档: deployment_docs/README.md"
+    echo "  2. 使用部署脚本: cd deployment_docs && ./deploy.sh"
+    if [ -n "$REGISTRY_URL" ]; then
+        echo "  3. 分发镜像: ${REGISTRY_URL}/${REGISTRY_NAMESPACE:+${REGISTRY_NAMESPACE}/}${IMAGE_NAME}:${IMAGE_TAG}"
+    fi
+    echo
 }
 
 # 脚本入口

@@ -1,234 +1,246 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>Login - 2RTK Ntrip Caster</title>
     <meta charset="utf-8">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .login-container {
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            width: 100%;
-            max-width: 400px;
-        }
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .logo h1 {
-            color: #333;
-            margin: 0;
-            font-size: 28px;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: bold;
-            color: #555;
-        }
-        input[type="text"], input[type="password"] {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #ddd;
-            border-radius: 6px;
-            font-size: 16px;
-            box-sizing: border-box;
-            transition: border-color 0.3s;
-        }
-        input[type="text"]:focus, input[type="password"]:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        .btn {
-            width: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 12px;
-            border: none;
-            border-radius: 6px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-        .error {
-            color: #dc3545;
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-        .field-error {
-            border-color: #dc3545 !important;
-        }
-        .validation-error {
-            color: #dc3545;
-            font-size: 12px;
-            margin-top: 5px;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name or '2RTK NTRIP Caster' }}</title>
+    <link rel="icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/theme.css">
+    <!-- app.js 用的是 Font Awesome 5 的 `fas` 类名，这里必须引 5.x：
+         原来引 4.7 只有 `fa`，页面上的图标全部渲染成空方块 -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700&display=swap" rel="stylesheet">
+    <script src="/static/i18n.js"></script>
 </head>
 <body>
-    <div class="login-container">
-        <div class="logo">
-            <h1>2RTK Ntrip Caster</h1>
-            <p id="loginMessage">Administrator Login</p>
-            <p id="defaultCredentials" style="color: #1e40af; font-size: 12px; margin-top: 10px; margin-bottom: 0;">Default credentials: admin/admin123. Please change in Settings for production use.</p>
+    <div class="auth-wrap">
+        <div class="card auth-card">
+            <div class="auth-lang">
+                <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="lang.label">
+                    <button type="button" class="lang-btn" data-lang="zh" aria-pressed="false">中文</button>
+                    <button type="button" class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
+                </div>
+            </div>
+
+            <div class="auth-brand">
+                <i class="fas fa-satellite-dish" aria-hidden="true"></i>
+                <span class="auth-title">2RTK NTRIP</span>
+            </div>
+            <p class="auth-sub" id="loginMessage" data-i18n="login.subtitle">Administrator sign in</p>
+
+            {% if error %}
+                <div class="alert alert-error" role="alert" id="loginError" data-raw="{{ error }}">{{ error }}</div>
+            {% endif %}
+
+            <form method="post" id="loginForm" onsubmit="return validateLoginForm(event)" novalidate>
+                <div class="form-group">
+                    <label for="username" data-i18n="login.username">Username</label>
+                    <input type="text" name="username" id="username" class="form-control" required
+                           maxlength="50" autocomplete="username" autocapitalize="off"
+                           spellcheck="false" oninput="validateUsername()">
+                    <div id="usernameError" class="validation-error"></div>
+                </div>
+                <div class="form-group">
+                    <label for="password" data-i18n="login.password">Password</label>
+                    <input type="password" name="password" id="password" class="form-control" required
+                           maxlength="100" autocomplete="current-password" oninput="validatePassword()">
+                    <div id="passwordError" class="validation-error"></div>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block" id="loginBtn" data-i18n="login.submit">Sign in</button>
+            </form>
+
+            <p class="auth-footer" id="defaultCredentials">
+                <span data-i18n="login.hint">Default credentials</span>
+                <code>admin / admin123</code>
+                <span data-i18n="login.hintTail">— change it in Settings before going live.</span>
+            </p>
+
+            <p class="auth-footer auth-donate">
+                <a href="#" onclick="openLoginDonate(); return false;">
+                    <i class="fas fa-heart" aria-hidden="true"></i>
+                    <span data-i18n="donate.open">Donate</span>
+                </a>
+            </p>
         </div>
-        
-        {% if error %}
-            <div class="error">{{ error }}</div>
-        {% endif %}
-        
-        <form method="post" id="loginForm" onsubmit="return validateLoginForm(event)">
-            <div class="form-group">
-                <label>Username:</label>
-                <input type="text" name="username" id="username" required maxlength="50" 
-                       oninput="validateUsername()">
-                <div id="usernameError" class="validation-error"></div>
-            </div>
-            <div class="form-group">
-                <label>Password:</label>
-                <input type="password" name="password" id="password" required maxlength="100" 
-                       oninput="validatePassword()">
-                <div id="passwordError" class="validation-error"></div>
-            </div>
-            <button type="submit" class="btn" id="loginBtn">Login</button>
-        </form>
     </div>
-    
+
     <script>
         let isSubmitting = false;
-        
+        // 用户名/密码允许的字符集：与后端 _validate_alphanumeric 保持一致
+        const INVALID_CHARS = [' ', '/', '\\', '?', '#', '[', ']', '@', '&', '=', '+', '<', '>', '"', "'"];
+
+        // 标题里不能放标签，只能靠 JS 拼（语言切换时也要跟着变）
+        const APP_NAME = {{ (app_name or '2RTK NTRIP Caster') | tojson }};
+        function syncTitle() {
+            document.title = `${t('login.pageTitle')} · ${APP_NAME}`;
+        }
+        window.addEventListener('i18n:changed', () => {
+            syncTitle();
+            // 已渲染的弹窗不会自动重绘，直接关掉，避免中英混排
+            const modal = document.getElementById('donateModal');
+            if (modal) modal.remove();
+        });
+
         // 页面加载时检查重定向参数
         window.addEventListener('DOMContentLoaded', function() {
+            syncTitle();
+
+            // 后端下发的错误串是中文，按当前语言对齐（已知串才翻）
+            const errEl = document.getElementById('loginError');
+            if (errEl && errEl.dataset.raw) {
+                errEl.textContent = i18n.localize(errEl.dataset.raw);
+            }
+
             const urlParams = new URLSearchParams(window.location.search);
             const redirectPage = urlParams.get('redirect');
             const messageElement = document.getElementById('loginMessage');
-            
+
             if (redirectPage) {
                 const pageNames = {
-                    'users': 'User Management',
-                    'mounts': 'Mount Point Management',
-                    'settings': 'System Settings'
+                    'users': t('login.redirect.users'),
+                    'mounts': t('login.redirect.mounts'),
+                    'settings': t('login.redirect.settings')
                 };
-                const pageName = pageNames[redirectPage] || 'Management Function';
-                messageElement.textContent = `Access to ${pageName} requires administrator account login, please login`;
+                const pageName = pageNames[redirectPage] || t('login.redirect.other');
+                messageElement.textContent = `${t('login.redirectPrefix')} ${pageName}`;
             }
         });
-        
+
         function validateUsername() {
             const input = document.getElementById('username');
             const error = document.getElementById('usernameError');
             const value = input.value.trim();
-            
+
             input.classList.remove('field-error');
             error.textContent = '';
-            
+
             if (value.length === 0) {
                 return false;
             }
-            
-            if (value.length < 3) {
+
+            if (value.length < 2) {
                 input.classList.add('field-error');
-                error.textContent = 'Username must be at least 3 characters';
+                error.textContent = t('login.validation.userMin');
                 return false;
             }
-            
+
             if (value.length > 50) {
                 input.classList.add('field-error');
-                error.textContent = 'Username cannot exceed 50 characters';
+                error.textContent = t('login.validation.userMax');
                 return false;
             }
-            
-            const invalidChars = [' ', '/', '\\', '?', '#', '[', ']', '@', '&', '=', '+', '<', '>', '"', "'"];
-            for (let char of invalidChars) {
+
+            for (let char of INVALID_CHARS) {
                 if (value.includes(char)) {
                     input.classList.add('field-error');
-                    error.textContent = 'Username contains invalid characters';
+                    error.textContent = t('login.validation.userChars');
                     return false;
                 }
             }
-            
+
             return true;
         }
-        
+
         function validatePassword() {
             const input = document.getElementById('password');
             const error = document.getElementById('passwordError');
             const value = input.value.trim();
-            
+
             input.classList.remove('field-error');
             error.textContent = '';
-            
+
             if (value.length === 0) {
                 return false;
             }
-            
+
             if (value.length < 6) {
                 input.classList.add('field-error');
-                error.textContent = 'Password must be at least 6 characters';
+                error.textContent = t('login.validation.pwdMin');
                 return false;
             }
-            
+
             if (value.length > 100) {
                 input.classList.add('field-error');
-                error.textContent = 'Password cannot exceed 100 characters';
+                error.textContent = t('login.validation.pwdMax');
                 return false;
             }
-            
+
             return true;
         }
-        
+
         function validateLoginForm(event) {
             if (isSubmitting) {
                 event.preventDefault();
                 return false;
             }
-            
+
             const usernameValid = validateUsername();
             const passwordValid = validatePassword();
-            
+
             if (!usernameValid || !passwordValid) {
                 event.preventDefault();
                 return false;
             }
-            
+
             // 防止重复提交
             isSubmitting = true;
             const submitBtn = document.getElementById('loginBtn');
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Logging in...';
-            
+            submitBtn.textContent = t('login.submitting');
+
             setTimeout(() => {
                 isSubmitting = false;
                 submitBtn.disabled = false;
-                submitBtn.textContent = 'Login';
+                submitBtn.textContent = t('login.submit');
             }, 5000);
-            
+
             return true;
+        }
+
+        // 登录页的"支持作者"弹窗：登录前也能调用，不复用 app.js（登录页不加载 app.js）
+        function openLoginDonate() {
+            const existing = document.getElementById('donateModal');
+            if (existing) existing.remove();
+
+            const html = `
+                <div class="modal-overlay" id="donateModal">
+                    <div class="modal-content donate-modal" style="max-width: 520px;">
+                        <button type="button" class="modal-close" onclick="document.getElementById('donateModal').remove()" aria-label="Close">&times;</button>
+                        <h4 class="donate-title"><i class="fas fa-heart"></i> ${t('donate.title')}</h4>
+                        <p class="donate-subtitle">${t('donate.subtitle')}</p>
+                        <div class="donate-grid">
+                            <figure class="donate-card">
+                                <a href="/static/img/donate-alipay.jpg" target="_blank" rel="noopener">
+                                    <img src="/static/img/donate-alipay.jpg" alt="Alipay QR" loading="lazy">
+                                </a>
+                                <figcaption>
+                                    <span class="donate-name donate-alipay"><i class="fas fa-qrcode"></i> ${t('donate.alipay')}</span>
+                                    <span class="donate-hint">${t('donate.scanAlipay')}</span>
+                                </figcaption>
+                            </figure>
+                            <figure class="donate-card">
+                                <a href="/static/img/donate-wechat.jpg" target="_blank" rel="noopener">
+                                    <img src="/static/img/donate-wechat.jpg" alt="WeChat Pay QR" loading="lazy">
+                                </a>
+                                <figcaption>
+                                    <span class="donate-name donate-wechat"><i class="fas fa-comment-dots"></i> ${t('donate.wechat')}</span>
+                                    <span class="donate-hint">${t('donate.scanWechat')}</span>
+                                </figcaption>
+                            </figure>
+                        </div>
+                        <p class="donate-thanks">${t('donate.thanks')}</p>
+                        <p class="donate-note">${t('donate.note')}</p>
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" onclick="document.getElementById('donateModal').remove()">${t('donate.close')}</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', html);
+            const modal = document.getElementById('donateModal');
+            modal.addEventListener('click', e => {
+                if (e.target === modal) modal.remove();
+            });
         }
     </script>
 </body>
