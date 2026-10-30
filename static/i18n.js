@@ -105,7 +105,7 @@
             'dash.rejected': 'Rejected',
             'dash.onlineMountPoints': 'Online mount points',
             'dash.userConnections': 'User connections',
-            'dash.mountDetails': 'Mount Point Details',
+            'dash.mountDetails': 'Online RTK Base Stations',
             'dash.noMounts': 'No mount point is online right now',
             'dash.loadFailed': 'Failed to load page content, please try again later.',
 
@@ -351,7 +351,7 @@
             'dash.rejected': '已拒绝',
             'dash.onlineMountPoints': '在线挂载点',
             'dash.userConnections': '用户连接数',
-            'dash.mountDetails': '挂载点详情',
+            'dash.mountDetails': '在线 RTK 基准站',
             'dash.noMounts': '当前没有在线挂载点',
             'dash.loadFailed': '页面内容加载失败，请稍后重试。',
 

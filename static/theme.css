@@ -1055,6 +1055,11 @@ textarea.form-control {
   font-variant-numeric: tabular-nums;
 }
 
+/* 有用户在线时，人形图标高亮为绿色（与"在线"状态同色） */
+.mount-user-count.has-users {
+  color: var(--success);
+}
+
 /* ---------- 基准站信息 ---------- */
 .station-info-container,
 .station-details {
