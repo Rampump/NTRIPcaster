@@ -72,10 +72,12 @@ fi
 
 # ==================== 部署形态检测 ====================
 detect_deploy_mode() {
-    # 1. 源码 + systemd 形态：/opt/2rtk/main.py 存在 + systemd 服务存在。
+    # 1. 源码 + systemd 形态：/opt/2rtk/main.py 存在 + systemd 服务文件存在。
     #    注意：install.sh 用 `cp -r "$SRC_DIR"/*` 复制源码，`*` 不匹配隐藏的 .git，
     #    所以实际部署后 /opt/2rtk 通常没有 .git。这里以 main.py + 服务文件为准，更可靠。
-    if [ -f "$INSTALL_DIR/main.py" ] && (systemctl list-unit-files 2>/dev/null | grep -q "${SERVICE_NAME}.service"); then
+    #    服务文件检测直接判断 /etc/systemd/system/2rtk.service 是否存在，
+    #    避免依赖 systemctl list-unit-files（在 systemd 非 PID1 的环境会输出为空导致误判）。
+    if [ -f "$INSTALL_DIR/main.py" ] && [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
         echo "source"
         return
     fi
@@ -98,10 +100,28 @@ if [ "$DEPLOY_MODE" = "unknown" ]; then
     log_error "无法识别部署形态"
     echo ""
     echo "  检测依据："
-    echo "    - 源码形态：$INSTALL_DIR/main.py 存在 + ${SERVICE_NAME}.service 服务存在"
+    echo "    - 源码形态：$INSTALL_DIR/main.py 存在 + /etc/systemd/system/${SERVICE_NAME}.service 服务文件存在"
     echo "    - Docker 形态：存在名为 ntrip-caster 的容器"
     echo ""
+    echo "  当前环境诊断："
+    if [ -f "$INSTALL_DIR/main.py" ]; then
+        echo "    [√] $INSTALL_DIR/main.py 存在"
+    else
+        echo "    [×] $INSTALL_DIR/main.py 不存在（安装目录不对或未安装）"
+    fi
+    if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
+        echo "    [√] /etc/systemd/system/${SERVICE_NAME}.service 服务文件存在"
+    else
+        echo "    [×] /etc/systemd/system/${SERVICE_NAME}.service 服务文件不存在（未用 install.sh 安装 systemd 服务）"
+    fi
+    if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'ntrip-caster'; then
+        echo "    [√] Docker 容器 ntrip-caster 存在"
+    else
+        echo "    [×] 未检测到 Docker 容器 ntrip-caster"
+    fi
+    echo ""
     log_warn "请确认你已通过 install.sh 或 docker-deploy.sh 正确部署后再更新"
+    log_warn "如确已用 install.sh 安装，请检查：1) 是否以 root 执行；2) 服务名是否为 $SERVICE_NAME；3) 安装目录是否为 $INSTALL_DIR"
     exit 1
 fi
 
