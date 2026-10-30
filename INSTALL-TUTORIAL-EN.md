@@ -1,6 +1,6 @@
 # NTRIP Caster Linux System Installation Tutorial
 
-This tutorial will guide you through installing and deploying NTRIP Caster v2.3.2 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
+This tutorial will guide you through installing and deploying NTRIP Caster v2.3.3 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
 
 ## Table of Contents
 - [System Requirements](#system-requirements)
@@ -193,7 +193,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.2
+version = 2.3.3
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -858,6 +858,7 @@ If you encounter issues during installation or usage:
 
 ## Changelog
 
+- **v2.3.3**: Fixed STR table button highlight drifting out of sync with the backend — the highlight now follows the backend's current_web_mount, and leaving the monitor page stops parsing and restores the button colour
 - **v2.3.2**: Fixed a false "port already in use" error on restart — the port check now sets SO_REUSEADDR so TIME_WAIT connections are no longer mistaken for an occupied port; the update script reports TCP state and retries startup once TIME_WAIT has drained
 - **v2.3.1**: Fixed one-click update script deployment detection false negative (grep -q triggering SIGPIPE under pipefail); STR table buttons now show station names with selection highlight; map marker changed to signal tower icon; health check respects custom web port
 - **v2.3.0**: Support for more Linux distributions
@@ -866,7 +867,7 @@ If you encounter issues during installation or usage:
 
 ---
 
-**Version**: NTRIP Caster v2.3.2  
+**Version**: NTRIP Caster v2.3.3  
 **Updated**: December 2024  
 **Author**: 2RTK Team  
 **License**: Apache 2.0

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# NTRIP Caster 一键无损更新脚本 v2.3.2
+# NTRIP Caster 一键无损更新脚本 v2.3.3
 #
 # 功能：自动检测部署形态（源码+systemd / Docker），从可用源拉取最新版本，
 #       升级前先检查并停止正在运行的旧版本（systemd 服务 + 游离进程 + 端口），
@@ -31,7 +31,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_ok()    { echo -e "${CYAN}[OK]${NC} $1"; }
 
 # ==================== 常量 ====================
-SCRIPT_VERSION="2.3.2"
+SCRIPT_VERSION="2.3.3"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"

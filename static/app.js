@@ -126,6 +126,8 @@ function navigateTo(page) {
 
 // Execute actual page navigation
 function performNavigation(page) {
+    const previousPage = currentPage;
+
     // Update navigation state
     document.querySelectorAll('.nav-item').forEach(item => {
         item.classList.remove('active');
@@ -133,6 +135,12 @@ function performNavigation(page) {
     document.querySelector(`[data-page="${page}"]`).classList.add('active');
 
     currentPage = page;
+
+    // 离开监控页后前端不再消费解析数据，后端也就没必要继续解析：
+    // 主动停止并清除按钮高亮，保证「绿色 == 后端正在解析」始终成立。
+    if (previousPage === 'monitor' && page !== 'monitor') {
+        stopParsingOnLeave();
+    }
     
     // Control log panel display
     const logPanel = document.getElementById('log-panel');
@@ -259,6 +267,8 @@ async function loadPageContent(page) {
                 setTimeout(() => {
                     initializeMapForMonitor();
                 }, 300);
+                // 进入监控页：开始校验后端解析状态，让按钮绿色与真实解析状态一致
+                startParsingSync();
                 break;
             case 'settings':
                 // Ensure content panel is displayed on non-dashboard pages
@@ -273,8 +283,14 @@ async function loadPageContent(page) {
 }
 
 // Add INFO button event handling for STR items
-// 当前选中的挂载点（用于 STR 表按钮选中高亮，绿字标识正在查看的站点）
-let currentSelectedMount = null;
+// 按钮绿色的判定规则：绿色 == 后端此刻正在解析该挂载点并向前端推送数据。
+// 所以绿色不能跟「用户点过谁」走，必须跟后端 /api/mount/rtcm-parse/status 的
+// current_web_mount 走——后台停止解析后，按钮就要恢复本色。
+// 之前的实现只记点击过的挂载点，切页/刷新后后台已经停了，绿色却还留着。
+let currentSelectedMount = null;   // 用户最近点击的挂载点（仅用于点击瞬间的乐观反馈）
+let activeParsingMount = null;     // 后端确实在推送数据的挂载点（决定绿色）
+let parsingSyncTimer = null;       // 周期校验定时器
+let parsingSyncInFlight = false;   // 防止请求堆积
 
 function addInfoButtonsToSTRItems() {
     const infoButtons = document.querySelectorAll('.str-info-btn');
@@ -295,6 +311,8 @@ function addInfoButtonsToSTRItems() {
         button.addEventListener('click', () => {
             // 记录当前选中的挂载点并高亮对应按钮
             currentSelectedMount = mountName;
+            // 乐观高亮：点击立刻给反馈，随后由后端状态校正（启动失败会自动撤销）
+            activeParsingMount = mountName;
             applyMountButtonHighlight();
             
             // Start RTCM parsing and update container content
@@ -309,17 +327,65 @@ function addInfoButtonsToSTRItems() {
     applyMountButtonHighlight();
 }
 
-// 高亮当前选中的挂载点按钮：选中的变绿（--success），其余恢复原色
+// 高亮「后端正在解析」的挂载点按钮：选中的变绿（--success），其余恢复原色
 function applyMountButtonHighlight() {
     const infoButtons = document.querySelectorAll('.str-info-btn');
     infoButtons.forEach(button => {
         const mountName = button.getAttribute('data-mount');
-        if (mountName && mountName === currentSelectedMount) {
+        if (mountName && mountName === activeParsingMount) {
             button.classList.add('active');
         } else {
             button.classList.remove('active');
         }
     });
+}
+
+// 从后端同步「正在解析」的挂载点并刷新按钮颜色。
+// 这是绿色的唯一依据：后端 current_web_mount 为空，说明解析已停，按钮必须复原色。
+// 覆盖的时机包括：刷新页面、后端因 WebSocket 断开自动清理、其他页面/用户切换挂载点。
+function syncParsingHighlight() {
+    if (parsingSyncInFlight) return Promise.resolve();
+    parsingSyncInFlight = true;
+    return fetch('/api/mount/rtcm-parse/status')
+        .then(response => response.json())
+        .then(res => {
+            if (!res || !res.success || !res.status) return;
+            const current = res.status.current_web_mount || null;
+            if (current !== activeParsingMount) {
+                activeParsingMount = current;
+                currentSelectedMount = current;
+                applyMountButtonHighlight();
+            }
+        })
+        .catch(() => {})
+        .finally(() => { parsingSyncInFlight = false; });
+}
+
+// 进入监控页时开始周期校验（5 秒一次，单个轻量 GET）
+function startParsingSync() {
+    stopParsingSync();
+    parsingSyncTimer = setInterval(syncParsingHighlight, 5000);
+    syncParsingHighlight();
+}
+
+function stopParsingSync() {
+    if (parsingSyncTimer) {
+        clearInterval(parsingSyncTimer);
+        parsingSyncTimer = null;
+    }
+}
+
+// 离开监控页：通知后端停止解析，并立即清除高亮。
+// 不做这一步就会出现「后台已经停了、按钮还绿着」的错位；
+// stop 接口本身是全局停止（与 WebSocket 断开时的清理逻辑一致）。
+function stopParsingOnLeave() {
+    stopParsingSync();
+    const had = activeParsingMount;
+    activeParsingMount = null;
+    currentSelectedMount = null;
+    applyMountButtonHighlight();
+    if (!had) return;
+    fetch('/api/mount/rtcm-parse/stop', { method: 'POST' }).catch(() => {});
 }
 
 // Start RTCM parsing
@@ -380,6 +446,8 @@ function startRTCMParsing(mountName) {
     .then(data => {
         if (data.success) {
             console.log(`[前端] RTCM解析启动成功: ${mountName}`);
+            // 启动成功后用后端真实状态校正按钮高亮（避免乐观高亮与实际不符）
+            setTimeout(syncParsingHighlight, 600);
             // 
             setTimeout(() => {
                 fetch('/api/mount/rtcm-parse/status')
@@ -393,6 +461,12 @@ function startRTCMParsing(mountName) {
             }, 1000);
         } else {
             console.error(`[前端] RTCM解析启动失败: ${data.error || 'Unknown error'}`);
+            // 启动失败（例如站点离线）：撤销乐观高亮，避免按钮绿着但后台没在解析
+            if (activeParsingMount === mountName) {
+                activeParsingMount = null;
+                currentSelectedMount = null;
+                applyMountButtonHighlight();
+            }
             showAlert(t('monitor.rtcmStartFailed', {
                 error: localizeServerMessage(data.error) || t('err.unknown')
             }), 'error');
@@ -400,6 +474,12 @@ function startRTCMParsing(mountName) {
     })
     .catch(error => {
         console.error('[前端] 调用RTCM解析API失败:', error);
+        // 请求失败：同样撤销乐观高亮
+        if (activeParsingMount === mountName) {
+            activeParsingMount = null;
+            currentSelectedMount = null;
+            applyMountButtonHighlight();
+        }
         showAlert(t('monitor.rtcmApiFailed'), 'error');
     });
 }
@@ -1891,6 +1971,15 @@ socket.on('rtcm_realtime_data', function(data) {
     if (!data || !data.data_type) {
         // console.warn('收到无效的RTCM数据:', data);
         return;
+    }
+
+    // 收到推送就证明后端确实在解析这个挂载点（rtcm_realtime_data 只由 Web 解析
+    // 的 push_callback 发出）。若与当前高亮不一致，立即校正，不必等 5 秒轮询。
+    const _pushMount = data.mount_name || data.mount;
+    if (_pushMount && _pushMount !== activeParsingMount) {
+        activeParsingMount = _pushMount;
+        currentSelectedMount = _pushMount;
+        applyMountButtonHighlight();
     }
     
     try {
