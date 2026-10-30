@@ -46,13 +46,43 @@ python3 main.py
 
 - Web 管理界面地址 `http://yourserverip:5757`，默认账号 `admin` / `admin123`（登录后请立即修改）。
 - 首次启动时，`secret_key` 留空会自动生成并落盘到 `data/.secret_key`。
-- **一键安装脚本（Debian/Ubuntu，自动装 systemd 服务）**：`sudo ./install.sh`
 - **详细原生安装教程**：[Linux 系统原生安装教程](INSTALL-TUTORIAL.md)
+
+### 一键安装脚本（Debian/Ubuntu，自动装 systemd 服务并开机自启）
+
+脚本会自动下载源码、装依赖、建服务，**自动适配网络**（先试 GitCode，失败回退 GitHub，也可用 `REPO_SOURCE` 指定）。
+
+```bash
+# 中国区服务器（从 GitCode 下载脚本）
+wget https://raw.gitcode.com/rampump/NTRIPcaster/raw/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+
+# 国际服务器（从 GitHub 下载脚本）
+wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+> 如遇网络问题，可用 `sudo REPO_SOURCE=gitcode ./install.sh` 或 `sudo REPO_SOURCE=github ./install.sh` 强制指定源码拉取源。
 
 ### Docker 部署（推荐）
 推荐一键部署，无需手动配置。
+
+> **镜像仓库说明**：中国区服务器请用腾讯云镜像仓库（无需登录、直连快），国际服务器可用 Docker Hub 官方仓库。两个仓库内容一致。
+>
+> - **中国区（腾讯云）**：`ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest`
+> - **国际（Docker Hub）**：`2rtk/ntripcaster:latest`
+
 ```bash
-# 拉取并直接运行，镜像会自动创建所需目录和配置文件
+# 中国区服务器（腾讯云镜像，无需登录）
+docker run -d \
+  --name ntrip-caster \
+  -p 2101:2101 \
+  -p 5757:5757 \
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
+
+# 国际服务器（Docker Hub 官方镜像）
 docker run -d \
   --name ntrip-caster \
   -p 2101:2101 \

@@ -41,8 +41,9 @@
 ### 手动快速安装
 
 ```bash
-# 1. 克隆项目
-git clone https://github.com/Rampump/NTRIPcaster.git
+# 1. 克隆项目（中国区用 GitCode，国际用 GitHub）
+git clone https://gitcode.com/rampump/NTRIPcaster.git   # 中国区
+# git clone https://github.com/Rampump/NTRIPcaster.git  # 国际
 cd NTRIPcaster
 
 # 2. 运行安装脚本
@@ -255,8 +256,9 @@ sudo chown -R 2rtk:2rtk /etc/2rtk
 # 切换到应用目录
 cd /opt/2rtk
 
-# 下载源码
-sudo -u 2rtk git clone https://github.com/Rampump/NTRIPcaster.git 
+# 下载源码（中国区用 GitCode，国际用 GitHub）
+sudo -u 2rtk git clone https://gitcode.com/rampump/NTRIPcaster.git
+# sudo -u 2rtk git clone https://github.com/Rampump/NTRIPcaster.git
 
 # 创建 Python 虚拟环境
 sudo -u 2rtk python3 -m venv venv
@@ -944,7 +946,7 @@ sudo ufw delete allow 5757/tcp
 
 1. **查看日志**: `sudo journalctl -u 2rtk -f`
 2. **检查状态**: `sudo systemctl status 2rtk`
-3. **查看文档**: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
+3. **查看文档**: [GitHub 仓库](https://github.com/Rampump/NTRIPcaster) / [GitCode 仓库](https://gitcode.com/rampump/NTRIPcaster)
 4. **提交问题**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 5. **联系作者**: i@jia.by
 6. **访问官网**: https://2rtk.com

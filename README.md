@@ -46,18 +46,47 @@ python3 main.py
 
 - The web UI is at `http://yourserverip:5757` (default account `admin` / `admin123` — change it right away).
 - On first run, an empty `secret_key` auto-generates into `data/.secret_key`.
-- **One-click installer (Debian/Ubuntu, installs systemd service)**: `sudo ./install.sh`
 - **Detailed native install guide**: [Linux Native Installation Guide](INSTALL-TUTORIAL-EN.md)
+
+### One-click Installer (Debian/Ubuntu, installs systemd service + auto-start)
+
+The script auto-detects the network (tries GitCode first, falls back to GitHub; can also be forced via `REPO_SOURCE`).
+
+```bash
+# International users (download from GitHub)
+wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+
+# Users in mainland China (download from GitCode)
+wget https://raw.gitcode.com/rampump/NTRIPcaster/raw/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+> If you hit network issues, force a source with `sudo REPO_SOURCE=gitcode ./install.sh` or `sudo REPO_SOURCE=github ./install.sh`.
 
 ### Docker Deployment (Recommended)
 Recommended one-click deployment, no manual configuration required.
+
+> **Registry choice**: users in mainland China should use the Tencent Cloud registry (no login needed, direct fast access); international users can use Docker Hub. Both images are identical.
+> - **China (Tencent Cloud)**: `ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest`
+> - **International (Docker Hub)**: `2rtk/ntripcaster:latest`
+
 ```bash
-# Pull and run directly, the image will automatically create required directories and configuration files
+# International (Docker Hub)
 docker run -d \
   --name ntrip-caster \
   -p 2101:2101 \
   -p 5757:5757 \
   2rtk/ntripcaster:latest
+
+# Mainland China (Tencent Cloud, no login required)
+docker run -d \
+  --name ntrip-caster \
+  -p 2101:2101 \
+  -p 5757:5757 \
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 - **中文教程**: [Docker 安装和使用教程](DOCKER-TUTORIAL.md)
 - **English Tutorial**: [Docker Installation and Usage Guide](DOCKER-TUTORIAL-EN.md)

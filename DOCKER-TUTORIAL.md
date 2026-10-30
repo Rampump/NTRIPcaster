@@ -2,6 +2,11 @@
 
 本教程将指导您如何使用 Docker 快速部署和运行 NTRIP Caster v2.2.0。
 
+> **镜像仓库选择**：本教程面向中国区用户，默认使用腾讯云镜像仓库（无需登录、国内直连快）。国际用户可把下面命令中的镜像地址换成 Docker Hub 官方镜像（把 `ccr.ccs.tencentyun.com/2rtk/ntripcaster` 换成 `2rtk/ntripcaster` 即可），两者内容完全一致。
+>
+> - **中国区（推荐）**：`ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest`
+> - **国际**：`2rtk/ntripcaster:latest`（Docker Hub）
+
 ## 目录
 - [前置要求](#前置要求)
 - [快速开始](#快速开始)
@@ -72,7 +77,7 @@ docker run -d \
   --name ntrip-caster \
   -p 2101:2101 \
   -p 5757:5757 \
-  2rtk/ntripcaster:latest
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 > **说明：** 镜像内置了启动脚本，会自动创建必要的目录（logs、data、config）并初始化默认配置文件。数据将存储在容器内部，只要不删除容器，数据就会持久化保存。适合快速测试、体验和轻量级部署。
@@ -85,13 +90,13 @@ docker run -d \
 
 ```bash
 # 1. 拉取最新镜像
-docker pull 2rtk/ntripcaster:latest
+docker pull ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 
 # 2. 创建数据目录
 mkdir -p ./ntrip-data/{logs,data,config}
 
 # 3. 复制配置文件模板
-docker run --rm 2rtk/ntripcaster:latest cat /app/config.ini.example > ./ntrip-data/config/config.ini
+docker run --rm ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest cat /app/config.ini.example > ./ntrip-data/config/config.ini
 
 # 4. 运行容器
 docker run -d \
@@ -101,14 +106,17 @@ docker run -d \
   -v $(pwd)/ntrip-data/logs:/app/logs \
   -v $(pwd)/ntrip-data/data:/app/data \
   -v $(pwd)/ntrip-data/config:/app/config \
-  2rtk/ntripcaster:latest
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 ### 方法三：使用 Docker Compose（推荐生产环境）
 
 1. 下载项目文件：
 ```bash
-git clone https://github.com/Rampump/NTRIPcaster.git
+# 中国区（GitCode）
+git clone https://gitcode.com/rampump/NTRIPcaster.git
+# 或国际（GitHub）
+# git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
 ```
 
@@ -137,7 +145,7 @@ mkdir -p data/{logs,data,config}
 
 ```bash
 # 获取配置文件模板
-docker run --rm 2rtk/ntripcaster:latest cat /app/config.ini.example > data/config/config.ini
+docker run --rm ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest cat /app/config.ini.example > data/config/config.ini
 ```
 
 ### 3. 编辑配置文件
@@ -175,7 +183,7 @@ docker run -d \
   -v $(pwd)/data/logs:/app/logs \
   -v $(pwd)/data/data:/app/data \
   -v $(pwd)/data/config:/app/config \
-  2rtk/ntripcaster:latest
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 #### 带环境变量的启动
@@ -191,7 +199,7 @@ docker run -d \
   -v $(pwd)/data/logs:/app/logs \
   -v $(pwd)/data/data:/app/data \
   -v $(pwd)/data/config:/app/config \
-  2rtk/ntripcaster:latest
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 ## 配置说明
@@ -328,7 +336,7 @@ version: '3.8'
 
 services:
   ntrip-caster:
-    image: 2rtk/ntripcaster:latest
+    image: ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
     container_name: ntrip-caster
     restart: unless-stopped
     ports:
@@ -448,7 +456,7 @@ docker stop ntrip-caster
 docker rm ntrip-caster
 
 # 3. 拉取新镜像
-docker pull 2rtk/ntripcaster:latest
+docker pull ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 
 # 4. 启动新容器
 docker run -d \
@@ -459,7 +467,7 @@ docker run -d \
   -v $(pwd)/data/logs:/app/logs \
   -v $(pwd)/data/data:/app/data \
   -v $(pwd)/data/config:/app/config \
-  2rtk/ntripcaster:latest
+  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 ### 健康检查
@@ -476,7 +484,7 @@ docker exec ntrip-caster python /app/healthcheck.py
 
 如果您在使用过程中遇到问题，可以：
 
-1. 查看项目文档：[GitHub Repository](https://github.com/Rampump/NTRIPcaster)
+1. 查看项目文档：[GitHub 仓库](https://github.com/Rampump/NTRIPcaster) / [GitCode 仓库](https://gitcode.com/rampump/NTRIPcaster)
 2. 提交 Issue：[GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
 3. 联系作者：i@jia.by
 4. 访问官网：https://2rtk.com

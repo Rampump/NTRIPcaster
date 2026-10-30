@@ -42,8 +42,9 @@ This tutorial will guide you through installing and deploying NTRIP Caster v2.2.
 ### Manual Quick Installation
 
 ```bash
-# 1. Clone project
-git clone https://github.com/Rampump/NTRIPcaster.git
+# 1. Clone project (use GitCode in mainland China, GitHub internationally)
+git clone https://github.com/Rampump/NTRIPcaster.git   # International
+# git clone https://gitcode.com/rampump/NTRIPcaster.git  # Mainland China
 cd NTRIPcaster
 
 # 2. Run installation script
@@ -168,8 +169,9 @@ sudo chown -R 2rtk:2rtk /etc/2rtk
 # Switch to application directory
 cd /opt/2rtk
 
-# Download source code
+# Download source code (use GitCode in mainland China, GitHub internationally)
 sudo -u 2rtk git clone https://github.com/Rampump/NTRIPcaster.git .
+# sudo -u 2rtk git clone https://gitcode.com/rampump/NTRIPcaster.git .
 
 # Create Python virtual environment
 sudo -u 2rtk python3 -m venv venv
