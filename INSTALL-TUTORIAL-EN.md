@@ -1,6 +1,6 @@
 # NTRIP Caster Linux System Installation Tutorial
 
-This tutorial will guide you through installing and deploying NTRIP Caster v2.2.0 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
+This tutorial will guide you through installing and deploying NTRIP Caster v2.3.0 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
 
 ## Table of Contents
 - [System Requirements](#system-requirements)
@@ -205,7 +205,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.2.0
+version = 2.3.0
 description = Ntrip Caster
 author = 2rtk
 contact = your-email@example.com
@@ -870,13 +870,13 @@ If you encounter issues during installation or usage:
 
 ## Changelog
 
-- **v2.2.0**: Latest version with support for more Linux distributions
+- **v2.3.0**: Latest version with support for more Linux distributions
 - **v2.1.8**: Performance optimizations and security enhancements
 - **v2.1.7**: Added monitoring and logging features
 
 ---
 
-**Version**: NTRIP Caster v2.2.0  
+**Version**: NTRIP Caster v2.3.0  
 **Updated**: December 2024  
 **Author**: 2RTK Team  
 **License**: Apache 2.0
