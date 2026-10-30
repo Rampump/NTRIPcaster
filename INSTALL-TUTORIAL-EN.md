@@ -41,17 +41,27 @@ This tutorial will guide you through installing and deploying NTRIP Caster v2.2.
 
 ### Manual Quick Installation
 
-```bash
-# 1. Clone project (use GitCode in mainland China, GitHub internationally)
-git clone https://github.com/Rampump/NTRIPcaster.git   # International
-# git clone https://gitcode.com/rampump/NTRIPcaster.git  # Mainland China
-cd NTRIPcaster
+**International users** (clone from GitHub):
 
-# 2. Run installation script
+```bash
+git clone https://github.com/Rampump/NTRIPcaster.git
+cd NTRIPcaster
 sudo chmod +x install.sh
 sudo ./install.sh
+```
 
-# 3. Start service
+**Users in mainland China** (clone from GitCode):
+
+```bash
+git clone https://gitcode.com/rampump/NTRIPcaster.git
+cd NTRIPcaster
+sudo chmod +x install.sh
+sudo ./install.sh
+```
+
+After installation the service auto-starts (systemd service name `2rtk`):
+
+```bash
 sudo systemctl start 2rtk
 sudo systemctl enable 2rtk
 ```

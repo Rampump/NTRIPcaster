@@ -40,17 +40,27 @@
 
 ### 手动快速安装
 
-```bash
-# 1. 克隆项目（中国区用 GitCode，国际用 GitHub）
-git clone https://gitcode.com/rampump/NTRIPcaster.git   # 中国区
-# git clone https://github.com/Rampump/NTRIPcaster.git  # 国际
-cd NTRIPcaster
+**中国区服务器**（从 GitCode 克隆）：
 
-# 2. 运行安装脚本
+```bash
+git clone https://gitcode.com/rampump/NTRIPcaster.git
+cd NTRIPcaster
 sudo chmod +x install.sh
 sudo ./install.sh
+```
 
-# 3. 启动服务
+**国际服务器**（从 GitHub 克隆）：
+
+```bash
+git clone https://github.com/Rampump/NTRIPcaster.git
+cd NTRIPcaster
+sudo chmod +x install.sh
+sudo ./install.sh
+```
+
+安装完成后，服务会自动启动（systemd 服务名 `2rtk`）：
+
+```bash
 sudo systemctl start 2rtk
 sudo systemctl enable 2rtk
 ```
@@ -64,11 +74,16 @@ sudo systemctl enable 2rtk
 #### 使用方法
 
 **方法一：克隆后直接执行（推荐）**
-```bash
-# 中国区（从 GitCode 克隆）
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 
-# 国际（从 GitHub 克隆）
+中国区服务器（从 GitCode 克隆）：
+
+```bash
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+```
+
+国际服务器（从 GitHub 克隆）：
+
+```bash
 git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 ```
 

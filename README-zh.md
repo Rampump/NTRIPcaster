@@ -52,38 +52,33 @@ python3 main.py
 
 脚本会自动下载源码、装依赖、建服务，**自动适配网络**（先试 GitCode，失败回退 GitHub，也可用 `REPO_SOURCE` 指定）。
 
-```bash
-# 中国区服务器（从 GitCode 拉取，脚本会自动检测本地源码、跳过重复下载）
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+**中国区服务器**（从 GitCode 拉取）：
 
-# 国际服务器（从 GitHub 拉取）
+```bash
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+```
+
+**国际服务器**（从 GitHub 拉取）：
+
+```bash
 git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 ```
 
-> 如遇网络问题，可用 `sudo REPO_SOURCE=gitcode ./install.sh` 或 `sudo REPO_SOURCE=github ./install.sh` 强制指定源码拉取源。
+> 脚本会自动检测本地源码、跳过重复下载；如遇网络问题，可加 `REPO_SOURCE=gitcode` 或 `REPO_SOURCE=github` 强制指定源。
 
 ### Docker 部署（推荐）
 推荐一键部署，无需手动配置。
 
-> **镜像仓库说明**：中国区服务器请用腾讯云镜像仓库（无需登录、直连快），国际服务器可用 Docker Hub 官方仓库。两个仓库内容一致。
->
-> - **中国区（腾讯云）**：`ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest`
-> - **国际（Docker Hub）**：`2rtk/ntripcaster:latest`
+**中国区服务器**（腾讯云镜像，无需登录、直连快）：
 
 ```bash
-# 中国区服务器（腾讯云镜像，无需登录）
-docker run -d \
-  --name ntrip-caster \
-  -p 2101:2101 \
-  -p 5757:5757 \
-  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
+docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
+```
 
-# 国际服务器（Docker Hub 官方镜像）
-docker run -d \
-  --name ntrip-caster \
-  -p 2101:2101 \
-  -p 5757:5757 \
-  2rtk/ntripcaster:latest
+**国际服务器**（Docker Hub 官方镜像）：
+
+```bash
+docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:latest
 ```
 - **中文教程**: [Docker 安装和使用教程](DOCKER-TUTORIAL.md)
 - **English Tutorial**: [Docker Installation and Usage Guide](DOCKER-TUTORIAL-EN.md)

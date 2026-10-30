@@ -112,11 +112,18 @@ docker run -d \
 ### 方法三：使用 Docker Compose（推荐生产环境）
 
 1. 下载项目文件：
+
+中国区（GitCode）：
+
 ```bash
-# 中国区（GitCode）
 git clone https://gitcode.com/rampump/NTRIPcaster.git
-# 或国际（GitHub）
-# git clone https://github.com/Rampump/NTRIPcaster.git
+cd NTRIPcaster
+```
+
+国际（GitHub）：
+
+```bash
+git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
 ```
 

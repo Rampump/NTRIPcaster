@@ -52,37 +52,33 @@ python3 main.py
 
 The script auto-detects the network (tries GitCode first, falls back to GitHub; can also be forced via `REPO_SOURCE`).
 
-```bash
-# International users (clone from GitHub; the script auto-detects local sources)
-git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+**International users** (clone from GitHub):
 
-# Users in mainland China (clone from GitCode)
+```bash
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+```
+
+**Users in mainland China** (clone from GitCode):
+
+```bash
 git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 ```
 
-> If you hit network issues, force a source with `sudo REPO_SOURCE=gitcode ./install.sh` or `sudo REPO_SOURCE=github ./install.sh`.
+> The script auto-detects local sources and skips duplicate downloads. If you hit network issues, force a source with `REPO_SOURCE=gitcode` or `REPO_SOURCE=github`.
 
 ### Docker Deployment (Recommended)
 Recommended one-click deployment, no manual configuration required.
 
-> **Registry choice**: users in mainland China should use the Tencent Cloud registry (no login needed, direct fast access); international users can use Docker Hub. Both images are identical.
-> - **China (Tencent Cloud)**: `ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest`
-> - **International (Docker Hub)**: `2rtk/ntripcaster:latest`
+**International users** (Docker Hub):
 
 ```bash
-# International (Docker Hub)
-docker run -d \
-  --name ntrip-caster \
-  -p 2101:2101 \
-  -p 5757:5757 \
-  2rtk/ntripcaster:latest
+docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:latest
+```
 
-# Mainland China (Tencent Cloud, no login required)
-docker run -d \
-  --name ntrip-caster \
-  -p 2101:2101 \
-  -p 5757:5757 \
-  ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
+**Users in mainland China** (Tencent Cloud, no login required):
+
+```bash
+docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 - **中文教程**: [Docker 安装和使用教程](DOCKER-TUTORIAL.md)
 - **English Tutorial**: [Docker Installation and Usage Guide](DOCKER-TUTORIAL-EN.md)
