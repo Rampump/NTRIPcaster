@@ -96,6 +96,42 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:lat
 -  NTRIP服务: `ntrip://yourserverip:2101`
 -  默认账号: `admin` / `admin123` (记得修改默认密码)
 
+## 更新升级（保留数据，一键无损）
+
+`update.sh` 会自动识别部署形态（源码+systemd / Docker），更新前备份配置与数据库，
+更新后做健康检查，失败自动回滚。**用户数据、挂载点配置、数据库全部保留。**
+
+### 推荐方式：在项目源码目录执行
+
+```bash
+# 进入你当初 git clone 的目录（注意：不是 /opt/2rtk）
+cd ~/NTRIPcaster
+git pull                      # 先拿到最新版 update.sh 本身
+sudo bash update.sh           # 自动检测源并更新
+```
+
+### 强制更新 / 指定更新源
+
+```bash
+sudo bash update.sh --force                # 跳过版本比对，强制更新
+sudo REPO_SOURCE=github bash update.sh     # 源码形态：指定 GitHub 源
+sudo REPO_SOURCE=gitcode bash update.sh    # 源码形态：指定 GitCode 源
+sudo REPO_SOURCE=tcr bash update.sh        # Docker 形态：指定腾讯云镜像源
+```
+
+### 没有保留源码目录怎么办
+
+`/opt/2rtk/update.sh` 是**安装时复制进去的旧副本，不会自动变新**。先拉一份最新脚本再执行：
+
+```bash
+cd /tmp && rm -rf _2rtk_upd
+git clone --depth 1 https://gitcode.com/rampump/NTRIPcaster.git _2rtk_upd
+sudo bash _2rtk_upd/update.sh        # 可直接在 /tmp 目录下运行，脚本使用绝对路径
+rm -rf /tmp/_2rtk_upd
+```
+
+> 更新完成后建议检查服务状态：`systemctl status 2rtk`，日志：`journalctl -u 2rtk -n 50`
+
 ## 硬件推荐
 
 ### 最低配置要求

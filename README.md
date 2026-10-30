@@ -96,6 +96,44 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.c
 - NTRIP Service: `ntrip://yourserverip:2101`
 - Default Account: `admin` / `admin123` (Remember to change the default password)
 
+## Upgrading (lossless, keeps all data)
+
+`update.sh` auto-detects the deployment type (source + systemd, or Docker), backs up the
+config and database before updating, runs a health check afterwards, and rolls back
+automatically on failure. **User data, mount point settings and the database are all preserved.**
+
+### Recommended: run it inside your source directory
+
+```bash
+# Go to the directory you originally cloned (NOT /opt/2rtk)
+cd ~/NTRIPcaster
+git pull                      # get the latest update.sh itself first
+sudo bash update.sh           # auto-select source and update
+```
+
+### Force update / choose a source
+
+```bash
+sudo bash update.sh --force                # skip version comparison, force update
+sudo REPO_SOURCE=github bash update.sh     # source mode: use GitHub
+sudo REPO_SOURCE=gitcode bash update.sh    # source mode: use GitCode
+sudo REPO_SOURCE=tcr bash update.sh        # docker mode: use Tencent Cloud registry
+```
+
+### No source directory left?
+
+The `/opt/2rtk/update.sh` created at install time is an **old copy and never updates itself**.
+Fetch a fresh one first:
+
+```bash
+cd /tmp && rm -rf _2rtk_upd
+git clone --depth 1 https://gitcode.com/rampump/NTRIPcaster.git _2rtk_upd
+sudo bash _2rtk_upd/update.sh        # safe to run from /tmp, the script uses absolute paths
+rm -rf /tmp/_2rtk_upd
+```
+
+> After updating, check the service: `systemctl status 2rtk`, logs: `journalctl -u 2rtk -n 50`
+
 ## Hardware Recommendations
 
 ### Minimum Configuration Requirements
