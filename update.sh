@@ -72,13 +72,15 @@ fi
 
 # ==================== 部署形态检测 ====================
 detect_deploy_mode() {
-    # 1. 源码 + systemd 形态：/opt/2rtk 存在且是 git 仓库，且 systemd 服务存在
-    if [ -d "$INSTALL_DIR/.git" ] && (systemctl list-unit-files 2>/dev/null | grep -q "${SERVICE_NAME}.service"); then
+    # 1. 源码 + systemd 形态：/opt/2rtk/main.py 存在 + systemd 服务存在。
+    #    注意：install.sh 用 `cp -r "$SRC_DIR"/*` 复制源码，`*` 不匹配隐藏的 .git，
+    #    所以实际部署后 /opt/2rtk 通常没有 .git。这里以 main.py + 服务文件为准，更可靠。
+    if [ -f "$INSTALL_DIR/main.py" ] && (systemctl list-unit-files 2>/dev/null | grep -q "${SERVICE_NAME}.service"); then
         echo "source"
         return
     fi
 
-    # 2. Docker 形态：存在 ntrip-caster 容器，或 docker-compose 项目在运行
+    # 2. Docker 形态：存在 ntrip-caster 容器（docker run 或 docker compose 均会创建该容器名）
     if command -v docker >/dev/null 2>&1; then
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'ntrip-caster'; then
             echo "docker"
@@ -96,7 +98,7 @@ if [ "$DEPLOY_MODE" = "unknown" ]; then
     log_error "无法识别部署形态"
     echo ""
     echo "  检测依据："
-    echo "    - 源码形态：$INSTALL_DIR/.git 存在 + ${SERVICE_NAME}.service 服务存在"
+    echo "    - 源码形态：$INSTALL_DIR/main.py 存在 + ${SERVICE_NAME}.service 服务存在"
     echo "    - Docker 形态：存在名为 ntrip-caster 的容器"
     echo ""
     log_warn "请确认你已通过 install.sh 或 docker-deploy.sh 正确部署后再更新"
@@ -135,26 +137,60 @@ do_backup() {
 do_rollback() {
     log_warn "开始回滚..."
     if [ "$DEPLOY_MODE" = "source" ]; then
-        # 源码形态：恢复数据库和配置
+        # 源码形态：优先回滚代码（若有备份），再恢复数据库和配置
+        if [ -d "$BACKUP_DIR/opt_2rtk_bak" ]; then
+            log_step "回滚代码..."
+            if command -v rsync >/dev/null 2>&1; then
+                rsync -a --delete \
+                    --exclude 'venv/' \
+                    --exclude 'data/' \
+                    --exclude 'config.ini' \
+                    --exclude '.git/' \
+                    "$BACKUP_DIR/opt_2rtk_bak/" "$INSTALL_DIR/" 2>/dev/null
+            else
+                cp -a "$BACKUP_DIR/opt_2rtk_bak/." "$INSTALL_DIR/" 2>/dev/null
+            fi
+            log_ok "代码已回滚"
+        fi
+        # 恢复数据库
         if [ -f "$BACKUP_DIR/2rtk.db" ]; then
             cp -a "$BACKUP_DIR/2rtk.db" "${INSTALL_DIR}/data/2rtk.db" 2>/dev/null
             log_ok "已回滚数据库"
         fi
+        # 恢复配置文件
         if [ -f "$BACKUP_DIR/config.ini" ]; then
             cp -a "$BACKUP_DIR/config.ini" "$CONFIG_DIR/config.ini" 2>/dev/null
             log_ok "已回滚配置文件"
         fi
+        # 恢复 config.ini 软链
+        if [ ! -L "$INSTALL_DIR/config.ini" ] && [ -f "$CONFIG_DIR/config.ini" ]; then
+            ln -sf "$CONFIG_DIR/config.ini" "$INSTALL_DIR/config.ini" 2>/dev/null
+        fi
+        # 重启服务使其回到旧版本运行状态
+        systemctl restart "$SERVICE_NAME" 2>/dev/null
     fi
-    log_warn "代码/镜像可能已更新，请检查服务状态。备份保留在 $BACKUP_DIR"
+    log_warn "已回滚，备份保留在 $BACKUP_DIR"
 }
 
 # ==================== 健康检查 ====================
+# 两阶段探活：
+#   1) 服务进程层面：systemd 服务 active / docker 容器 running
+#   2) 应用层面：Web 管理接口 HTTP 200（仅当 curl 可用时；避免服务反复被 Restart 拉起仍被判为健康）
 health_check() {
     local tries=0
-    local max_tries=12
+    local max_tries=15
     while [ $tries -lt $max_tries ]; do
+        # 进程层面检查
         if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-            return 0
+            # 应用层面：尝试 HTTP 探活（源码形态 Web 端口 5757）
+            if command -v curl >/dev/null 2>&1; then
+                if curl -fsS --connect-timeout 2 http://127.0.0.1:5757/ >/dev/null 2>&1; then
+                    return 0
+                fi
+            else
+                # 无 curl 时退化为仅进程检查
+                return 0
+            fi
         fi
         # Docker 形态检查容器
         if [ "$DEPLOY_MODE" = "docker" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'ntrip-caster'; then
@@ -265,6 +301,37 @@ update_source() {
         ln -sf "$CONFIG_DIR/config.ini" "$INSTALL_DIR/config.ini" 2>/dev/null
     fi
 
+    # 同步 systemd 服务文件：若仓库带了服务文件模板则复用，否则按 install.sh 同款方式重建，
+    # 确保服务启动方式（WorkingDirectory/Environment/ExecStart）与最新版本一致，不落后。
+    log_step "同步 systemd 服务文件..."
+    if [ -f "$INSTALL_DIR/2rtk.service" ]; then
+        cp -a "$INSTALL_DIR/2rtk.service" "/etc/systemd/system/${SERVICE_NAME}.service" 2>/dev/null
+        log_ok "已从仓库同步服务文件"
+    else
+        cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
+[Unit]
+Description=NTRIP Caster Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$INSTALL_DIR
+Environment="PATH=$INSTALL_DIR/venv/bin"
+Environment="NTRIP_CONFIG_FILE=$CONFIG_DIR/config.ini"
+ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
+Restart=always
+RestartSec=5
+StandardOutput=append:$LOG_DIR/main.log
+StandardError=append:$LOG_DIR/errors.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        log_ok "已按 install.sh 同款方式重建服务文件"
+    fi
+    systemctl daemon-reload 2>/dev/null
+
     # 重新安装依赖（requirements.txt 可能变化，用清华镜像加速 + 回退）
     log_step "更新 Python 依赖..."
     local PIP_ARGS=""
@@ -315,8 +382,9 @@ update_docker() {
     old_image_id=$(docker inspect --format '{{.Image}}' ntrip-caster 2>/dev/null || echo "")
 
     # 判断容器是否挂了持久化卷（决定能否安全重建）
+    # 本项目数据库/配置/日志都在容器内 /app/ 下，有任一 /app/ 子目录的挂载即视为有持久化卷
     local has_volume
-    has_volume=$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' ntrip-caster 2>/dev/null | grep -q '/app/' && echo "yes" || echo "no")
+    has_volume=$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' ntrip-caster 2>/dev/null | tr ' ' '\n' | grep -q '^/app/' && echo "yes" || echo "no")
 
     # 确定镜像源
     local image="$TCR_IMAGE"
@@ -361,7 +429,7 @@ update_docker() {
         # 有持久化卷：安全重建容器（数据在卷里，无损）
         log_step "检测到持久化卷，安全重建容器..."
         local compose_dir=""
-        for d in "/opt/ntripcaster" "$(pwd)"; do
+        for d in "/opt/ntripcaster" "/opt/2rtk" "$(pwd)"; do
             if [ -f "$d/docker-compose.yml" ]; then
                 compose_dir="$d"
                 break
@@ -370,17 +438,27 @@ update_docker() {
 
         if [ -n "$compose_dir" ]; then
             cd "$compose_dir" || { log_error "无法进入 $compose_dir"; exit 1; }
-            docker compose up -d --no-deps ntripcaster 2>/dev/null || {
-                log_error "compose 重建失败"
-                do_rollback
-                exit 1
-            }
+            # 自动探测 compose 中的应用服务名（默认 ntrip-caster，兼容用户自定义命名）
+            local compose_svc=""
+            compose_svc=$(docker compose config --services 2>/dev/null | grep -iE 'caster|ntrip|2rtk' | head -1)
+            [ -z "$compose_svc" ] && compose_svc="ntrip-caster"
+            log_info "重建 compose 服务: $compose_svc"
+            if ! docker compose up -d --no-deps "$compose_svc" 2>/dev/null; then
+                # 服务名探测失败时退化为整体 up（仍会 pull 新镜像并重建）
+                log_warn "指定服务重建失败，尝试整体重建..."
+                docker compose up -d 2>/dev/null || {
+                    log_error "compose 重建失败"
+                    do_rollback
+                    exit 1
+                }
+            fi
         else
-            # docker run + volume 形态：stop -> rm -> 用相同挂载重新 run
-            log_warn "未找到 compose 文件，使用 docker run 重建（保留原挂载卷）..."
-            log_warn "需要手动重建容器，已拉取新镜像，请手动执行："
+            # docker run + volume 形态：无法安全自动重建，提示手动操作
+            log_warn "未找到 compose 文件，无法自动重建容器"
+            log_warn "已拉取新镜像，请手动重建（保留原 -v 挂载参数即可，数据在卷中无损）："
             log_warn "  docker stop ntrip-caster && docker rm ntrip-caster"
-            log_warn "  然后按你原来的 docker run 命令（含 -v 挂载）重新启动，镜像已更新"
+            log_warn "  然后用你原来的 docker run 命令（含 -v 挂载）重新启动，镜像已更新为:"
+            log_warn "  $image"
             exit 0
         fi
     else
