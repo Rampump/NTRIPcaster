@@ -273,6 +273,9 @@ async function loadPageContent(page) {
 }
 
 // Add INFO button event handling for STR items
+// 当前选中的挂载点（用于 STR 表按钮选中高亮，绿字标识正在查看的站点）
+let currentSelectedMount = null;
+
 function addInfoButtonsToSTRItems() {
     const infoButtons = document.querySelectorAll('.str-info-btn');
     
@@ -290,12 +293,32 @@ function addInfoButtonsToSTRItems() {
         button.title = t('monitor.infoTitle', { name: mountName });
         
         button.addEventListener('click', () => {
+            // 记录当前选中的挂载点并高亮对应按钮
+            currentSelectedMount = mountName;
+            applyMountButtonHighlight();
+            
             // Start RTCM parsing and update container content
             startRTCMParsing(mountName);
         });
         
         // Mark as event bound
         button.setAttribute('data-event-bound', 'true');
+    });
+    
+    // 重渲染后恢复选中态（避免 socket 推送重绘导致绿字丢失）
+    applyMountButtonHighlight();
+}
+
+// 高亮当前选中的挂载点按钮：选中的变绿（--success），其余恢复原色
+function applyMountButtonHighlight() {
+    const infoButtons = document.querySelectorAll('.str-info-btn');
+    infoButtons.forEach(button => {
+        const mountName = button.getAttribute('data-mount');
+        if (mountName && mountName === currentSelectedMount) {
+            button.classList.add('active');
+        } else {
+            button.classList.remove('active');
+        }
     });
 }
 
@@ -850,18 +873,33 @@ function updateMapLocation(latitude, longitude, mountName = null, isInitialMarki
         markerFeature.setStyle(new ol.style.Style({
             image: new ol.style.Icon({
                 src: 'data:image/svg+xml;base64,' + btoa(`
-                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
                         <defs>
                             <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-                                <feDropShadow dx="2" dy="2" stdDeviation="2" flood-color="rgba(0,0,0,0.3)"/>
+                                <feDropShadow dx="1.5" dy="2.5" stdDeviation="2" flood-color="rgba(0,0,0,0.35)"/>
                             </filter>
+                            <linearGradient id="towerGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stop-color="#42A5F5"/>
+                                <stop offset="100%" stop-color="#1565C0"/>
+                            </linearGradient>
                         </defs>
-                        <circle cx="16" cy="16" r="12" fill="transparent" stroke="rgba(21, 101, 192, 0.8)" stroke-width="3" filter="url(#shadow)"/>
-                        <text x="16" y="21" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#DC143C">T</text>
+                        <!-- 底座 -->
+                        <rect x="13" y="32" width="14" height="3" rx="1.5" fill="#0D47A1"/>
+                        <rect x="15" y="28" width="10" height="4" rx="1.5" fill="#0D47A1"/>
+                        <!-- 塔身 -->
+                        <path d="M20 5 L24 28 L16 28 Z" fill="url(#towerGrad)" stroke="#0D47A1" stroke-width="1"/>
+                        <!-- 顶部圆点（信号源） -->
+                        <circle cx="20" cy="5" r="4" fill="#FFC107" stroke="#0D47A1" stroke-width="1.2" filter="url(#shadow)"/>
+                        <!-- 信号波纹 -->
+                        <path d="M20 2 C24 -2 32 -2 34 4" fill="none" stroke="#FF7043" stroke-width="1.6" stroke-linecap="round"/>
+                        <path d="M20 3 C25 -4 36 -4 39 3" fill="none" stroke="#FF7043" stroke-width="1.4" stroke-linecap="round" opacity="0.6"/>
+                        <!-- 横梁 -->
+                        <rect x="14" y="18" width="12" height="1.8" rx="0.9" fill="#0D47A1"/>
+                        <rect x="15" y="12" width="10" height="1.6" rx="0.8" fill="#0D47A1"/>
                     </svg>
                 `),
                 scale: 1,
-                anchor: [0.5, 0.5]
+                anchor: [0.5, 1.0]
             })
         }));
         
@@ -2302,7 +2340,7 @@ function updateMonitorData() {
                 Object.entries(window.strData).forEach(([mountName, strContent]) => {
                     strHtml += `
                         <div class="str-row">
-                            <button class="str-info-btn" data-mount="${escapeHtml(mountName)}">${escapeHtml(t('monitor.info'))}</button>
+                            <button class="str-info-btn" data-mount="${escapeHtml(mountName)}">${escapeHtml(mountName)}</button>
                             <div class="str-content-wrapper">
                                 <div class="str-content-inline">${escapeHtml(strContent) || escapeHtml(t('monitor.noData'))}</div>
                             </div>

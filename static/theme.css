@@ -1152,6 +1152,18 @@ textarea.form-control {
   color: #fff;
 }
 
+.str-info-btn.active {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+}
+
+.str-info-btn.active:hover {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+}
+
 .str-content-wrapper {
   min-width: 0;
   flex: 1 1 auto;
