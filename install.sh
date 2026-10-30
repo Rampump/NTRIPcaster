@@ -6,6 +6,17 @@
 # 版本: 1.0.0
 #
 
+# ===== 非交互安装环境（避免 needrestart 等工具弹出交互窗口卡住安装）=====
+# DEBIAN_FRONTEND=noninteractive : 让 apt/dpkg 不弹出任何交互提示（如 nginx 配置询问）
+# NEEDRESTART_MODE=a            : 让 needrestart 自动重启需要重启的服务，而非交互式询问
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+# 兼容旧版 needrestart（v3.5 之前无 NEEDRESTART_MODE，用 dpkg 的配置禁用其交互）
+if [ -d /etc/needrestart/conf.d ] && [ ! -f /etc/needrestart/conf.d/99-disable-interactive.conf ]; then
+    mkdir -p /etc/needrestart/conf.d
+    echo '$nrconf{restart} = "a";' > /etc/needrestart/conf.d/99-disable-interactive.conf
+fi
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -91,14 +102,15 @@ echo -e "${YELLOW}创建日志目录...${NC}"
 
 # 更新系统并安装依赖
 echo -e "${YELLOW}更新系统并安装依赖...${NC}"
-if ! apt-get update; then
+if ! DEBIAN_FRONTEND=noninteractive apt-get update; then
     echo -e "${RED}错误: apt-get update 失败，请检查网络或软件源配置${NC}"
     echo -e "${YELLOW}中国区服务器可尝试将 /etc/apt/sources.list 切换为国内镜像后重试${NC}"
     exit 1
 fi
 
 # 安装依赖包（已移除 supervisor：代码未使用且 Debian 12/Ubuntu 24.04 源中已删除该包）
-if ! apt-get install -y python3 python3-pip python3-venv nginx git; then
+# 显式携带非交互环境变量，确保 apt 及 needrestart 全程不弹交互窗口
+if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y python3 python3-pip python3-venv nginx git; then
     echo -e "${RED}错误: 依赖安装失败，请检查软件源配置${NC}"
     exit 1
 fi
