@@ -711,12 +711,35 @@ wait_time_wait_drain() {
 #   - 旧版 install.sh 没配 systemd 时用 nohup 起的后台进程。
 # 这类进程 systemctl stop 管不到，会一直占着 2101/5757。
 _find_stray_pids() {
-    local pid args
+    local pid args names cg skip n
+
+    # 本程序可能对应多个单元名（多份安装 / 改过名），先取全量列表
+    names=$(discover_services)
+
     while read -r pid args; do
         [ -z "$pid" ] && continue
         case "$args" in
-            *"$INSTALL_DIR/main.py"*) echo "$pid" ;;
+            *"$INSTALL_DIR/main.py"*) ;;
+            *) continue ;;
         esac
+
+        # 排除 systemd 托管的进程：它们由 systemctl stop 负责，不该在这里
+        # 被当成「游离进程」重复处理。否则日志会自相矛盾——
+        # 先说「发现游离进程 PID 28658」，紧接着说「停止服务，主进程 PID 28658」，
+        # 让用户以为还要手动 kill 一遍。
+        # 依据 /proc/PID/cgroup：systemd 托管的进程形如 /system.slice/2rtk.service。
+        skip=0
+        if [ -r "/proc/$pid/cgroup" ]; then
+            cg=$(cat "/proc/$pid/cgroup" 2>/dev/null)
+            for n in $names; do
+                case "$cg" in
+                    *"/${n}.service"*) skip=1; break ;;
+                esac
+            done
+        fi
+        [ "$skip" -eq 1 ] && continue
+
+        echo "$pid"
     done < <(ps -eo pid=,args= 2>/dev/null)
 }
 
