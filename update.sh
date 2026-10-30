@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# NTRIP Caster 一键无损更新脚本 v1.1.0
+# NTRIP Caster 一键无损更新脚本 v1.2.0
 #
 # 功能：自动检测部署形态（源码+systemd / Docker），从可用源拉取最新版本，
 #       更新前自动备份配置与数据库，更新后做健康检查，失败自动回滚。
@@ -30,6 +30,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_ok()    { echo -e "${CYAN}[OK]${NC} $1"; }
 
 # ==================== 常量 ====================
+SCRIPT_VERSION="1.2.0"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
@@ -49,15 +50,26 @@ BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d_%H%M%S)"
 
 FORCE_UPDATE=0
 
+# 可选环境变量默认值：本脚本开启了 `set -u`，未定义变量被引用会直接报
+# "unbound variable" 并中断更新。REPO_SOURCE 用于强制指定更新源（gitcode/github/tcr/dockerhub），
+# 未显式传入时必须先给出空值，否则 `[ -n "$REPO_SOURCE" ]` 会触发 unbound variable。
+REPO_SOURCE="${REPO_SOURCE:-}"
+
 # ==================== 参数解析 ====================
 for arg in "$@"; do
     case "$arg" in
         --force|-f)
             FORCE_UPDATE=1
             ;;
+        --source=*)
+            REPO_SOURCE="${arg#*=}"
+            ;;
         --help|-h)
-            echo "用法: sudo bash update.sh [--force]"
-            echo "  --force  跳过版本判定，强制执行更新"
+            echo "用法: sudo bash update.sh [--force] [--source=gitcode|github|tcr|dockerhub]"
+            echo "  --force             跳过版本判定，强制执行更新"
+            echo "  --source=<源>       强制指定更新源"
+            echo "    source 形态: gitcode | github"
+            echo "    docker 形态: tcr | dockerhub"
             exit 0
             ;;
     esac
@@ -357,6 +369,20 @@ update_source() {
 
     # 同步新代码到安装目录（排除运行时目录：venv、data、config.ini 软链、日志）
     log_step "同步新代码..."
+
+    # rsync 的 --delete/--exclude 语义最可靠；install.sh 默认不装 rsync，
+    # 这里尝试就地补齐（失败则退回 cp 兜底，不影响更新）。
+    if ! command -v rsync >/dev/null 2>&1; then
+        log_info "未检测到 rsync，尝试安装以更可靠地同步代码..."
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y rsync >/dev/null 2>&1 || true
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y rsync >/dev/null 2>&1 || true
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y rsync >/dev/null 2>&1 || true
+        fi
+    fi
+
     if command -v rsync >/dev/null 2>&1; then
         rsync -a --delete \
             --exclude 'venv/' \
@@ -370,12 +396,19 @@ update_source() {
                 exit 1
             }
     else
-        # 无 rsync 时用 cp 兜底（先删旧代码，但保留 venv/data/config.ini）
-        log_warn "未找到 rsync，使用 cp 兜底"
+        # 无 rsync 时用 cp 兜底：先清空旧代码（保留 venv/data/config.ini），再整体复制。
+        # 注意用 "$tmp_clone/." 而非 "$tmp_clone"/*，否则会漏掉 .env.example 等点文件。
+        log_warn "未找到 rsync，使用 cp 兜底同步"
         find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
             ! -name 'venv' ! -name 'data' ! -name 'config.ini' \
             -exec rm -rf {} + 2>/dev/null
-        cp -r "$tmp_clone"/* "$INSTALL_DIR/" 2>/dev/null
+        if ! cp -a "$tmp_clone/." "$INSTALL_DIR/" 2>/dev/null; then
+            log_error "cp 同步失败"
+            rm -rf "$tmp_clone"
+            do_rollback
+            exit 1
+        fi
+        # 兜底方案不会自动删除「新版已移除的旧文件」，这里清掉 .git 以外的残留不受影响，故不额外处理
     fi
     rm -rf "$tmp_clone"
     log_ok "代码同步完成"
@@ -415,6 +448,26 @@ EOF
         log_ok "已按 install.sh 同款方式重建服务文件"
     fi
     systemctl daemon-reload 2>/dev/null
+
+    # 同步运行时版本号：config.ini 里 [app] version 属于程序元数据（不是用户配置），
+    # 安装时从 example 复制一次后就固定了，不会随代码更新而变。若不更新会导致两个问题：
+    #   1) Web 界面/日志显示的版本永远停留在旧版本；
+    #   2) 之后每次跑 update.sh 都会重复判定「发现新版本」并重复下载同步。
+    # 只替换 [app] 段内的 version 键，不碰其他段与其他键；用 cat 覆写以保留原文件权限。
+    if [ -n "$new_version" ] && [ -f "$CONFIG_DIR/config.ini" ]; then
+        local _cfg_tmp="${CONFIG_DIR}/.config.ini.ver.tmp"
+        if awk -v v="$new_version" '
+            /^[[:space:]]*\[/ { sec=$0; gsub(/[\[\][:space:]]/, "", sec) }
+            sec=="app" && !done && /^[[:space:]]*version[[:space:]]*=/ { print "version = " v; done=1; next }
+            { print }
+        ' "$CONFIG_DIR/config.ini" > "$_cfg_tmp" 2>/dev/null && [ -s "$_cfg_tmp" ]; then
+            cat "$_cfg_tmp" > "$CONFIG_DIR/config.ini"
+            log_ok "配置版本号已同步为 v$new_version"
+        else
+            log_warn "配置版本号同步失败（不影响程序运行）"
+        fi
+        rm -f "$_cfg_tmp"
+    fi
 
     # 重新安装依赖（requirements.txt 可能变化，用清华镜像加速 + 回退）
     log_step "更新 Python 依赖..."
@@ -593,7 +646,7 @@ update_docker() {
 
 # ==================== 主流程 ====================
 echo -e "${BLUE}=================================================${NC}"
-echo -e "${BLUE}   NTRIP Caster 一键无损更新 v1.0.0           ${NC}"
+echo -e "${BLUE}   NTRIP Caster 一键无损更新 v${SCRIPT_VERSION}           ${NC}"
 echo -e "${BLUE}=================================================${NC}"
 echo ""
 
