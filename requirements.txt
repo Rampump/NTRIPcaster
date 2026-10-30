@@ -16,7 +16,11 @@ setuptools>=78.1.1     # 修复 CVE-2025-47273, CVE-2024-6345
 # 精确锁定版本以保证构建可复现；升级时请同步升级本文件并跑一次回归测试
 pyrtcm==1.1.8          # RTCM消息解析库，支持MSM消息
 reverse-geocode==1.6.6 # 离线反向地理编码库
-pyproj==3.7.2          # 坐标转换库
+pyproj==3.5.0          # 坐标转换库
+# 说明：pyproj 3.7.x 要求 Python>=3.11，会导致 Debian 11(Py3.9)/Ubuntu 22.04(Py3.10)/
+# 24.04(Py3.12) 无法安装。3.5.0 要求 Python>=3.8（manylinux2014 wheel, glibc 2.17+），
+# 兼容项目全部目标发行版。本项目仅用 Transformer.from_crs(epsg:4978->4326)，3.5.0 完全够用。
+# 注：项目整体 Python 下限为 3.9（由 pyrtcm 1.1.8 决定），pyproj 3.5.0 并非瓶颈。
 
 
 

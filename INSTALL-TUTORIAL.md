@@ -16,11 +16,13 @@
 ## 系统要求
 
 ### 最低要求
-- **操作系统**: Linux (Debian 10+, Ubuntu 18.04+, CentOS 7+, RHEL 7+)
+- **操作系统**: Linux (Debian 11+, Ubuntu 22.04+, CentOS 8+, RHEL 8+)
 - **CPU**: 1 核心
 - **内存**: 512MB RAM
 - **存储**: 1GB 可用空间
-- **Python**: 3.8+ (推荐 3.11)
+- **Python**: 3.9+ (推荐 3.11)
+
+> ⚠️ **不支持 Ubuntu 20.04 / Debian 10**：它们自带 Python 3.8，而 `pyrtcm==1.1.8` 要求 Python 3.9+，无法安装本项目。
 
 ### 推荐配置
 - **CPU**: 2+ 核心
@@ -29,10 +31,10 @@
 - **网络**: 稳定的网络连接
 
 ### 支持的发行版
-- Debian 10/11/12 (Buster/Bullseye/Bookworm)
-- Ubuntu 18.04/20.04/22.04/24.04 LTS
-- CentOS 7/8/9
-- RHEL 7/8/9
+- Debian 11/12/13 (Bullseye/Bookworm/Trixie)
+- Ubuntu 22.04/24.04 LTS（20.04 及更早版本不支持）
+- CentOS 8/9
+- RHEL 8/9
 - Rocky Linux 8/9
 - AlmaLinux 8/9
 - openSUSE Leap 15.x
@@ -98,9 +100,9 @@ sudo bash install.sh
 
 #### 脚本功能
 
-`install.sh` 是**仅支持 Debian 10+ / Ubuntu 20.04+** 的一键安装脚本，会自动完成：
+`install.sh` 是**仅支持 Debian 11+ / Ubuntu 22.04+** 的一键安装脚本，会自动完成：
 
-1. **检查系统环境**：识别 Debian/Ubuntu 及大版本号（其他发行版或过老版本会提示并退出），校验 Python >= 3.8，并要求以 root 权限运行。
+1. **检查系统环境**：识别 Debian/Ubuntu 及大版本号（其他发行版或过老版本会提示并退出），校验 Python >= 3.9，并要求以 root 权限运行。
 
 2. **安装系统依赖**：`python3`、`python3-pip`、`python3-venv`、`nginx`、`git`（已移除 `supervisor`，代码未使用且新版系统源中已删除该包）。
 
@@ -191,23 +193,9 @@ sudo apt install -y libsystemd-dev
 
 #### CentOS/RHEL 系统
 
-```bash
-# CentOS 7
-sudo yum update -y
-sudo yum install -y epel-release
-sudo yum install -y \
-    python3 \
-    python3-pip \
-    git \
-    wget \
-    curl \
-    sqlite \
-    gcc \
-    python3-devel \
-    openssl-devel \
-    libffi-devel \
-    nginx
+> ⚠️ CentOS 7 自带 Python 3.6，无法安装本项目（需 Python 3.9+），请使用 CentOS 8/9 或 RHEL 8/9。
 
+```bash
 # CentOS 8/9 或 RHEL 8/9
 sudo dnf update -y
 sudo dnf install -y epel-release

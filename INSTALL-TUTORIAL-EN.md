@@ -15,11 +15,13 @@ This tutorial will guide you through installing and deploying NTRIP Caster v2.3.
 ## System Requirements
 
 ### Minimum Requirements
-- **Operating System**: Linux (Debian 10+, Ubuntu 18.04+, CentOS 7+, RHEL 7+)
+- **Operating System**: Linux (Debian 11+, Ubuntu 22.04+, CentOS 8+, RHEL 8+)
 - **CPU**: 1 core
 - **Memory**: 512MB RAM
 - **Storage**: 1GB available space
-- **Python**: 3.8+ (recommended 3.11)
+- **Python**: 3.9+ (recommended 3.11)
+
+> ⚠️ **Ubuntu 20.04 / Debian 10 are not supported**: they ship Python 3.8, while `pyrtcm==1.1.8` requires Python 3.9+.
 
 ### Recommended Configuration
 - **CPU**: 2+ cores
@@ -28,10 +30,10 @@ This tutorial will guide you through installing and deploying NTRIP Caster v2.3.
 - **Network**: Stable network connection
 
 ### Supported Distributions
-- Debian 10/11/12 (Buster/Bullseye/Bookworm)
-- Ubuntu 18.04/20.04/22.04/24.04 LTS
-- CentOS 7/8/9
-- RHEL 7/8/9
+- Debian 11/12/13 (Bullseye/Bookworm/Trixie)
+- Ubuntu 22.04/24.04 LTS (20.04 and earlier are not supported)
+- CentOS 8/9
+- RHEL 8/9
 - Rocky Linux 8/9
 - AlmaLinux 8/9
 - openSUSE Leap 15.x
@@ -97,23 +99,9 @@ sudo apt install -y libsystemd-dev
 
 #### CentOS/RHEL Systems
 
-```bash
-# CentOS 7
-sudo yum update -y
-sudo yum install -y epel-release
-sudo yum install -y \
-    python3 \
-    python3-pip \
-    git \
-    wget \
-    curl \
-    sqlite \
-    gcc \
-    python3-devel \
-    openssl-devel \
-    libffi-devel \
-    nginx
+> ⚠️ CentOS 7 ships Python 3.6 and cannot install this project (Python 3.9+ required). Use CentOS 8/9 or RHEL 8/9.
 
+```bash
 # CentOS 8/9 or RHEL 8/9
 sudo dnf update -y
 sudo dnf install -y epel-release

@@ -25,7 +25,7 @@
 ## 安装教程
 
 ### 源码安装（tar.gz，最简单）
-无需 Docker，任何装有 Python 3.8+ 的 Linux / macOS / Windows 均可。
+无需 Docker，任何装有 Python 3.9+ 的 Linux / macOS / Windows 均可。
 
 ```bash
 # 1. 解压
@@ -48,7 +48,9 @@ python3 main.py
 - 首次启动时，`secret_key` 留空会自动生成并落盘到 `data/.secret_key`。
 - **详细原生安装教程**：[Linux 系统原生安装教程](INSTALL-TUTORIAL.md)
 
-### 一键安装脚本（Debian 10+ / Ubuntu 20.04+，自动装 systemd 服务并开机自启）
+### 一键安装脚本（Debian 11+ / Ubuntu 22.04+，自动装 systemd 服务并开机自启）
+
+> ⚠️ **不支持**：Ubuntu 20.04 和 Debian 10 **无法安装**——它们自带 Python 3.8，而 `pyrtcm==1.1.8` 要求 Python 3.9+。请使用 Debian 11+ / Ubuntu 22.04+（或更新的发行版）。
 
 脚本会自动下载源码、装依赖、建服务，**自动适配网络**（先试 GitCode，失败回退 GitHub，也可用 `REPO_SOURCE` 指定）；**自动切换 pip 国内镜像**加速依赖安装。
 
@@ -101,7 +103,7 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:lat
 - **内存**: 2GB RAM
 - **存储**: 10GB 可用磁盘空间
 - **网络**: 稳定的网络连接
-- **操作系统**: Ubuntu 18.04+ / Debian 10+ / CentOS 7+
+- **操作系统**: Ubuntu 22.04+ / Debian 11+ / CentOS 8+（需 Python 3.9+，不支持 Ubuntu 20.04 / Debian 10）
 
 ## 前端Web界面功能
 ### 首页
@@ -316,7 +318,7 @@ backup_count = 5                   # 保留日志文件数
 | **python-socketio** | 5.8.0 | Socket.IO协议实现 | MIT |
 | **psutil** | 5.9.5 | 系统性能监控和资源统计 | BSD-3-Clause |
 | **pyrtcm** | 1.1.8 | RTCM 3.x消息解析（支持MSM消息） | BSD-3-Clause |
-| **pyproj** | 3.7.2 | 地理坐标系统转换和投影计算 | MIT |
+| **pyproj** | 3.5.0 | 地理坐标系统转换和投影计算 | MIT |
 | **reverse-geocode** | 1.6.6 | 离线反向地理编码（STR位置信息） | MIT |
 
 ### RTCM解析库

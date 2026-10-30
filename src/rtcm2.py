@@ -200,6 +200,12 @@ class RTCMParserThread(threading.Thread):
         self.stats_delay = 5.0  # 延迟5秒开始统计，避免缓冲区历史数据影响
         self.stats_enabled = False  # 统计是否已启用
         
+        # 坐标转换器缓存（懒加载）：Transformer.from_crs 每次调用都要解析 CRS 定义，
+        # 有固定开销。这里缓存复用，避免每条 1005/1006 消息都重复创建。
+        # 注意：pyproj 的 Transformer 是线程安全的，但本实例只在本线程内使用，
+        # 所以直接作为实例属性缓存即可。
+        self._ecef_transformer = None
+        
         log_debug(f"RTCMParserThread初始化 [挂载点: {mount_name}, 模式: {mode}]")
 
     def run(self):
@@ -307,8 +313,10 @@ class RTCMParserThread(threading.Thread):
             x, y, z = msg.DF025, msg.DF026, msg.DF027
             # print(f"[1005/1006消息] ECEF坐标: X={x}, Y={y}, Z={z}")
             
-            transformer = Transformer.from_crs("epsg:4978", "epsg:4326", always_xy=True)
-            lon, lat, height = transformer.transform(x, y, z)
+            # ECEF(epsg:4978) -> 经纬度(epsg:4326)，懒加载并缓存转换器以复用
+            if self._ecef_transformer is None:
+                self._ecef_transformer = Transformer.from_crs("epsg:4978", "epsg:4326", always_xy=True)
+            lon, lat, height = self._ecef_transformer.transform(x, y, z)
             # print(f"[1005/1006消息] 转换后坐标: 经度={lon}, 纬度={lat}, 高程={height}")
             
             # 反向地理编码 - 直接获取完整信息，无需映射转换

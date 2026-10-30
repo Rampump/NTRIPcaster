@@ -25,7 +25,7 @@ It used to be a single file 2rtk.py,https://github.com/Rampump/2RTKcaster   . bu
 ## Installation Tutorials
 
 ### Source Installation (tar.gz, simplest)
-No Docker required, works on any Linux/macOS/Windows with Python 3.8+.
+No Docker required, works on any Linux/macOS/Windows with Python 3.9+.
 
 ```bash
 # 1. Unpack
@@ -48,7 +48,9 @@ python3 main.py
 - On first run, an empty `secret_key` auto-generates into `data/.secret_key`.
 - **Detailed native install guide**: [Linux Native Installation Guide](INSTALL-TUTORIAL-EN.md)
 
-### One-click Installer (Debian 10+ / Ubuntu 20.04+, installs systemd service + auto-start)
+### One-click Installer (Debian 11+ / Ubuntu 22.04+, installs systemd service + auto-start)
+
+> ⚠️ **Unsupported**: Ubuntu 20.04 and Debian 10 are **not supported** — they ship Python 3.8, while `pyrtcm==1.1.8` requires Python 3.9+. Use Debian 11+ / Ubuntu 22.04+ (or a newer distribution).
 
 The script auto-detects the network (tries GitCode first, falls back to GitHub; can also be forced via `REPO_SOURCE`) and auto-switches to a mainland China PyPI mirror for faster dependency installs.
 
@@ -101,7 +103,7 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.c
 - **Memory**: 2GB RAM
 - **Storage**: 10GB available disk space
 - **Network**: Stable network connection
-- **Operating System**: Ubuntu 18.04+ / Debian 10+ / CentOS 7+
+- **Operating System**: Ubuntu 22.04+ / Debian 11+ / CentOS 8+ (Python 3.9+ required; Ubuntu 20.04 / Debian 10 are not supported)
 
 ## Frontend Web Interface Features
 ### Homepage
@@ -296,7 +298,7 @@ This project uses the following excellent open source libraries and tools, and w
 | **python-socketio** | 5.8.0 | Socket.IO protocol implementation | MIT |
 | **psutil** | 5.9.5 | System performance monitoring and resource statistics | BSD-3-Clause |
 | **pyrtcm** | 1.1.8 | RTCM 3.x message parsing (MSM support) | BSD-3-Clause |
-| **pyproj** | 3.7.2 | Geographic coordinate system conversion and projection calculation | MIT |
+| **pyproj** | 3.5.0 | Geographic coordinate system conversion and projection calculation | MIT |
 | **reverse-geocode** | 1.6.6 | Offline reverse geocoding (STR location info) | MIT |
 
 ### RTCM Parsing Library

@@ -63,23 +63,27 @@ if [ "$OS_ID" = "unknown" ]; then
     exit 1
 fi
 
-# 版本下限：Debian >= 10，Ubuntu >= 20.04（需 python3 >= 3.8 及完整 systemd/apt 支持）
+# 版本下限：Debian >= 11，Ubuntu >= 22.04（需 python3 >= 3.9）
+# 原因：本项目依赖 pyrtcm 1.1.8（要求 Python>=3.9）、pyproj 3.5.0（要求 Python>=3.8）、
+# Flask 3.0.3（要求 Python>=3.8）。综合下来真实下限是 Python 3.9：
+#   Debian 10(buster)=Py3.7 ❌   Debian 11(bullseye)=Py3.9 ✅
+#   Debian 12(bookworm)=Py3.11 ✅  Debian 13(trixie)=Py3.13 ✅
+#   Ubuntu 18.04=Py3.6 ❌  Ubuntu 20.04=Py3.8 ❌（pyrtcm 1.1.8 装不上）
+#   Ubuntu 22.04=Py3.10 ✅  Ubuntu 24.04=Py3.12 ✅
+# Ubuntu 20.04(Python 3.8) 虽满足 Flask/pyproj，但 pyrtcm 1.1.8 要求 3.9+，无法安装。
 TOO_OLD=false
-if [ "$OS_ID" = "debian" ] && [ "$OS_VERSION" -lt 10 ]; then
+if [ "$OS_ID" = "debian" ] && [ "$OS_VERSION" -lt 11 ]; then
     TOO_OLD=true
 fi
-if [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION" -lt 20 ]; then
+if [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION" -lt 22 ]; then
     TOO_OLD=true
 fi
 if [ "$TOO_OLD" = true ]; then
-    echo -e "${YELLOW}警告: 检测到较旧的 ${OS_ID} ${VERSION_ID}${NC}"
-    echo -e "${YELLOW}此脚本针对 Debian 10+ / Ubuntu 20.04+ 设计，旧版本可能存在 python3 版本过低等问题${NC}"
-    echo -e "${YELLOW}是否仍要继续? (y/n): ${NC}"
-    read -r continue_choice
-    if [[ "$continue_choice" != "y" && "$continue_choice" != "Y" ]]; then
-        echo -e "${GREEN}安装已取消${NC}"
-        exit 0
-    fi
+    echo -e "${RED}错误: 检测到过旧的 ${OS_ID} ${VERSION_ID}${NC}"
+    echo -e "${RED}此脚本要求 Debian 11+ / Ubuntu 22.04+（Python >= 3.9）${NC}"
+    echo -e "${YELLOW}当前版本自带的 Python 过旧，无法安装本项目依赖（pyrtcm 需 Python>=3.9）。${NC}"
+    echo -e "${YELLOW}请升级系统，或参考文档手动安装 Python 3.9+ 后重试。${NC}"
+    exit 1
 fi
 
 echo -e "${GREEN}检测到 ${OS_ID} ${VERSION_ID}，继续安装...${NC}"
@@ -110,24 +114,58 @@ fi
 
 # 安装依赖包（已移除 supervisor：代码未使用且 Debian 12/Ubuntu 24.04 源中已删除该包）
 # 显式携带非交互环境变量，确保 apt 及 needrestart 全程不弹交互窗口
-if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y python3 python3-pip python3-venv nginx git; then
-    echo -e "${RED}错误: 依赖安装失败，请检查软件源配置${NC}"
+# 分两段安装：先装 python3/pip/nginx/git，再单独装 python3-venv。
+# 原因：python3-venv 是版本绑定包（如 python3.9-venv），在 Debian 11 打安全补丁后
+# 会出现 "python3.9-venv 依赖 python3.9=3.9.2-1 但系统是 3.9.2-1+deb11u7" 的依赖断裂，
+# 单独安装便于失败时给出针对性修复提示，而不是整条命令一起失败难以定位。
+echo -e "${YELLOW}安装基础依赖 (python3/pip/nginx/git)...${NC}"
+if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y python3 python3-pip nginx git; then
+    echo -e "${RED}错误: 基础依赖安装失败，请检查软件源配置${NC}"
     exit 1
 fi
 
-# 校验 python3 版本（代码需 >= 3.8，含 f-string / pathlib 等特性）
+echo -e "${YELLOW}安装 python3-venv...${NC}"
+if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y python3-venv; then
+    echo -e "${YELLOW}python3-venv 直接安装失败，尝试先对齐 python3 版本...${NC}"
+    # 常见根因：python3-venv 版本绑定包的依赖写死（如 python3.9=3.9.2-1），
+    # 而系统 python3 已打安全补丁（3.9.2-1+deb11u7），版本号对不上导致依赖断裂。
+    # 先 apt-get upgrade 把 python3 与 venv 包版本对齐，再重试。
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get upgrade -y python3 python3-venv 2>/dev/null || true
+    if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y python3-venv; then
+        echo -e "${RED}错误: python3-venv 安装失败（依赖断裂）${NC}"
+        echo -e "${YELLOW}常见原因：系统 python3 打了安全补丁（版本号带 +debXuY 后缀），${NC}"
+        echo -e "${YELLOW}而 python3-venv 依赖写死不带后缀的版本号，apt 判定依赖断裂。${NC}"
+        echo -e "${YELLOW}请手动执行以下命令修复后重试本脚本：${NC}"
+        echo -e "${GREEN}  sudo apt-get update${NC}"
+        echo -e "${GREEN}  sudo apt-get upgrade          # 关键：让 python3 与 python3-venv 版本对齐${NC}"
+        echo -e "${GREEN}  sudo apt-get install -y python3-venv${NC}"
+        echo -e "${YELLOW}若仍失败，可能是软件源未包含 security 源，请检查 /etc/apt/sources.list${NC}"
+        echo -e "${YELLOW}Debian 11 的 security 源写法应为 'bullseye-security'（不是 bullseye/updates）。${NC}"
+        exit 1
+    fi
+fi
+echo -e "${GREEN}python3-venv 安装成功${NC}"
+
+# 校验 python3 版本（pyrtcm 1.1.8 需 >= 3.9，是当前依赖里的最高下限）
 PY_MAJOR=$(python3 -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo "0")
 PY_MINOR=$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null || echo "0")
-if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; }; then
-    echo -e "${RED}错误: 需要 Python >= 3.8，当前为 $(python3 --version 2>&1)${NC}"
-    echo -e "${YELLOW}请升级系统或手动安装更高版本 Python 后重试${NC}"
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; }; then
+    echo -e "${RED}错误: 需要 Python >= 3.9，当前为 $(python3 --version 2>&1)${NC}"
+    echo -e "${YELLOW}依赖 pyrtcm 1.1.8 要求 Python >= 3.9。请升级系统或手动安装更高版本 Python 后重试${NC}"
     exit 1
 fi
 echo -e "${GREEN}Python 版本满足要求: $(python3 --version)${NC}"
 
 # 创建 Python 虚拟环境
 echo -e "${YELLOW}创建 Python 虚拟环境...${NC}"
-python3 -m venv $INSTALL_DIR/venv
+if ! python3 -m venv $INSTALL_DIR/venv; then
+    echo -e "${RED}错误: 创建虚拟环境失败${NC}"
+    echo -e "${YELLOW}常见原因：python3-venv 与系统 python3 版本不匹配（依赖断裂）${NC}"
+    echo -e "${YELLOW}或 ensurepip 未正确安装。请确认 python3-venv 已成功安装且与 python3 同版本：${NC}"
+    echo -e "${GREEN}  python3 --version${NC}"
+    echo -e "${GREEN}  dpkg -l | grep python3-venv${NC}"
+    exit 1
+fi
 source $INSTALL_DIR/venv/bin/activate
 
 # 下载项目文件
