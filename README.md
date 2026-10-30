@@ -53,15 +53,11 @@ python3 main.py
 The script auto-detects the network (tries GitCode first, falls back to GitHub; can also be forced via `REPO_SOURCE`).
 
 ```bash
-# International users (download from GitHub)
-wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+# International users (clone from GitHub; the script auto-detects local sources)
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 
-# Users in mainland China (download from GitCode)
-wget https://raw.gitcode.com/rampump/NTRIPcaster/raw/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+# Users in mainland China (clone from GitCode)
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 ```
 
 > If you hit network issues, force a source with `sudo REPO_SOURCE=gitcode ./install.sh` or `sudo REPO_SOURCE=github ./install.sh`.

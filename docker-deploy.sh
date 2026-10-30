@@ -14,7 +14,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 配置变量
-IMAGE_NAME="ntrip-caster"
+IMAGE_NAME="ntripcaster"
 IMAGE_TAG="2.2.0"
 CONTAINER_NAME="ntrip-caster"
 NETWORK_NAME="ntrip-network"

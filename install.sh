@@ -63,43 +63,52 @@ source $INSTALL_DIR/venv/bin/activate
 # 下载项目文件
 # 双源自动降级：优先 GitCode（中国大陆可直连），失败则回退 GitHub（国际线路）
 echo -e "${YELLOW}下载项目文件...${NC}"
-cd /tmp
-rm -rf NTRIPcaster
 
-# 可通过环境变量指定仓库源：REPO_SOURCE=github 或 REPO_SOURCE=gitcode
-if [ -z "$REPO_SOURCE" ]; then
-    # 自动探测：先尝试 GitCode，再回退 GitHub
-    echo -e "${BLUE}尝试从 GitCode 拉取源码（中国大陆线路）...${NC}"
-    if git clone https://gitcode.com/rampump/NTRIPcaster.git 2>/dev/null; then
-        echo -e "${GREEN}源码拉取成功（GitCode）${NC}"
-    else
-        echo -e "${YELLOW}GitCode 拉取失败，回退到 GitHub（国际线路）...${NC}"
-        if git clone https://github.com/Rampump/NTRIPcaster.git 2>/dev/null; then
-            echo -e "${GREEN}源码拉取成功（GitHub）${NC}"
-        else
-            echo -e "${RED}错误: 无法从 GitCode 或 GitHub 拉取源码，请检查网络连接${NC}"
-            exit 1
-        fi
-    fi
+# 检测当前目录是否已经是项目源码（用户已 git clone 的场景），是则直接复用，跳过重复 clone
+if [ -f "main.py" ] && [ -f "requirements.txt" ] && [ -d "src" ]; then
+    echo -e "${GREEN}检测到当前目录已是项目源码，跳过重复下载${NC}"
+    SRC_DIR="$(pwd)"
 else
-    # 用户显式指定了源
-    case "$REPO_SOURCE" in
-        github)
-            echo -e "${BLUE}从 GitHub 拉取源码...${NC}"
-            git clone https://github.com/Rampump/NTRIPcaster.git || { echo -e "${RED}错误: GitHub 拉取失败${NC}"; exit 1; }
-            ;;
-        gitcode)
-            echo -e "${BLUE}从 GitCode 拉取源码...${NC}"
-            git clone https://gitcode.com/rampump/NTRIPcaster.git || { echo -e "${RED}错误: GitCode 拉取失败${NC}"; exit 1; }
-            ;;
-        *)
-            echo -e "${RED}错误: REPO_SOURCE 仅支持 github 或 gitcode${NC}"
-            exit 1
-            ;;
-    esac
+    # 需要从远端拉取源码
+    cd /tmp
+    rm -rf NTRIPcaster
+
+    # 可通过环境变量指定仓库源：REPO_SOURCE=github 或 REPO_SOURCE=gitcode
+    if [ -z "$REPO_SOURCE" ]; then
+        # 自动探测：先尝试 GitCode，再回退 GitHub
+        echo -e "${BLUE}尝试从 GitCode 拉取源码（中国大陆线路）...${NC}"
+        if git clone https://gitcode.com/rampump/NTRIPcaster.git 2>/dev/null; then
+            echo -e "${GREEN}源码拉取成功（GitCode）${NC}"
+        else
+            echo -e "${YELLOW}GitCode 拉取失败，回退到 GitHub（国际线路）...${NC}"
+            if git clone https://github.com/Rampump/NTRIPcaster.git 2>/dev/null; then
+                echo -e "${GREEN}源码拉取成功（GitHub）${NC}"
+            else
+                echo -e "${RED}错误: 无法从 GitCode 或 GitHub 拉取源码，请检查网络连接${NC}"
+                exit 1
+            fi
+        fi
+    else
+        # 用户显式指定了源
+        case "$REPO_SOURCE" in
+            github)
+                echo -e "${BLUE}从 GitHub 拉取源码...${NC}"
+                git clone https://github.com/Rampump/NTRIPcaster.git || { echo -e "${RED}错误: GitHub 拉取失败${NC}"; exit 1; }
+                ;;
+            gitcode)
+                echo -e "${BLUE}从 GitCode 拉取源码...${NC}"
+                git clone https://gitcode.com/rampump/NTRIPcaster.git || { echo -e "${RED}错误: GitCode 拉取失败${NC}"; exit 1; }
+                ;;
+            *)
+                echo -e "${RED}错误: REPO_SOURCE 仅支持 github 或 gitcode${NC}"
+                exit 1
+                ;;
+        esac
+    fi
+    SRC_DIR="/tmp/NTRIPcaster"
 fi
 
-cp -r NTRIPcaster/* $INSTALL_DIR/
+cp -r "$SRC_DIR"/* $INSTALL_DIR/
 
 # 复制并配置 config.ini
 echo -e "${YELLOW}配置 config.ini...${NC}"

@@ -63,21 +63,24 @@ sudo systemctl enable 2rtk
 
 #### 使用方法
 
-**方法一：直接下载并执行（推荐）**
+**方法一：克隆后直接执行（推荐）**
 ```bash
-# 下载并运行安装脚本
-wget -O - https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh | sudo bash
+# 中国区（从 GitCode 克隆）
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+
+# 国际（从 GitHub 克隆）
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 ```
 
-**方法二：下载后执行**
+**方法二：仅下载脚本后执行（国际用户）**
 ```bash
-# 下载脚本到本地
+# 下载脚本到本地（脚本内部会自动从 GitCode/GitHub 拉取源码）
 wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-> **注意**：脚本会自动从GitHub下载最新的项目文件，无需手动克隆仓库。
+> **注意**：脚本会检测当前目录是否已是项目源码，是则直接复用；否则自动从 GitCode（优先）或 GitHub 拉取最新源码。
 
 #### 脚本功能
 

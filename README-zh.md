@@ -53,15 +53,11 @@ python3 main.py
 脚本会自动下载源码、装依赖、建服务，**自动适配网络**（先试 GitCode，失败回退 GitHub，也可用 `REPO_SOURCE` 指定）。
 
 ```bash
-# 中国区服务器（从 GitCode 下载脚本）
-wget https://raw.gitcode.com/rampump/NTRIPcaster/raw/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+# 中国区服务器（从 GitCode 拉取，脚本会自动检测本地源码、跳过重复下载）
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 
-# 国际服务器（从 GitHub 下载脚本）
-wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+# 国际服务器（从 GitHub 拉取）
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
 ```
 
 > 如遇网络问题，可用 `sudo REPO_SOURCE=gitcode ./install.sh` 或 `sudo REPO_SOURCE=github ./install.sh` 强制指定源码拉取源。
