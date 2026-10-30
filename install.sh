@@ -15,7 +15,10 @@ NC='\033[0m' # No Color
 
 # 检查是否以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}错误: 请使用 root 权限运行此脚本 (sudo ./install.sh)${NC}"
+  echo -e "${RED}错误: 此脚本需要 root 权限运行${NC}"
+  echo -e "${YELLOW}提示: 请使用以下任一方式重新运行${NC}"
+  echo -e "  已是 root 用户:          ${GREEN}bash install.sh${NC}"
+  echo -e "  普通用户(需要 sudo):     ${GREEN}sudo bash install.sh${NC}"
   exit 1
 fi
 
@@ -26,13 +29,49 @@ echo -e "${BLUE}=================================================${NC}"
 echo -e "${GREEN}此脚本将自动安装 2RTK NTRIP Caster 及其依赖，并设置开机自启动${NC}"
 echo ""
 
-# 检查系统类型
-if [ -f /etc/debian_version ]; then
-    echo -e "${GREEN}检测到 Debian/Ubuntu 系统，继续安装...${NC}"
-else
+# 检查系统类型与版本（仅支持 Debian/Ubuntu，且要求较新版本）
+OS_ID="unknown"
+OS_VERSION="0"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "$ID" in
+        debian)
+            OS_ID="debian"
+            OS_VERSION="${VERSION_ID%%.*}"
+            ;;
+        ubuntu)
+            OS_ID="ubuntu"
+            OS_VERSION="${VERSION_ID%%.*}"
+            ;;
+    esac
+fi
+
+if [ "$OS_ID" = "unknown" ]; then
     echo -e "${RED}错误: 此脚本仅支持 Debian/Ubuntu 系统${NC}"
+    echo -e "${YELLOW}当前系统未识别（ID=$ID）。如为其他发行版请参考文档手动安装。${NC}"
     exit 1
 fi
+
+# 版本下限：Debian >= 10，Ubuntu >= 20.04（需 python3 >= 3.8 及完整 systemd/apt 支持）
+TOO_OLD=false
+if [ "$OS_ID" = "debian" ] && [ "$OS_VERSION" -lt 10 ]; then
+    TOO_OLD=true
+fi
+if [ "$OS_ID" = "ubuntu" ] && [ "$OS_VERSION" -lt 20 ]; then
+    TOO_OLD=true
+fi
+if [ "$TOO_OLD" = true ]; then
+    echo -e "${YELLOW}警告: 检测到较旧的 ${OS_ID} ${VERSION_ID}${NC}"
+    echo -e "${YELLOW}此脚本针对 Debian 10+ / Ubuntu 20.04+ 设计，旧版本可能存在 python3 版本过低等问题${NC}"
+    echo -e "${YELLOW}是否仍要继续? (y/n): ${NC}"
+    read -r continue_choice
+    if [[ "$continue_choice" != "y" && "$continue_choice" != "Y" ]]; then
+        echo -e "${GREEN}安装已取消${NC}"
+        exit 0
+    fi
+fi
+
+echo -e "${GREEN}检测到 ${OS_ID} ${VERSION_ID}，继续安装...${NC}"
 
 # 设置安装目录
 INSTALL_DIR="/opt/2rtk"
@@ -52,8 +91,27 @@ echo -e "${YELLOW}创建日志目录...${NC}"
 
 # 更新系统并安装依赖
 echo -e "${YELLOW}更新系统并安装依赖...${NC}"
-apt-get update
-apt-get install -y python3 python3-pip python3-venv supervisor nginx git
+if ! apt-get update; then
+    echo -e "${RED}错误: apt-get update 失败，请检查网络或软件源配置${NC}"
+    echo -e "${YELLOW}中国区服务器可尝试将 /etc/apt/sources.list 切换为国内镜像后重试${NC}"
+    exit 1
+fi
+
+# 安装依赖包（已移除 supervisor：代码未使用且 Debian 12/Ubuntu 24.04 源中已删除该包）
+if ! apt-get install -y python3 python3-pip python3-venv nginx git; then
+    echo -e "${RED}错误: 依赖安装失败，请检查软件源配置${NC}"
+    exit 1
+fi
+
+# 校验 python3 版本（代码需 >= 3.8，含 f-string / pathlib 等特性）
+PY_MAJOR=$(python3 -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo "0")
+PY_MINOR=$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null || echo "0")
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; }; then
+    echo -e "${RED}错误: 需要 Python >= 3.8，当前为 $(python3 --version 2>&1)${NC}"
+    echo -e "${YELLOW}请升级系统或手动安装更高版本 Python 后重试${NC}"
+    exit 1
+fi
+echo -e "${GREEN}Python 版本满足要求: $(python3 --version)${NC}"
 
 # 创建 Python 虚拟环境
 echo -e "${YELLOW}创建 Python 虚拟环境...${NC}"
@@ -135,8 +193,36 @@ fi
 
 # 安装 Python 依赖
 echo -e "${YELLOW}安装 Python 依赖...${NC}"
-$INSTALL_DIR/venv/bin/pip install --upgrade pip
-$INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt
+
+# 选择 pip 源：中国区自动切换清华镜像，失败回退官方 PyPI
+PIP_INDEX_ARGS=""
+PIP_TRUST_HOST=""
+# 优先检测是否在中国大陆网络（通过连接性快速判断，超时 2 秒）
+if curl -fsS --connect-timeout 2 https://mirrors.tuna.tsinghua.edu.cn >/dev/null 2>&1; then
+    echo -e "${BLUE}检测到可用的清华镜像，将使用国内加速源${NC}"
+    PIP_INDEX_ARGS="-i https://pypi.tuna.tsinghua.edu.cn/simple"
+    PIP_TRUST_HOST="--trusted-host pypi.tuna.tsinghua.edu.cn"
+else
+    echo -e "${YELLOW}使用官方 PyPI 源${NC}"
+fi
+
+if ! $INSTALL_DIR/venv/bin/pip install --upgrade pip $PIP_INDEX_ARGS $PIP_TRUST_HOST; then
+    echo -e "${YELLOW}pip 升级失败，尝试继续安装依赖...${NC}"
+fi
+
+if ! $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt $PIP_INDEX_ARGS $PIP_TRUST_HOST; then
+    # 若指定镜像失败，回退官方源重试一次
+    if [ -n "$PIP_INDEX_ARGS" ]; then
+        echo -e "${YELLOW}清华镜像安装失败，回退官方 PyPI 重试...${NC}"
+        if ! $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt; then
+            echo -e "${RED}错误: Python 依赖安装失败${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}错误: Python 依赖安装失败${NC}"
+        exit 1
+    fi
+fi
 
 # 创建 systemd 服务文件
 echo -e "${YELLOW}创建 systemd 服务文件...${NC}"

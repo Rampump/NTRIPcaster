@@ -48,20 +48,22 @@ python3 main.py
 - 首次启动时，`secret_key` 留空会自动生成并落盘到 `data/.secret_key`。
 - **详细原生安装教程**：[Linux 系统原生安装教程](INSTALL-TUTORIAL.md)
 
-### 一键安装脚本（Debian/Ubuntu，自动装 systemd 服务并开机自启）
+### 一键安装脚本（Debian 10+ / Ubuntu 20.04+，自动装 systemd 服务并开机自启）
 
-脚本会自动下载源码、装依赖、建服务，**自动适配网络**（先试 GitCode，失败回退 GitHub，也可用 `REPO_SOURCE` 指定）。
+脚本会自动下载源码、装依赖、建服务，**自动适配网络**（先试 GitCode，失败回退 GitHub，也可用 `REPO_SOURCE` 指定）；**自动切换 pip 国内镜像**加速依赖安装。
+
+> 运行方式：**普通用户**用 `sudo bash install.sh`；**已是 root 登录**的直接用 `bash install.sh`（无需 sudo）。
 
 **中国区服务器**（从 GitCode 拉取）：
 
 ```bash
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
 **国际服务器**（从 GitHub 拉取）：
 
 ```bash
-git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
 > 脚本会自动检测本地源码、跳过重复下载；如遇网络问题，可加 `REPO_SOURCE=gitcode` 或 `REPO_SOURCE=github` 强制指定源。
@@ -204,8 +206,8 @@ password = admin123                # 管理员密码（生产环境请修改）
 #### 端口占用问题
 ```bash
 # 检查端口占用
-sudo netstat -tlnp | grep :2101    # NTRIP端口
-sudo netstat -tlnp | grep :5757    # Web管理端口
+sudo ss -tlnp | grep :2101    # NTRIP端口
+sudo ss -tlnp | grep :5757    # Web管理端口
 sudo lsof -i :2101                 # 查看端口使用情况
 
 # 释放端口
@@ -240,7 +242,7 @@ sudo journalctl -u 2rtk -f
 python3 -c "import configparser; c=configparser.ConfigParser(); c.read('config.ini'); print('配置文件语法正确')"
 
 # 检查端口权限
-sudo netstat -tlnp | grep :2101
+sudo ss -tlnp | grep :2101
 ```
 
 #### 数据库问题

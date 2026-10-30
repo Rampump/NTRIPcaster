@@ -48,20 +48,22 @@ python3 main.py
 - On first run, an empty `secret_key` auto-generates into `data/.secret_key`.
 - **Detailed native install guide**: [Linux Native Installation Guide](INSTALL-TUTORIAL-EN.md)
 
-### One-click Installer (Debian/Ubuntu, installs systemd service + auto-start)
+### One-click Installer (Debian 10+ / Ubuntu 20.04+, installs systemd service + auto-start)
 
-The script auto-detects the network (tries GitCode first, falls back to GitHub; can also be forced via `REPO_SOURCE`).
+The script auto-detects the network (tries GitCode first, falls back to GitHub; can also be forced via `REPO_SOURCE`) and auto-switches to a mainland China PyPI mirror for faster dependency installs.
+
+> Run as a **normal user** with `sudo bash install.sh`; if already logged in as **root**, just run `bash install.sh` (no sudo needed).
 
 **International users** (clone from GitHub):
 
 ```bash
-git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
 **Users in mainland China** (clone from GitCode):
 
 ```bash
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
 > The script auto-detects local sources and skips duplicate downloads. If you hit network issues, force a source with `REPO_SOURCE=gitcode` or `REPO_SOURCE=github`.
@@ -208,8 +210,8 @@ password = admin123            # Administrator password (change in production)
 #### Port Occupation Issues
 ```bash
 # Check port occupation
-sudo netstat -tlnp | grep :2101    # NTRIP port
-sudo netstat -tlnp | grep :5757    # Web management port
+sudo ss -tlnp | grep :2101    # NTRIP port
+sudo ss -tlnp | grep :5757    # Web management port
 sudo lsof -i :2101                 # Check port usage
 
 # Release port

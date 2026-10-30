@@ -15,7 +15,10 @@ NC='\033[0m' # No Color
 
 # 检查是否以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}错误: 请使用 root 权限运行此脚本 (sudo ./uninstall.sh)${NC}"
+  echo -e "${RED}错误: 此脚本需要 root 权限运行${NC}"
+  echo -e "${YELLOW}提示: 请使用以下任一方式重新运行${NC}"
+  echo -e "  已是 root 用户:          ${GREEN}bash uninstall.sh${NC}"
+  echo -e "  普通用户(需要 sudo):     ${GREEN}sudo bash uninstall.sh${NC}"
   exit 1
 fi
 
@@ -62,8 +65,8 @@ rm -f /etc/logrotate.d/2rtk
 # 删除防火墙规则（如果存在）
 echo -e "${YELLOW}删除防火墙规则...${NC}"
 if command -v ufw > /dev/null; then
-    ufw delete allow 2101/tcp
-    ufw delete allow 5757/tcp
+    ufw delete allow 2101/tcp >/dev/null 2>&1 || true
+    ufw delete allow 5757/tcp >/dev/null 2>&1 || true
     echo -e "${GREEN}已删除 UFW 防火墙规则${NC}"
 elif command -v firewall-cmd > /dev/null; then
     firewall-cmd --permanent --remove-port=2101/tcp
@@ -121,7 +124,7 @@ read deps_choice
 if [[ "$deps_choice" == "y" || "$deps_choice" == "Y" ]]; then
     echo -e "${YELLOW}卸载依赖包...${NC}"
     # 注意：这里只卸载安装脚本中明确安装的包，不包括其依赖
-    apt-get remove -y supervisor nginx
+    apt-get remove -y nginx
     echo -e "${GREEN}依赖包已卸载${NC}"
 else
     echo -e "${YELLOW}保留依赖包${NC}"

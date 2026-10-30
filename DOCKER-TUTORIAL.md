@@ -300,8 +300,8 @@ docker ps -a
 docker logs ntrip-caster
 
 # 检查端口占用
-netstat -tlnp | grep :2101
-netstat -tlnp | grep :5757
+ss -tlnp | grep :2101
+ss -tlnp | grep :5757
 ```
 
 ### Q2: 无法访问 Web 界面

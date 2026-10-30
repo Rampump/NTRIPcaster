@@ -45,8 +45,7 @@
 ```bash
 git clone https://gitcode.com/rampump/NTRIPcaster.git
 cd NTRIPcaster
-sudo chmod +x install.sh
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 **国际服务器**（从 GitHub 克隆）：
@@ -54,8 +53,7 @@ sudo ./install.sh
 ```bash
 git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
-sudo chmod +x install.sh
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 安装完成后，服务会自动启动（systemd 服务名 `2rtk`）：
@@ -73,41 +71,42 @@ sudo systemctl enable 2rtk
 
 #### 使用方法
 
+> **运行权限说明**：脚本需要 root 权限。**普通用户**请用 `sudo bash install.sh`；**已是 root 登录**（提示符为 `#`）的直接用 `bash install.sh`，无需 sudo。
+
 **方法一：克隆后直接执行（推荐）**
 
 中国区服务器（从 GitCode 克隆）：
 
 ```bash
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
 国际服务器（从 GitHub 克隆）：
 
 ```bash
-git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo ./install.sh
+git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
 **方法二：仅下载脚本后执行（国际用户）**
 ```bash
 # 下载脚本到本地（脚本内部会自动从 GitCode/GitHub 拉取源码）
 wget https://raw.githubusercontent.com/Rampump/NTRIPcaster/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 > **注意**：脚本会检测当前目录是否已是项目源码，是则直接复用；否则自动从 GitCode（优先）或 GitHub 拉取最新源码。
 
 #### 脚本功能
 
-`install.sh` 是**仅支持 Debian/Ubuntu** 的一键安装脚本，会自动完成：
+`install.sh` 是**仅支持 Debian 10+ / Ubuntu 20.04+** 的一键安装脚本，会自动完成：
 
-1. **检查系统环境**：必须是 Debian/Ubuntu（其他发行版会直接退出），并以 root 运行。
+1. **检查系统环境**：识别 Debian/Ubuntu 及大版本号（其他发行版或过老版本会提示并退出），校验 Python >= 3.8，并要求以 root 权限运行。
 
-2. **安装系统依赖**：`python3`、`python3-pip`、`python3-venv`、`supervisor`、`nginx`、`git`。
+2. **安装系统依赖**：`python3`、`python3-pip`、`python3-venv`、`nginx`、`git`（已移除 `supervisor`，代码未使用且新版系统源中已删除该包）。
 
 3. **创建目录**：安装目录 `/opt/2rtk`、配置目录 `/etc/2rtk`、日志目录 `/var/log/2rtk`。
 
-4. **下载并配置应用**：从 GitHub 克隆源码到 `/opt/2rtk`，创建虚拟环境，安装依赖，复制 `config.ini.example` 到 `/etc/2rtk/config.ini`，并把数据库路径/日志目录写入配置、生成随机 `secret_key`。
+4. **下载并配置应用**：从 GitHub/GitCode 克隆源码到 `/opt/2rtk`，创建虚拟环境，安装依赖（**自动切换 pip 国内镜像**加速，失败回退官方源），复制 `config.ini.example` 到 `/etc/2rtk/config.ini`，并把数据库路径/日志目录写入配置、生成随机 `secret_key`。
 
 5. **配置 systemd 服务**：创建 `/etc/systemd/system/2rtk.service`，`enable` 并 `start`；同时创建日志轮转 `/etc/logrotate.d/2rtk`。
 
@@ -124,8 +123,8 @@ sudo ./install.sh
 sudo systemctl status 2rtk
 
 # 检查端口监听
-sudo netstat -tlnp | grep :2101
-sudo netstat -tlnp | grep :5757
+sudo ss -tlnp | grep :2101
+sudo ss -tlnp | grep :5757
 
 # 访问 Web 界面
 curl -I http://localhost:5757
@@ -184,7 +183,6 @@ sudo apt install -y \
     python3-dev \
     libssl-dev \
     libffi-dev \
-    supervisor \
     nginx
 
 # 安装 systemd 开发包（如果需要）
@@ -208,7 +206,6 @@ sudo yum install -y \
     python3-devel \
     openssl-devel \
     libffi-devel \
-    supervisor \
     nginx
 
 # CentOS 8/9 或 RHEL 8/9
@@ -225,7 +222,6 @@ sudo dnf install -y \
     python3-devel \
     openssl-devel \
     libffi-devel \
-    supervisor \
     nginx
 ```
 
@@ -247,7 +243,6 @@ sudo zypper install -y \
     python3-devel \
     libopenssl-devel \
     libffi-devel \
-    supervisor \
     nginx
 ```
 
@@ -530,8 +525,6 @@ sudo grep ERROR /var/log/2rtk/main.log
 sudo systemctl is-active 2rtk
 
 # 检查端口监听
-sudo netstat -tlnp | grep -E ':(2101|5757)'
-# 或者使用 ss
 sudo ss -tlnp | grep -E ':(2101|5757)'
 
 # 检查进程
@@ -734,11 +727,11 @@ check_service() {
 
 # 检查端口
 check_ports() {
-    if ! netstat -tlnp | grep -q ":2101"; then
+    if ! ss -tlnp | grep -q ":2101"; then
         echo "$(date): NTRIP port 2101 is not listening" >> $LOG_FILE
     fi
     
-    if ! netstat -tlnp | grep -q ":5757"; then
+    if ! ss -tlnp | grep -q ":5757"; then
         echo "$(date): Web port 5757 is not listening" >> $LOG_FILE
     fi
 }

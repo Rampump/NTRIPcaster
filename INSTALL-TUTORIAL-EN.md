@@ -41,13 +41,14 @@ This tutorial will guide you through installing and deploying NTRIP Caster v2.2.
 
 ### Manual Quick Installation
 
+> **Privilege note**: the script requires root. As a **normal user** run `sudo bash install.sh`; if already logged in as **root** (prompt ends with `#`), just run `bash install.sh`.
+
 **International users** (clone from GitHub):
 
 ```bash
 git clone https://github.com/Rampump/NTRIPcaster.git
 cd NTRIPcaster
-sudo chmod +x install.sh
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 **Users in mainland China** (clone from GitCode):
@@ -55,8 +56,7 @@ sudo ./install.sh
 ```bash
 git clone https://gitcode.com/rampump/NTRIPcaster.git
 cd NTRIPcaster
-sudo chmod +x install.sh
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 After installation the service auto-starts (systemd service name `2rtk`):
@@ -89,7 +89,6 @@ sudo apt install -y \
     python3-dev \
     libssl-dev \
     libffi-dev \
-    supervisor \
     nginx
 
 # Install systemd development packages (if needed)
@@ -113,7 +112,6 @@ sudo yum install -y \
     python3-devel \
     openssl-devel \
     libffi-devel \
-    supervisor \
     nginx
 
 # CentOS 8/9 or RHEL 8/9
@@ -130,7 +128,6 @@ sudo dnf install -y \
     python3-devel \
     openssl-devel \
     libffi-devel \
-    supervisor \
     nginx
 ```
 
@@ -152,7 +149,6 @@ sudo zypper install -y \
     python3-devel \
     libopenssl-devel \
     libffi-devel \
-    supervisor \
     nginx
 ```
 
@@ -435,8 +431,6 @@ sudo grep ERROR /var/log/2rtk/main.log
 sudo systemctl is-active 2rtk
 
 # Check port listening
-sudo netstat -tlnp | grep -E ':(2101|5757)'
-# Or use ss
 sudo ss -tlnp | grep -E ':(2101|5757)'
 
 # Check processes
@@ -639,11 +633,11 @@ check_service() {
 
 # Check ports
 check_ports() {
-    if ! netstat -tlnp | grep -q ":2101"; then
+    if ! ss -tlnp | grep -q ":2101"; then
         echo "$(date): NTRIP port 2101 is not listening" >> $LOG_FILE
     fi
     
-    if ! netstat -tlnp | grep -q ":5757"; then
+    if ! ss -tlnp | grep -q ":5757"; then
         echo "$(date): Web port 5757 is not listening" >> $LOG_FILE
     fi
 }
