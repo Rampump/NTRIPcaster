@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# NTRIP Caster 一键无损更新脚本 v1.0.0
+# NTRIP Caster 一键无损更新脚本 v1.1.0
 #
 # 功能：自动检测部署形态（源码+systemd / Docker），从可用源拉取最新版本，
 #       更新前自动备份配置与数据库，更新后做健康检查，失败自动回滚。
@@ -70,21 +70,53 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# ==================== 通用工具函数 ====================
+# 判断是否存在指定名称的 docker 容器。
+# 注意：本脚本开启了 `set -o pipefail`，若写成 `docker ps ... | grep -q xxx`，
+# grep -q 命中后会立刻退出，导致上游 docker 收到 SIGPIPE 异常终止（退出码 141），
+# pipefail 会让整个管道判定为失败 —— 明明存在容器却被判为不存在。
+# 因此这里改为纯 bash 字符串精确匹配，不产生管道。
+has_container() {
+    local target="$1" mode="${2:-all}" list
+    if [ "$mode" = "running" ]; then
+        list=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
+    else
+        list=$(docker ps -a --format '{{.Names}}' 2>/dev/null || true)
+    fi
+    case $'\n'"$list"$'\n' in
+        *$'\n'"$target"$'\n'*) return 0 ;;
+    esac
+    return 1
+}
+
 # ==================== 部署形态检测 ====================
+# 在多个 systemd 单元目录中查找服务文件（不同发行版可能放在 /etc 或 /lib 或 /usr/lib）
+find_unit_file() {
+    local d
+    for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system /run/systemd/system; do
+        if [ -f "$d/${SERVICE_NAME}.service" ]; then
+            echo "$d/${SERVICE_NAME}.service"
+            return 0
+        fi
+    done
+    return 1
+}
+
 detect_deploy_mode() {
     # 1. 源码 + systemd 形态：/opt/2rtk/main.py 存在 + systemd 服务文件存在。
     #    注意：install.sh 用 `cp -r "$SRC_DIR"/*` 复制源码，`*` 不匹配隐藏的 .git，
     #    所以实际部署后 /opt/2rtk 通常没有 .git。这里以 main.py + 服务文件为准，更可靠。
-    #    服务文件检测直接判断 /etc/systemd/system/2rtk.service 是否存在，
-    #    避免依赖 systemctl list-unit-files（在 systemd 非 PID1 的环境会输出为空导致误判）。
-    if [ -f "$INSTALL_DIR/main.py" ] && [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
+    #    服务文件用文件存在性判断，避免依赖 `systemctl list-unit-files | grep -q`：
+    #    本脚本开启了 pipefail，grep -q 提前退出会让上游 systemctl 收到 SIGPIPE（141），
+    #    导致管道整体判定为失败，明明已安装却被误判为 unknown。
+    if [ -f "$INSTALL_DIR/main.py" ] && find_unit_file >/dev/null 2>&1; then
         echo "source"
         return
     fi
 
     # 2. Docker 形态：存在 ntrip-caster 容器（docker run 或 docker compose 均会创建该容器名）
     if command -v docker >/dev/null 2>&1; then
-        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'ntrip-caster'; then
+        if has_container ntrip-caster; then
             echo "docker"
             return
         fi
@@ -100,7 +132,7 @@ if [ "$DEPLOY_MODE" = "unknown" ]; then
     log_error "无法识别部署形态"
     echo ""
     echo "  检测依据："
-    echo "    - 源码形态：$INSTALL_DIR/main.py 存在 + /etc/systemd/system/${SERVICE_NAME}.service 服务文件存在"
+    echo "    - 源码形态：$INSTALL_DIR/main.py 存在 + 系统服务文件 ${SERVICE_NAME}.service 存在"
     echo "    - Docker 形态：存在名为 ntrip-caster 的容器"
     echo ""
     echo "  当前环境诊断："
@@ -109,12 +141,13 @@ if [ "$DEPLOY_MODE" = "unknown" ]; then
     else
         echo "    [×] $INSTALL_DIR/main.py 不存在（安装目录不对或未安装）"
     fi
-    if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
-        echo "    [√] /etc/systemd/system/${SERVICE_NAME}.service 服务文件存在"
+    _unit=""
+    if _unit=$(find_unit_file); then
+        echo "    [√] 系统服务文件存在：$_unit"
     else
-        echo "    [×] /etc/systemd/system/${SERVICE_NAME}.service 服务文件不存在（未用 install.sh 安装 systemd 服务）"
+        echo "    [×] 未找到 ${SERVICE_NAME}.service 服务文件（未用 install.sh 安装 systemd 服务）"
     fi
-    if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'ntrip-caster'; then
+    if command -v docker >/dev/null 2>&1 && has_container ntrip-caster; then
         echo "    [√] Docker 容器 ntrip-caster 存在"
     else
         echo "    [×] 未检测到 Docker 容器 ntrip-caster"
@@ -193,30 +226,61 @@ do_rollback() {
 }
 
 # ==================== 健康检查 ====================
+# 读取 config.ini 中 [web] port 的实际值（默认 5757），避免用户自定义端口后探活误判
+get_web_port() {
+    local port=""
+    if [ -f "$CONFIG_DIR/config.ini" ]; then
+        port=$(awk -F= '
+            /^[[:space:]]*\[web\]/ { inweb=1; next }
+            /^[[:space:]]*\[/      { inweb=0 }
+            inweb && /^[[:space:]]*port[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }
+        ' "$CONFIG_DIR/config.ini" 2>/dev/null)
+    fi
+    echo "${port:-5757}"
+}
+
 # 两阶段探活：
 #   1) 服务进程层面：systemd 服务 active / docker 容器 running
-#   2) 应用层面：Web 管理接口 HTTP 200（仅当 curl 可用时；避免服务反复被 Restart 拉起仍被判为健康）
+#   2) 应用层面：Web 管理接口 HTTP 可访问（仅当 curl 可用时；避免服务被 Restart 反复拉起仍判为健康）
 health_check() {
     local tries=0
     local max_tries=15
-    while [ $tries -lt $max_tries ]; do
-        # 进程层面检查
-        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-            # 应用层面：尝试 HTTP 探活（源码形态 Web 端口 5757）
-            if command -v curl >/dev/null 2>&1; then
-                if curl -fsS --connect-timeout 2 http://127.0.0.1:5757/ >/dev/null 2>&1; then
-                    return 0
-                fi
-            else
-                # 无 curl 时退化为仅进程检查
+    local active_count=0
+    local port
+    port=$(get_web_port)
+
+    while [ "$tries" -lt "$max_tries" ]; do
+        tries=$((tries + 1))
+
+        # Docker 形态：容器处于 running 即视为启动成功
+        if [ "$DEPLOY_MODE" = "docker" ]; then
+            if has_container ntrip-caster running; then
                 return 0
             fi
+            sleep 2
+            continue
         fi
-        # Docker 形态检查容器
-        if [ "$DEPLOY_MODE" = "docker" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'ntrip-caster'; then
-            return 0
+
+        # 源码形态：服务必须处于 active
+        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            # 有 curl 时优先做 HTTP 探活（最严格）
+            if command -v curl >/dev/null 2>&1; then
+                if curl -fsS --connect-timeout 2 "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
+                    return 0
+                fi
+            fi
+            # HTTP 未响应：累计"持续 active"次数，连续 5 次（约 10 秒）稳定运行也判定为启动成功。
+            # 这样即使用户自定义了 Web 端口、或关闭了 Web 界面，也不会把成功的更新误判为失败并回滚。
+            active_count=$((active_count + 1))
+            if [ "$active_count" -ge 5 ]; then
+                log_warn "服务已持续稳定运行约 $((active_count * 2)) 秒（Web 端口 $port 未响应），判定为启动成功"
+                return 0
+            fi
+        else
+            # 服务不是 active（崩了或正在重启），重置连续计数
+            active_count=0
         fi
-        tries=$((tries + 1))
+
         sleep 2
     done
     return 1
@@ -403,8 +467,14 @@ update_docker() {
 
     # 判断容器是否挂了持久化卷（决定能否安全重建）
     # 本项目数据库/配置/日志都在容器内 /app/ 下，有任一 /app/ 子目录的挂载即视为有持久化卷
+    # 同样避免 `... | grep -q` 在 pipefail 下因 SIGPIPE 误判，改用字符串匹配
     local has_volume
-    has_volume=$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' ntrip-caster 2>/dev/null | tr ' ' '\n' | grep -q '^/app/' && echo "yes" || echo "no")
+    local _mounts
+    _mounts=$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' ntrip-caster 2>/dev/null || true)
+    case " $_mounts " in
+        *" /app/"*) has_volume="yes" ;;
+        *)          has_volume="no"  ;;
+    esac
 
     # 确定镜像源
     local image="$TCR_IMAGE"
