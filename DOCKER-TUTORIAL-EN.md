@@ -1,6 +1,6 @@
 # NTRIP Caster Docker Installation and Usage Tutorial
 
-This tutorial will guide you through installing and deploying NTRIP Caster v2.3.0 using Docker, providing the fastest and most reliable deployment method.
+This tutorial will guide you through installing and deploying NTRIP Caster v2.3.1 using Docker, providing the fastest and most reliable deployment method.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -492,6 +492,6 @@ If you encounter problems during use, you can:
 
 ---
 
-**Version Information:** NTRIP Caster v2.3.0  
+**Version Information:** NTRIP Caster v2.3.1  
 **Update Time:** August 2025  
 **Author:** i@jia.by

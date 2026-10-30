@@ -13,7 +13,7 @@
 [app]
 # 应用基本信息
 name = 2RTK Ntrip Caster
-version = 2.3.0
+version = 2.3.1
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.by

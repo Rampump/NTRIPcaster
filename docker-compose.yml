@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         - BUILDKIT_INLINE_CACHE=1
-    image: ntripcaster:2.3.0
+    image: ntripcaster:2.3.1
     container_name: ntrip-caster
     hostname: ntrip-caster
     restart: unless-stopped

@@ -51,7 +51,7 @@ def get_config_value(section, key, fallback=None, value_type=str):
 
 # 基本应用信息
 APP_NAME = get_config_value('app', 'name', '2RTK Ntrip Caster')
-APP_VERSION = get_config_value('app', 'version', '2.3.0')
+APP_VERSION = get_config_value('app', 'version', '2.3.1')
 APP_DESCRIPTION = get_config_value('app', 'description', 'Ntrip Caster')
 APP_AUTHOR = get_config_value('app', 'author', '2rtk')
 APP_CONTACT = get_config_value('app', 'contact', 'i@jia.by')
