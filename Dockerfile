@@ -1,4 +1,4 @@
-# NTRIP Caster v2.2.0 Docker镜像
+# NTRIP Caster v2.3.1 Docker镜像
 # 使用多阶段构建优化镜像大小
 FROM python:3.11-slim AS builder
 
@@ -29,12 +29,12 @@ RUN pip install --upgrade pip "setuptools>=78.1.1" wheel && \
 FROM python:3.11-slim AS production
 
 # 设置标签信息
-LABEL maintainer="2rtk <i@jia.by>" \
-      version="2.2.0" \
+LABEL maintainer="2rtk <i@jia.im>" \
+      version="2.3.1" \
       description="High-performance NTRIP Caster with RTCM parsing" \
       org.opencontainers.image.title="NTRIP Caster" \
       org.opencontainers.image.description="High-performance NTRIP Caster with RTCM parsing" \
-      org.opencontainers.image.version="2.2.0" \
+      org.opencontainers.image.version="2.3.1" \
       org.opencontainers.image.vendor="2RTK" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/Rampump/NTRIPcaster"
@@ -75,7 +75,9 @@ COPY --from=builder /opt/venv /opt/venv
 RUN pip install --upgrade "setuptools>=78.1.1"
 
 # 复制应用代码（选择性复制，避免复制不必要的文件）
-COPY --chown=ntrip:ntrip main.py healthcheck.py config.ini.example ./
+# VERSION 必须一起复制：程序运行时从它读取版本号（全项目唯一事实源），
+# 漏掉的话容器内会退化到读环境变量/config.ini，版本显示就可能与实际镜像不符。
+COPY --chown=ntrip:ntrip main.py healthcheck.py config.ini.example VERSION ./
 COPY --chown=ntrip:ntrip src/ ./src/
 COPY --chown=ntrip:ntrip static/ ./static/
 COPY --chown=ntrip:ntrip templates/ ./templates/

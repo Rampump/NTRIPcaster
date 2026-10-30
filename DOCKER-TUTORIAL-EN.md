@@ -487,11 +487,11 @@ If you encounter problems during use, you can:
 
 1. View project documentation: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
 2. Submit Issue: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
-3. Contact author: i@jia.by
+3. Contact author: i@jia.im
 4. Visit official website: https://2rtk.com
 
 ---
 
 **Version Information:** NTRIP Caster v2.3.1  
 **Update Time:** August 2025  
-**Author:** i@jia.by
+**Author:** i@jia.im

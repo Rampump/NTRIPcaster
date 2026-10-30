@@ -493,11 +493,11 @@ docker exec ntrip-caster python /app/healthcheck.py
 
 1. 查看项目文档：[GitHub 仓库](https://github.com/Rampump/NTRIPcaster) / [GitCode 仓库](https://gitcode.com/rampump/NTRIPcaster)
 2. 提交 Issue：[GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
-3. 联系作者：i@jia.by
+3. 联系作者：i@jia.im
 4. 访问官网：https://2rtk.com
 
 ---
 
 **版本信息：** NTRIP Caster v2.3.1  
 **更新时间：** 2025年8月  
-**作者：** i@jia.by
+**作者：** i@jia.im

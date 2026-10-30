@@ -47,14 +47,45 @@ def get_config_value(section, key, fallback=None, value_type=str):
     except (configparser.NoSectionError, configparser.NoOptionError):
         return fallback
 
+# ==================== 版本号：全项目唯一事实源 ====================
+# 版本号只在根目录的 VERSION 文件里维护（单行，如 "2.3.1"）。
+# 代码、示例配置、compose、Dockerfile、部署脚本、文档里的版本号都是派生副本，
+# 由 scripts/sync_version.py 自动刷新：改完 VERSION 后执行
+#     python3 scripts/sync_version.py
+# 全项目即自动对齐，不需要再去各处手改。
+#
+# 运行期取值优先级：VERSION 文件 > 环境变量 APP_VERSION > config.ini [app] version
+#   - 以 VERSION 为准：config.ini 里的 version 只是老部署的兼容兜底，
+#     不允许反向覆盖真实版本，否则升级后会出现「配置说旧版、代码是新版」的错位。
+VERSION_FILE = os.path.join(_PROJECT_ROOT, 'VERSION')
+
+
+def _read_version() -> str:
+    """读取版本号：VERSION 文件 → 环境变量 → config.ini → 兜底。"""
+    try:
+        with open(VERSION_FILE, encoding='utf-8') as f:
+            for line in f:
+                v = line.strip()
+                if v and not v.startswith('#'):
+                    return v
+    except OSError:
+        pass
+
+    env_version = os.environ.get('APP_VERSION', '').strip()
+    if env_version:
+        return env_version
+
+    return get_config_value('app', 'version', '0.0.0')
+
+
 # ==================== 基本配置 ====================
 
 # 基本应用信息
 APP_NAME = get_config_value('app', 'name', '2RTK Ntrip Caster')
-APP_VERSION = get_config_value('app', 'version', '2.3.1')
+APP_VERSION = _read_version()
 APP_DESCRIPTION = get_config_value('app', 'description', 'Ntrip Caster')
 APP_AUTHOR = get_config_value('app', 'author', '2rtk')
-APP_CONTACT = get_config_value('app', 'contact', 'i@jia.by')
+APP_CONTACT = get_config_value('app', 'contact', 'i@jia.im')
 APP_WEBSITE = get_config_value('app', 'website', 'https://2rtk.com')
 
 

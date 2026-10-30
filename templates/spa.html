@@ -71,13 +71,17 @@
         <div class="page">
             <span id="app-name">{{ app_name or '2RTK NTRIP Caster' }}</span>
             <span>·</span>
-            <span id="app-version">v{{ app_version or '2.2.0' }}</span>
+            {# 版本号来自后端 config.APP_VERSION（最终来自根目录 VERSION 文件），此处不写死兜底值，
+               否则 VERSION 更新后页脚还会显示一个过时的旧版本号。 #}
+            <span id="app-version">v{{ app_version or '' }}</span>
             <span>·</span>
             <span>© {{ current_year or 2025 }} <span id="app-author">2RTK</span></span>
             <span>·</span>
-            <a href="mailto:{{ contact_email or 'i@jia.by' }}" id="app-contact">{{ contact_email or 'i@jia.by' }}</a>
+            <a href="mailto:{{ contact_email or 'i@jia.im' }}" id="app-contact">{{ contact_email or 'i@jia.im' }}</a>
             <span>·</span>
-            <a href="https://{{ website_url or '2RTK.COM' }}" id="app-website" target="_blank" rel="noopener">{{ website_url or '2RTK.COM' }}</a>
+            {# website 在配置里是完整 URL（含 https://），href 不能再拼协议，
+               否则会变成 https://https://2rtk.com；显示文本去掉协议更好看。 #}
+            <a href="{{ website_url or 'https://2rtk.com' }}" id="app-website" target="_blank" rel="noopener">{{ (website_url or '2rtk.com') | replace('https://', '') | replace('http://', '') }}</a>
             <span>·</span>
             <a href="#" class="footer-donate" onclick="openDonateModal(); return false;" data-i18n="donate.open">Donate</a>
         </div>

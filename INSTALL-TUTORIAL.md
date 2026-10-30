@@ -290,8 +290,8 @@ name = 2RTK Ntrip Caster
 version = 2.3.1
 description = Ntrip Caster
 author = 2rtk
-contact = your-email@example.com
-website = https://your-domain.com
+contact = i@jia.im
+website = https://2rtk.com
 
 [network]
 host = 0.0.0.0
@@ -947,7 +947,7 @@ sudo ufw delete allow 5757/tcp
 2. **检查状态**: `sudo systemctl status 2rtk`
 3. **查看文档**: [GitHub 仓库](https://github.com/Rampump/NTRIPcaster) / [GitCode 仓库](https://gitcode.com/rampump/NTRIPcaster)
 4. **提交问题**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
-5. **联系作者**: i@jia.by
+5. **联系作者**: i@jia.im
 6. **访问官网**: https://2rtk.com
 
 ## 更新日志

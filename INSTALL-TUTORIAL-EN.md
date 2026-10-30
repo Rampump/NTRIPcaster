@@ -196,8 +196,8 @@ name = 2RTK Ntrip Caster
 version = 2.3.1
 description = Ntrip Caster
 author = 2rtk
-contact = your-email@example.com
-website = https://your-domain.com
+contact = i@jia.im
+website = https://2rtk.com
 
 [network]
 host = 0.0.0.0
@@ -853,7 +853,7 @@ If you encounter issues during installation or usage:
 2. **Check Status**: `sudo systemctl status 2rtk`
 3. **View Documentation**: [GitHub Repository](https://github.com/Rampump/NTRIPcaster)
 4. **Report Issues**: [GitHub Issues](https://github.com/Rampump/NTRIPcaster/issues)
-5. **Contact Author**: i@jia.by
+5. **Contact Author**: i@jia.im
 6. **Visit Website**: https://2rtk.com
 
 ## Changelog

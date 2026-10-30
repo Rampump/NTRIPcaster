@@ -228,17 +228,16 @@ class WebManager:
         @self.app.route('/')
         def index():
             """主页 - SPA应用"""
-            # 获取配置信息
-            app_name = config.get_config_value('app', 'name', '2RTK NTRIP Caster')
-            app_version = config.get_config_value('app', 'version', config.APP_VERSION)
+            # 应用信息统一来自 config（版本取 VERSION 文件，联系方式取 config.ini [app]），
+            # 这里不再写死任何字面量，改配置/改版本号后前端自动跟着变。
             current_year = datetime.now().year
-            
-            return self._load_template('spa.html', 
-                                     app_name=app_name,
-                                     app_version=app_version,
+
+            return self._load_template('spa.html',
+                                     app_name=config.APP_NAME,
+                                     app_version=config.APP_VERSION,
                                      current_year=current_year,
-                                     contact_email='i@jia.by',
-                                     website_url='2RTK.COM')
+                                     contact_email=config.APP_CONTACT,
+                                     website_url=config.APP_WEBSITE)
         
         @self.app.route('/classic')
         def classic_index():
