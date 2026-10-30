@@ -31,6 +31,12 @@ socket.on('connect', function() {
     if (currentPage === 'dashboard') {
         requestSystemStats();
     }
+    // 重连后立即重渲染当前页，避免 window.onlineUsers/onlineMounts 停留在断线期间的旧缓存
+    if (currentPage === 'users') {
+        renderUsersPage();
+    } else if (currentPage === 'mounts') {
+        renderMountsPage();
+    }
 });
 
 socket.on('disconnect', function(reason) {
@@ -43,6 +49,12 @@ socket.on('reconnect', function(attemptNumber) {
     connectionStatus = 'connected';
     // console.log('WebSocket reconnection successful, attempt number:', attemptNumber);
     updateConnectionStatus();
+    // 重连成功后立即重渲染当前页，等下一次推送到达前先用现有数据恢复
+    if (currentPage === 'users') {
+        renderUsersPage();
+    } else if (currentPage === 'mounts') {
+        renderMountsPage();
+    }
 });
 
 socket.on('reconnect_attempt', function(attemptNumber) {
@@ -1512,30 +1524,41 @@ function getUsersContent(users) {
 function userRowRenderer(user) {
     const onlineHtml = `<span class="status-online">● ${escapeHtml(t('users.online'))}</span>`;
     const offlineHtml = `<span class="status-offline">○ ${escapeHtml(t('users.offline'))}</span>`;
-    const isOnline = user.online !== undefined ? user.online : (window.onlineUsers && (user.username in window.onlineUsers));
+    // 在线状态优先用 socket 实时推送的 window.onlineUsers（断线重连后能及时更新）。
+    // 一旦收到过推送（window._usersSynced），就完全信任实时数据，不再回退静态 online 快照；
+    // 否则（首次加载、socket 尚未推送）回退到 /api/users 的 online 字段。
+    const isOnline = window._usersSynced
+        ? (window.onlineUsers && (user.username in window.onlineUsers))
+        : (user.online === true || (window.onlineUsers && (user.username in window.onlineUsers)));
     const statusHtml = isOnline ? onlineHtml : offlineHtml;
     const L = (key) => escapeHtml(t(key));
 
     // 从 window.onlineUsers 提取该用户的连接明细（含 mount_name + ip_address）
     const conns = (window.onlineUsers && window.onlineUsers[user.username]) || [];
+    const isZh = getLang() === 'zh';
+    const sep = isZh ? '、' : ', ';
 
-    // 连接数悬停：显示该用户连接的挂载点列表（去重）
+    // 连接数：优先用实时数据（该用户在 window.onlineUsers 里的连接条数），否则回退静态快照
+    const liveConnCount = conns.length;
+    const connCount = liveConnCount > 0 ? liveConnCount : (user.connection_count || 0);
+
+    // 连接数悬停：显示该用户连接的挂载点列表（去重），带前缀"使用挂载点中："
     const mountList = Array.from(new Set(conns.map(c => c.mount_name).filter(Boolean)));
     const connTitle = mountList.length > 0
-        ? ` title="${escapeHtml(mountList.join(getLang() === 'zh' ? '、' : ', '))}"`
+        ? ` title="${escapeHtml((isZh ? '使用挂载点中：' : 'Using mount points: ') + mountList.join(sep))}"`
         : '';
 
-    // 连接时间悬停：显示每条连接的 IP（若有）
-    const ipList = conns.map(c => c.ip_address).filter(Boolean);
+    // 连接时间悬停：显示每条连接的 IP（去重），带前缀"连接IP："
+    const ipList = Array.from(new Set(conns.map(c => c.ip_address).filter(Boolean)));
     const ipTitle = ipList.length > 0
-        ? ` title="${escapeHtml(ipList.join(getLang() === 'zh' ? '、' : ', '))}"`
+        ? ` title="${escapeHtml((isZh ? '连接IP：' : 'Connection IPs: ') + ipList.join(sep))}"`
         : '';
 
     return `
         <tr class="user-row" data-username="${escapeHtml(user.username)}">
             <td>${escapeHtml(user.username)}</td>
             <td class="user-status">${statusHtml}</td>
-            <td><span${connTitle} style="cursor:default">${escapeHtml(user.connection_count || 0)}</span></td>
+            <td><span${connTitle} style="cursor:default">${escapeHtml(connCount)}</span></td>
             <td><span${ipTitle} style="cursor:default">${escapeHtml(user.connect_time || '-')}</span></td>
             <td>
                 <button class="btn btn-primary btn-sm edit-user-btn" data-username="${escapeHtml(user.username)}">${L('common.edit')}</button>
@@ -1589,14 +1612,29 @@ function getMountsContent(mounts) {
 function mountRowRenderer(mount) {
     const onlineHtml = `<span class="status-online">● ${escapeHtml(t('users.online'))}</span>`;
     const offlineHtml = `<span class="status-offline">○ ${escapeHtml(t('users.offline'))}</span>`;
-    const isOnline = mount.active !== undefined ? mount.active : (window.onlineMounts && (mount.mount in window.onlineMounts));
+    // 在线状态优先用 socket 实时推送的 window.onlineMounts（数据源断线重连后能及时更新）。
+    // 一旦收到过推送（window._mountsSynced），就完全信任实时数据，不再回退静态 active 快照。
+    const isOnline = window._mountsSynced
+        ? (window.onlineMounts && (mount.mount in window.onlineMounts))
+        : (mount.active === true || (window.onlineMounts && (mount.mount in window.onlineMounts)));
     const statusHtml = isOnline ? onlineHtml : offlineHtml;
     const L = (key) => escapeHtml(t(key));
 
-    // 连接数悬停：显示连接该挂载点的用户名（去重）
+    // 连接数：优先用实时数据（统计 window.onlineUsers 里连接该挂载点的连接数，与悬停名单同口径），
+    // 否则回退到 /api/mounts 的静态 connections 快照
+    let liveConnCount = 0;
+    if (window.onlineUsers) {
+        Object.values(window.onlineUsers).forEach(connList => {
+            (Array.isArray(connList) ? connList : []).forEach(c => {
+                if (c && c.mount_name === mount.mount) liveConnCount++;
+            });
+        });
+    }
+    const connCount = liveConnCount > 0 ? liveConnCount : (mount.connections || 0);
+
+    // 连接数悬停：显示连接该挂载点的用户名（去重），带前缀"已连接用户："
     const connUsers = [];
     if (window.onlineUsers) {
-        const sep = getLang() === 'zh' ? '、' : ', ';
         Object.values(window.onlineUsers).forEach(connList => {
             (Array.isArray(connList) ? connList : []).forEach(c => {
                 if (c && c.mount_name === mount.mount && c.username && !connUsers.includes(c.username)) {
@@ -1606,14 +1644,14 @@ function mountRowRenderer(mount) {
         });
     }
     const connTitle = connUsers.length > 0
-        ? ` title="${escapeHtml(connUsers.join(getLang() === 'zh' ? '、' : ', '))}"`
+        ? ` title="${escapeHtml((getLang() === 'zh' ? '已连接用户：' : 'Connected users: ') + connUsers.join(getLang() === 'zh' ? '、' : ', '))}"`
         : '';
 
     return `
         <tr class="mount-row" data-mount="${escapeHtml(mount.mount)}">
             <td>${escapeHtml(mount.mount)}</td>
             <td class="mount-status">${statusHtml}</td>
-            <td><span${connTitle} style="cursor:default">${escapeHtml(mount.connections || 0)}</span></td>
+            <td><span${connTitle} style="cursor:default">${escapeHtml(connCount)}</span></td>
             <td>${escapeHtml(mount.username || t('common.unspecified'))}</td>
             <td>${escapeHtml(mount.description || '-')}</td>
             <td>
@@ -1757,12 +1795,14 @@ socket.on('log_message', function(data) {
 // user
 socket.on('online_users_update', function(data) {
     window.onlineUsers = data.users;
+    window._usersSynced = true;
     updateOnlineStatus();
 });
 
 // mounts
 socket.on('online_mounts_update', function(data) {
     window.onlineMounts = data.mounts;
+    window._mountsSynced = true;
     updateOnlineStatus();
 });
 
@@ -2172,7 +2212,7 @@ function updateMountDetails(mounts, users) {
         // 用户名/挂载点已由后端白名单校验（仅字母数字下划线中横线），直接原字符展示；
         // title 属性仍做一次转义，作为未来放宽校验时的安全兜底（不影响当前显示）
         const titleAttr = usernames.length > 0
-            ? ` title="${escapeHtml(usernames.join(sep))}"`
+            ? ` title="${escapeHtml((sep === '、' ? '已连接用户：' : 'Connected users: ') + usernames.join(sep))}"`
             : '';
 
         return `
@@ -2215,39 +2255,16 @@ function formatUptime(seconds) {
 
 // 
 function updateOnlineStatus() {
-    const onlineHtml = `<span class="status-online">● ${escapeHtml(t('users.online'))}</span>`;
-    const offlineHtml = `<span class="status-offline">○ ${escapeHtml(t('users.offline'))}</span>`;
-
+    // 收到上下线推送后，直接重渲染当前页整行：
+    // 之前只改 .user-status/.mount-status 的"在线/离线"文字，连接数数字、
+    // 悬停提示（用户名/挂载点/IP）都不会刷新——数据源断线重连后，状态列虽更新
+    // 但连接数仍是旧值、悬停内容仍是旧名单，表现为"在线状态未及时同步"。
+    // 重渲染整页让状态、连接数、悬停提示三者一致。
     if (currentPage === 'users') {
-        const userRows = document.querySelectorAll('.user-row');
-        userRows.forEach(row => {
-            const username = row.dataset.username;
-            const statusElement = row.querySelector('.user-status');
-            if (statusElement) {
-                if (window.onlineUsers) {
-                    const isOnline = username in window.onlineUsers;
-                    statusElement.innerHTML = isOnline ? onlineHtml : offlineHtml;
-                }
-            }
-        });
+        renderUsersPage();
+    } else if (currentPage === 'mounts') {
+        renderMountsPage();
     }
-    
-
-    if (currentPage === 'mounts') {
-        const mountRows = document.querySelectorAll('.mount-row');
-        mountRows.forEach(row => {
-            const mountName = row.dataset.mount;
-            const statusElement = row.querySelector('.mount-status');
-            if (statusElement) {
-                
-                if (window.onlineMounts) {
-                    const isOnline = mountName in window.onlineMounts;
-                    statusElement.innerHTML = isOnline ? onlineHtml : offlineHtml;
-                }
-            }
-        });
-    }
-    
     updateDashboardCounts();
 }
 
