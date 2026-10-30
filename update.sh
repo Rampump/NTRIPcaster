@@ -30,7 +30,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_ok()    { echo -e "${CYAN}[OK]${NC} $1"; }
 
 # ==================== 常量 ====================
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.4.0"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
@@ -232,25 +232,15 @@ do_rollback() {
             ln -sf "$CONFIG_DIR/config.ini" "$INSTALL_DIR/config.ini" 2>/dev/null
         fi
         # 重启服务使其回到旧版本运行状态。
-        # 同样先 stop 再 start：更新失败时新进程可能仍占着端口或卡在启动中，
-        # 直接 restart 会因端口冲突导致回滚也起不来。
-        local _w=0 _p="" _h=""
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
-        while systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && [ "$_w" -lt 15 ]; do
-            sleep 1
-            _w=$((_w + 1))
-        done
-        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-            systemctl kill -s SIGKILL "$SERVICE_NAME" >/dev/null 2>&1
-            sleep 1
+        # 用同一套「彻底停止 + 确认端口释放」逻辑：更新失败时新进程可能仍占着端口
+        # 或在 auto-restart 循环中，直接 start 会继续因端口冲突起不来。
+        if stop_service_fully; then
+            start_service
+            log_ok "已重启服务（旧版本）"
+        else
+            log_warn "端口仍被占用，回滚后服务未能自动启动"
+            log_warn "请手动处理后执行: systemctl start $SERVICE_NAME"
         fi
-        for _p in $(get_ntrip_port) $(get_web_port); do
-            _h=$(port_holder "$_p")
-            [ -n "$_h" ] && kill -9 "$_h" >/dev/null 2>&1
-        done
-        sleep 1
-        systemctl start "$SERVICE_NAME" >/dev/null 2>&1
-        log_ok "已重启服务（旧版本）"
     fi
     log_warn "已回滚，备份保留在 $BACKUP_DIR"
 }
@@ -280,16 +270,97 @@ get_ntrip_port() {
 }
 
 # 查询监听指定端口的进程 PID（无占用则输出空）。
-# 用纯 bash/awk 处理，避免 pipefail 下 grep 提前退出引发 SIGPIPE 误判。
+# ss / lsof / fuser 三重探测，任一可用即可，避免单一工具缺失或权限问题导致漏判。
 port_holder() {
+    local port="$1" pid=""
+
+    if command -v ss >/dev/null 2>&1; then
+        pid=$(ss -lntp 2>/dev/null \
+            | awk -v p=":${port}\$" '$4 ~ p' \
+            | awk 'match($0, /pid=[0-9]+/) {print substr($0, RSTART+4, RLENGTH-4); exit}')
+    fi
+    if [ -z "$pid" ] && command -v lsof >/dev/null 2>&1; then
+        pid=$(lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==1{print}')
+    fi
+    if [ -z "$pid" ] && command -v fuser >/dev/null 2>&1; then
+        pid=$(fuser "$port/tcp" 2>/dev/null | tr -s ' ' '\n' | awk '/^[0-9]+$/{print; exit}')
+    fi
+
+    echo "$pid"
+}
+
+# 端口是否真的被占用。
+# 直接用 python 尝试 bind 判断，比解析 ss/lsof 输出可靠得多：
+# 不受工具缺失、输出格式变化、权限不足影响（SO_REUSEADDR 让 TIME_WAIT 不算占用）。
+port_in_use() {
+    local port="$1" py=""
+    [ -z "$port" ] && return 1
+
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        py="$INSTALL_DIR/venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        py="python3"
+    else
+        # 没有任何 python 可用时退化为 ss/lsof 探测
+        if [ -n "$(port_holder "$port")" ]; then
+            return 0
+        fi
+        return 1
+    fi
+
+    "$py" - "$port" >/dev/null 2>&1 <<'PY'
+import socket, sys
+
+port = int(sys.argv[1])
+
+# 1) 优先尝试连接：能连上就说明有进程在 LISTEN。
+#    这个判断跨平台语义一致，不受 SO_REUSEADDR 差异影响
+#    （Windows 的 SO_REUSEADDR 允许重复绑定监听端口，Linux 不允许）。
+c = socket.socket()
+c.settimeout(0.6)
+try:
+    c.connect(("127.0.0.1", port))
+    sys.exit(0)          # 0 = 被占用
+except OSError:
+    pass
+finally:
+    c.close()
+
+# 2) 再尝试 bind 兜底（TIME_WAIT 不算占用，故设 SO_REUSEADDR）
+b = socket.socket()
+try:
+    b.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    b.bind(("0.0.0.0", port))
+except OSError:
+    sys.exit(0)          # 被占用
+finally:
+    b.close()
+
+sys.exit(1)              # 1 = 空闲
+PY
+}
+
+# 直接打印指定端口的监听明细（含进程名/PID），用于失败时给用户看
+print_port_detail() {
     local port="$1"
     if command -v ss >/dev/null 2>&1; then
-        ss -lntp 2>/dev/null \
-            | awk -v p=":${port}\$" '$4 ~ p {print}' \
-            | awk 'match($0, /pid=[0-9]+/) {print substr($0, RSTART+4, RLENGTH-4); exit}'
-    elif command -v lsof >/dev/null 2>&1; then
-        lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==1{print}'
+        ss -lntp 2>/dev/null | awk -v pat=":${port}\$" '$4 ~ pat' | sed 's/^/      /'
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -lntp 2>/dev/null | awk -v pat=":${port}\$" '$4 ~ pat' | sed 's/^/      /'
     fi
+}
+
+# 列出所有仍被占用的端口（输出的每一项形如 "5757:12345"，无占用则为空）
+busy_ports() {
+    local p h out=""
+    for p in $(get_ntrip_port) $(get_web_port); do
+        [ -z "$p" ] && continue
+        if port_in_use "$p"; then
+            h=$(port_holder "$p")
+            out="$out $p:${h:-unknown}"
+        fi
+    done
+    echo "$out"
 }
 
 # 两阶段探活：
@@ -346,14 +417,37 @@ health_check() {
 #      systemd 默认 TimeoutStopSec=90s，期间 restart 一直阻塞，看起来像卡死。
 #   2) 旧进程若没干净退出，2101/5757 端口会一直被占用，新进程 bind 失败起不来，
 #      表现就是「服务重启后未正常运行」。
-restart_service() {
-    log_step "停止旧服务..."
+# ==================== 停止 / 启动 ====================
+# 彻底停止 NTRIP Caster，并确保 2101 / 5757 真正释放。
+#
+# 为什么必须这么麻烦：
+#   systemctl stop 只保证「systemd 托管的主进程」退出。实际环境中端口仍被占用的情况很常见：
+#     - 曾手动 `python main.py` / `bash start.sh` 启动过，进程不在 systemd 托管下；
+#     - 从 Web 界面点「重启程序」时进程脱离 systemd 重新拉起；
+#     - 旧进程优雅关闭较慢，主进程已退但监听 socket 尚未释放。
+#   只要端口没释放，新进程启动时 check_environment 就会报「Web端口 5757 已被占用」
+#   然后 status=1 退出，systemd 反复 auto-restart，表现为「服务重启后未正常运行」。
+stop_service_fully() {
+    log_step "停止 NTRIP Caster..."
+
+    # 先告诉用户当前状态（服务是否在跑、端口被谁占）
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        log_info "检测到 systemd 服务正在运行，开始停止"
+    else
+        log_info "systemd 服务当前未处于运行状态"
+    fi
+
+    local pre_busy
+    pre_busy=$(busy_ports)
+    [ -n "$pre_busy" ] && log_info "当前端口占用:$pre_busy"
+
+    # 1) 停止 systemd 服务
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
 
     local waited=0
     while systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; do
         if [ "$waited" -ge 20 ]; then
-            log_warn "服务 20 秒内未退出，强制结束进程（SIGKILL）"
+            log_warn "服务 20 秒内未退出，强制结束（SIGKILL）"
             systemctl kill -s SIGKILL "$SERVICE_NAME" >/dev/null 2>&1
             sleep 2
             break
@@ -361,29 +455,81 @@ restart_service() {
         sleep 1
         waited=$((waited + 1))
     done
+
+    # 2) 清理所有「未受 systemd 托管」的本程序残留进程。
+    #    典型来源：曾手动 `python main.py` 启动、或从 Web 界面重启后脱离 systemd。
+    #    这类进程会一直占着 2101/5757，是「新进程启动即退出」的最常见原因。
+    #    只按入口文件完整路径匹配，不会误杀其他 python 进程。
+    #    不依赖 pkill，用 ps + kill，避免精简系统缺少 procps 工具。
+    local pids="" pid args still=""
+    pids=$(ps -eo pid=,args= 2>/dev/null | while read -r pid args; do
+        case "$args" in
+            *"$INSTALL_DIR/main.py"*) echo "$pid" ;;
+        esac
+    done)
+
+    if [ -n "$pids" ]; then
+        log_warn "发现未受 systemd 托管的残留进程（PID: $(echo "$pids" | tr '\n' ' ')），正在结束..."
+        kill -TERM $pids 2>/dev/null
+        sleep 2
+        for pid in $pids; do
+            if kill -0 "$pid" 2>/dev/null; then
+                still="$still $pid"
+            fi
+        done
+        if [ -n "$still" ]; then
+            log_warn "残留进程未响应 SIGTERM，强制结束:$still"
+            kill -9 $still 2>/dev/null
+            sleep 1
+        fi
+    fi
+
+    # 3) 等待端口真正释放（bind 探测，最多 15 秒）
+    local left=15 p busy
+    while [ "$left" -gt 0 ]; do
+        busy=0
+        for p in $(get_ntrip_port) $(get_web_port); do
+            port_in_use "$p" && busy=1
+        done
+        [ "$busy" -eq 0 ] && break
+        sleep 1
+        left=$((left - 1))
+    done
+
+    # 4) 最终确认：还有占用就报出进程并判定失败
+    local remaining
+    remaining=$(busy_ports)
+    if [ -n "$remaining" ]; then
+        log_error "端口未能释放:$remaining"
+        echo ""
+        echo "  占用详情（PID / 进程名）："
+        for p in $(get_ntrip_port) $(get_web_port); do
+            if port_in_use "$p"; then
+                print_port_detail "$p"
+                local h
+                h=$(port_holder "$p")
+                if [ -n "$h" ]; then
+                    ps -fp "$h" 2>/dev/null | tail -1 | sed 's/^/      /'
+                fi
+            fi
+        done
+        echo ""
+        log_warn "请手动结束上述进程后重试，例如："
+        echo "    ss -lntp | grep -E ':(2101|5757)'"
+        echo "    kill -9 <PID>"
+        echo ""
+        return 1
+    fi
+
     if [ "$waited" -gt 0 ] && [ "$waited" -lt 20 ]; then
         log_info "旧进程已退出（等待 ${waited}s）"
     fi
+    log_ok "服务已完全停止，端口已释放"
+    return 0
+}
 
-    # 端口兜底：确认 2101 / 5757 已释放，避免新进程 bind 失败
-    local nport wport holder port
-    nport=$(get_ntrip_port)
-    wport=$(get_web_port)
-    for port in $nport $wport; do
-        [ -z "$port" ] && continue
-        holder=$(port_holder "$port")
-        if [ -n "$holder" ]; then
-            log_warn "端口 $port 仍被进程 $holder 占用，强制释放"
-            kill -9 "$holder" >/dev/null 2>&1
-            sleep 1
-            if [ -n "$(port_holder "$port")" ]; then
-                log_warn "端口 $port 仍被占用，新进程可能启动失败"
-            else
-                log_ok "端口 $port 已释放"
-            fi
-        fi
-    done
-
+# 启动服务（前置条件：stop_service_fully 已确认端口空闲）
+start_service() {
     log_step "启动服务..."
     systemctl start "$SERVICE_NAME" >/dev/null 2>&1
 }
@@ -408,10 +554,15 @@ print_diagnostics() {
 
     local p holder
     for p in $(get_ntrip_port) $(get_web_port); do
-        holder=$(port_holder "$p")
-        if [ -n "$holder" ]; then
+        [ -z "$p" ] && continue
+        if port_in_use "$p"; then
+            holder=$(port_holder "$p")
             echo ""
-            echo "  [端口 $p 被进程 $holder 占用]"
+            echo "  [端口 $p 被占用，进程 PID: ${holder:-未知}]"
+            print_port_detail "$p"
+            if [ -n "$holder" ]; then
+                ps -fp "$holder" 2>/dev/null | tail -1 | sed 's/^/      /'
+            fi
         fi
     done
     echo "  ------------------"
@@ -480,6 +631,23 @@ update_source() {
         log_info "发现新版本: v$old_version -> v$new_version"
     else
         log_info "开始更新（版本号无法比对，按需强制更新）"
+    fi
+
+    # 升级前必须先彻底停止正在运行的服务并释放端口。
+    # 否则新进程启动时 check_environment 会发现 2101/5757 仍被旧实例占用，
+    # 直接 status=1 退出，systemd 反复 auto-restart，表现为「服务重启后未正常运行」。
+    # 放在备份/同步代码之前：停不下来就直接中止，此时还没改动任何文件。
+    if ! stop_service_fully; then
+        log_error "无法停止旧服务或释放端口，已中止更新（未做任何修改）"
+        rm -rf "$tmp_clone"
+        exit 1
+    fi
+
+    # 服务已静止，重新备份一次数据库：do_backup 是在服务运行期间做的，
+    # 这里覆盖为静止状态的一致快照，回滚时更安全。
+    if [ -f "$INSTALL_DIR/data/2rtk.db" ] && [ -d "$BACKUP_DIR" ]; then
+        cp -a "$INSTALL_DIR/data/2rtk.db" "$BACKUP_DIR/2rtk.db" 2>/dev/null \
+            && log_ok "已刷新数据库备份（服务静止状态）"
     fi
 
     # 备份旧代码（用于失败回滚）
@@ -697,8 +865,8 @@ if bad:
     fi
     log_ok "核心依赖导入正常"
 
-    # 重启服务
-    restart_service
+    # 启动服务（端口已在 stop_service_fully 中确认释放）
+    start_service
 
     # 健康检查
     if ! health_check; then
