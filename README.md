@@ -102,6 +102,41 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.c
 config and database before updating, runs a health check afterwards, and rolls back
 automatically on failure. **User data, mount point settings and the database are all preserved.**
 
+Before touching any file, the script **checks whether the old version is still running and
+stops it first**:
+
+1. Finds every systemd unit whose contents point at `/opt/2rtk` (normally `2rtk.service`,
+   and it still works if the unit was renamed), and locks onto the **running** one as the
+   real service name — used for stop / start / diagnostics / unit-file sync.
+2. Runs `systemctl stop`; if the service is still alive after 25 s it sends `SIGKILL`, then
+   `reset-failed` clears the restart counter.
+3. Kills stray manually started processes (`python main.py` and the like) that systemd does
+   not manage.
+4. Waits until ports 2101 / 5757 are actually free, then replaces the code.
+
+On hosts without systemd (only an `/etc/init.d` script) it falls back to
+`service <name> stop/start`; if neither exists it launches the process exactly the way
+`install.sh` does, instead of calling a missing `systemctl`.
+
+Docker deployments follow the same rule: **stop the container, remove it, then create the
+new one**:
+
+1. Reads the compose ownership from the container labels (project / service / working dir /
+   config files); no labels means the container came from `docker run`.
+2. Captures ports, volumes, environment and restart policy, and writes
+   `recreate_container.sh` (also reused for rollback).
+3. `docker compose stop` / `docker stop` → `docker rm -f` → `up -d --force-recreate`, or a
+   plain `docker run` rebuilt from the captured parameters.
+4. Tags the pulled image with the image name used by compose (e.g. `ntripcaster:2.3.1`),
+   otherwise compose keeps using the old local image.
+5. On a failed health check the container is rebuilt with the previous image.
+
+Skipping the removal step is what produces `container name is already in use`, or leaves the
+old container holding 2101/5757.
+
+This prevents the new version from failing to start because the old instance still holds the
+ports — the usual cause of "service did not come back up after restart".
+
 ### Recommended: run it inside your source directory
 
 ```bash
@@ -316,11 +351,37 @@ log_format = %%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s
 max_log_size = 10485760             # Log rotation size (bytes)
 backup_count = 5                    # Number of log files to keep
 ```
+## Versioning
+
+The version number has a single source of truth: the `VERSION` file in the repository root
+(one line, e.g. `2.3.1`). Every other occurrence — config examples, compose files, Dockerfile,
+deploy scripts, docs, frontend footer — is a **generated copy**.
+
+To cut a release:
+
+```bash
+echo "2.3.2" > VERSION            # 1. change this one place
+python3 scripts/sync_version.py   # 2. sync everything
+```
+
+Verify (exits 1 when out of sync, handy in CI):
+
+```bash
+python3 scripts/sync_version.py --check
+```
+
+Runtime lookup order: `VERSION` file > `APP_VERSION` env var > `config.ini [app] version`.
+So the footer, the `/health` endpoint and the NTRIP `Server:` header always report the real
+build version, even if an old `config.ini` still carries a stale value.
+
+> Historical changelog lines in the tutorials (e.g. `- **v2.3.0**: ...`) are records and are
+> intentionally left untouched by the sync script.
+
 ## Contributing
 
 - Welcome to submit Pull Requests
-- Contact: i@jia.by
-- 2rtk.com
+- Contact: i@jia.im
+- Website: https://2rtk.com
 
 
 ## Acknowledgments and Open Source Libraries

@@ -42,15 +42,33 @@ CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
 SERVICE_NAME="2rtk"
 
+# 先把所有「指向本安装目录」的单元都找出来。
+# 服务名不一定是 2rtk（早期版本、用户改过名），只删 2rtk.service 会留下孤儿服务，
+# 卸载后它仍会随开机启动，继续占用 2101/5757。
+SERVICE_UNITS=""
+for _unit in /etc/systemd/system/*.service /lib/systemd/system/*.service /usr/lib/systemd/system/*.service; do
+    [ -f "$_unit" ] || continue
+    if grep -qF "$INSTALL_DIR/main.py" "$_unit" 2>/dev/null; then
+        _n=$(basename "$_unit" .service)
+        case " $SERVICE_UNITS " in
+            *" $_n "*) ;;
+            *) SERVICE_UNITS="$SERVICE_UNITS $_n" ;;
+        esac
+    fi
+done
+[ -z "$SERVICE_UNITS" ] && SERVICE_UNITS=" $SERVICE_NAME"
+unset _unit _n
+
 # 停止并禁用服务
 echo -e "${YELLOW}停止并禁用服务...${NC}"
-systemctl stop $SERVICE_NAME
-systemctl disable $SERVICE_NAME
+for SERVICE_NAME in $SERVICE_UNITS; do
+    systemctl stop $SERVICE_NAME >/dev/null 2>&1 || true
+    systemctl disable $SERVICE_NAME >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/$SERVICE_NAME.service
+    echo -e "  已停止并删除服务: ${SERVICE_NAME}.service"
+done
 systemctl daemon-reload
-
-# 删除 systemd 服务文件
-echo -e "${YELLOW}删除 systemd 服务文件...${NC}"
-rm -f /etc/systemd/system/$SERVICE_NAME.service
+SERVICE_NAME="2rtk"
 
 # 删除 Nginx 配置
 echo -e "${YELLOW}删除 Nginx 配置...${NC}"

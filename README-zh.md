@@ -101,6 +101,29 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:lat
 `update.sh` 会自动识别部署形态（源码+systemd / Docker），更新前备份配置与数据库，
 更新后做健康检查，失败自动回滚。**用户数据、挂载点配置、数据库全部保留。**
 
+升级前脚本会**先检查本机旧版本是否正在运行，在运行就先停掉它再动文件**：
+
+1. 按 systemd 单元内容反查所有指向 `/opt/2rtk` 的服务（默认 `2rtk.service`，服务名被改过也能找到），
+   并锁定「正在运行的那个」作为实际服务名，后续停止 / 启动 / 诊断 / 服务文件同步都用它；
+2. `systemctl stop` 停止服务，超过 25 秒不退则 `SIGKILL`，并 `reset-failed` 清掉失败计数；
+3. 清理不受 systemd 托管的手工启动进程（`python main.py` 之类）；
+4. 确认 2101 / 5757 端口真正释放后才开始替换代码。
+
+没有 systemd 的机器（只有 `/etc/init.d` 脚本）会自动改用 `service <name> stop/start`，
+两者都没有时按安装脚本同款命令直接拉起，不会去调用不存在的 `systemctl`。
+
+Docker 形态同理，**必须先停容器、再删容器、最后才创建新容器**：
+
+1. 从容器 label 读出 compose 归属（项目名 / 服务名 / 工作目录 / 配置文件），没有 label 说明是 `docker run` 创建的；
+2. 读取容器的端口、卷、环境变量、重启策略，生成 `recreate_container.sh`（回滚复用）；
+3. `docker compose stop` / `docker stop` 停旧容器 → `docker rm -f` 删除 → 再 `up -d --force-recreate` 或按原参数 `docker run`；
+4. 把拉取到的新镜像标记成 compose 里写的镜像名（如 `ntripcaster:2.3.1`），否则 compose 会继续用本地旧镜像；
+5. 健康检查失败自动用旧镜像重建容器。
+
+不删容器直接 `up` 的后果是 `container name is already in use`，或旧容器不退导致 2101/5757 一直被占。
+
+这样新版本启动时不会因端口被旧实例占用而失败，避免出现「服务重启后未正常运行」。
+
 ### 推荐方式：在项目源码目录执行
 
 ```bash
@@ -336,10 +359,35 @@ max_log_size = 10485760            # 日志轮转大小（字节）
 backup_count = 5                   # 保留日志文件数
 ```
 
+## 版本管理
+
+版本号只有一个源头：仓库根目录的 `VERSION` 文件（单行，如 `2.3.1`）。
+其余所有位置（示例配置、compose、Dockerfile、部署脚本、文档、前端页脚）都是**派生副本**，由脚本自动刷新。
+
+发版只需两步：
+
+```bash
+echo "2.3.2" > VERSION            # 1. 只改这一处
+python3 scripts/sync_version.py   # 2. 全局自动对齐
+```
+
+校验（不一致退出码为 1，可直接用于 CI）：
+
+```bash
+python3 scripts/sync_version.py --check
+```
+
+运行期取值优先级：`VERSION` 文件 > 环境变量 `APP_VERSION` > `config.ini` 的 `[app] version`。
+因此升级后前端页脚、`/health` 接口和 NTRIP 响应头里的 `Server:` 版本号始终与实际构建一致，
+不会再出现「配置文件还是旧版本号」的错位。
+
+> 注意：教程末尾的历史更新日志（形如 `- **v2.3.0**: ...`）属于变更记录，同步脚本不会改动。
+
 ## 贡献
 
 - 欢迎提交 Pull Request
-- 联系方式: i@jia.by
+- 联系方式: i@jia.im
+- 官方网站: https://2rtk.com
 
 ## 致谢与开源库
 

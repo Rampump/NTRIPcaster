@@ -92,7 +92,24 @@ echo -e "${GREEN}检测到 ${OS_ID} ${VERSION_ID}，继续安装...${NC}"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
-SERVICE_NAME="2rtk"
+SERVICE_NAME="${SERVICE_NAME:-2rtk}"
+
+# 复用已有服务名（重要）：
+# 不同版本 / 不同机器上，本程序的服务单元名可能不是 2rtk（早期安装、用户改过、装过别的分支）。
+# 若本机已存在指向 $INSTALL_DIR/main.py 的单元，就沿用它的名字，不再新建第二个单元。
+# 否则会出现两个服务同时指向同一个 main.py：开机各起一个实例抢 2101/5757，
+# 表现为「装完/升级完服务起不来」「Web端口已被占用」。
+for _unit in /etc/systemd/system/*.service; do
+    [ -f "$_unit" ] || continue
+    if grep -qF "$INSTALL_DIR/main.py" "$_unit" 2>/dev/null; then
+        _n=$(basename "$_unit" .service)
+        if [ "$_n" != "$SERVICE_NAME" ]; then
+            SERVICE_NAME="$_n"
+            echo -e "${YELLOW}检测到已有服务 ${_n}.service 指向本安装目录，沿用该服务名${NC}"
+        fi
+    fi
+done
+unset _unit _n
 
 # 创建安装目录
 echo -e "${YELLOW}创建安装目录...${NC}"
@@ -315,7 +332,7 @@ $LOG_DIR/main.log $LOG_DIR/ntrip.log $LOG_DIR/errors.log {
     create 0640 root root
     sharedscripts
     postrotate
-        systemctl reload 2rtk.service > /dev/null 2>&1 || true
+        systemctl reload ${SERVICE_NAME}.service > /dev/null 2>&1 || true
     endscript
 }
 EOF
