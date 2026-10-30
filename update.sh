@@ -30,7 +30,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_ok()    { echo -e "${CYAN}[OK]${NC} $1"; }
 
 # ==================== 常量 ====================
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
@@ -231,24 +231,65 @@ do_rollback() {
         if [ ! -L "$INSTALL_DIR/config.ini" ] && [ -f "$CONFIG_DIR/config.ini" ]; then
             ln -sf "$CONFIG_DIR/config.ini" "$INSTALL_DIR/config.ini" 2>/dev/null
         fi
-        # 重启服务使其回到旧版本运行状态
-        systemctl restart "$SERVICE_NAME" 2>/dev/null
+        # 重启服务使其回到旧版本运行状态。
+        # 同样先 stop 再 start：更新失败时新进程可能仍占着端口或卡在启动中，
+        # 直接 restart 会因端口冲突导致回滚也起不来。
+        local _w=0 _p="" _h=""
+        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+        while systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && [ "$_w" -lt 15 ]; do
+            sleep 1
+            _w=$((_w + 1))
+        done
+        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            systemctl kill -s SIGKILL "$SERVICE_NAME" >/dev/null 2>&1
+            sleep 1
+        fi
+        for _p in $(get_ntrip_port) $(get_web_port); do
+            _h=$(port_holder "$_p")
+            [ -n "$_h" ] && kill -9 "$_h" >/dev/null 2>&1
+        done
+        sleep 1
+        systemctl start "$SERVICE_NAME" >/dev/null 2>&1
+        log_ok "已重启服务（旧版本）"
     fi
     log_warn "已回滚，备份保留在 $BACKUP_DIR"
 }
 
 # ==================== 健康检查 ====================
-# 读取 config.ini 中 [web] port 的实际值（默认 5757），避免用户自定义端口后探活误判
-get_web_port() {
-    local port=""
+# 读取 config.ini 中指定 section 的 port 值
+_get_cfg_port() {
+    local section="$1" default="$2" port=""
     if [ -f "$CONFIG_DIR/config.ini" ]; then
-        port=$(awk -F= '
-            /^[[:space:]]*\[web\]/ { inweb=1; next }
-            /^[[:space:]]*\[/      { inweb=0 }
-            inweb && /^[[:space:]]*port[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }
+        port=$(awk -F= -v sec="$section" '
+            $0 ~ "^[[:space:]]*\\[" sec "\\]" { ins=1; next }
+            /^[[:space:]]*\[/                 { ins=0 }
+            ins && /^[[:space:]]*port[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }
         ' "$CONFIG_DIR/config.ini" 2>/dev/null)
     fi
-    echo "${port:-5757}"
+    echo "${port:-$default}"
+}
+
+# 读取 config.ini 中 [web] port 的实际值（默认 5757），避免用户自定义端口后探活误判
+get_web_port() {
+    _get_cfg_port "web" "5757"
+}
+
+# 读取 config.ini 中 [ntrip] port 的实际值（默认 2101）
+get_ntrip_port() {
+    _get_cfg_port "ntrip" "2101"
+}
+
+# 查询监听指定端口的进程 PID（无占用则输出空）。
+# 用纯 bash/awk 处理，避免 pipefail 下 grep 提前退出引发 SIGPIPE 误判。
+port_holder() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntp 2>/dev/null \
+            | awk -v p=":${port}\$" '$4 ~ p {print}' \
+            | awk 'match($0, /pid=[0-9]+/) {print substr($0, RSTART+4, RLENGTH-4); exit}'
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==1{print}'
+    fi
 }
 
 # 两阶段探活：
@@ -296,6 +337,85 @@ health_check() {
         sleep 2
     done
     return 1
+}
+
+# 重启服务：显式 stop -> 等旧进程真正退出（超时兜底 SIGKILL）-> 确认端口已释放 -> start
+#
+# 不直接 systemctl restart 的原因：
+#   1) 旧进程优雅关闭要依次 join 转发器、线程池、推送线程，耗时可能十几秒；
+#      systemd 默认 TimeoutStopSec=90s，期间 restart 一直阻塞，看起来像卡死。
+#   2) 旧进程若没干净退出，2101/5757 端口会一直被占用，新进程 bind 失败起不来，
+#      表现就是「服务重启后未正常运行」。
+restart_service() {
+    log_step "停止旧服务..."
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+
+    local waited=0
+    while systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; do
+        if [ "$waited" -ge 20 ]; then
+            log_warn "服务 20 秒内未退出，强制结束进程（SIGKILL）"
+            systemctl kill -s SIGKILL "$SERVICE_NAME" >/dev/null 2>&1
+            sleep 2
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if [ "$waited" -gt 0 ] && [ "$waited" -lt 20 ]; then
+        log_info "旧进程已退出（等待 ${waited}s）"
+    fi
+
+    # 端口兜底：确认 2101 / 5757 已释放，避免新进程 bind 失败
+    local nport wport holder port
+    nport=$(get_ntrip_port)
+    wport=$(get_web_port)
+    for port in $nport $wport; do
+        [ -z "$port" ] && continue
+        holder=$(port_holder "$port")
+        if [ -n "$holder" ]; then
+            log_warn "端口 $port 仍被进程 $holder 占用，强制释放"
+            kill -9 "$holder" >/dev/null 2>&1
+            sleep 1
+            if [ -n "$(port_holder "$port")" ]; then
+                log_warn "端口 $port 仍被占用，新进程可能启动失败"
+            else
+                log_ok "端口 $port 已释放"
+            fi
+        fi
+    done
+
+    log_step "启动服务..."
+    systemctl start "$SERVICE_NAME" >/dev/null 2>&1
+}
+
+# 启动失败时输出诊断信息，直接暴露真实原因（而不是只说「未正常运行」）
+print_diagnostics() {
+    echo ""
+    echo "  ---- 诊断信息 ----"
+
+    echo "  [systemctl status]"
+    systemctl status "$SERVICE_NAME" --no-pager -l 2>&1 | head -14 | sed 's/^/    /'
+
+    echo ""
+    echo "  [journalctl 最近日志]"
+    journalctl -u "$SERVICE_NAME" -n 15 --no-pager 2>/dev/null | sed 's/^/    /'
+
+    if [ -f "$LOG_DIR/errors.log" ]; then
+        echo ""
+        echo "  [errors.log 尾部]"
+        tail -12 "$LOG_DIR/errors.log" 2>/dev/null | sed 's/^/    /'
+    fi
+
+    local p holder
+    for p in $(get_ntrip_port) $(get_web_port); do
+        holder=$(port_holder "$p")
+        if [ -n "$holder" ]; then
+            echo ""
+            echo "  [端口 $p 被进程 $holder 占用]"
+        fi
+    done
+    echo "  ------------------"
+    echo ""
 }
 
 # ==================== 源码 + systemd 更新 ====================
@@ -439,6 +559,8 @@ Environment="NTRIP_CONFIG_FILE=$CONFIG_DIR/config.ini"
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
 Restart=always
 RestartSec=5
+TimeoutStopSec=20
+KillMode=mixed
 StandardOutput=append:$LOG_DIR/main.log
 StandardError=append:$LOG_DIR/errors.log
 
@@ -446,6 +568,21 @@ StandardError=append:$LOG_DIR/errors.log
 WantedBy=multi-user.target
 EOF
         log_ok "已按 install.sh 同款方式重建服务文件"
+    fi
+
+    # 兜底：确保 TimeoutStopSec 存在。
+    # 老版本 install.sh 生成的服务文件没有这一项，systemd 会退化为默认 90 秒：
+    # 重启时旧进程迟迟不退，restart 长时间阻塞，2101/5757 端口也迟迟不释放。
+    local _unit="/etc/systemd/system/${SERVICE_NAME}.service"
+    if [ -f "$_unit" ] && ! grep -q '^TimeoutStopSec=' "$_unit" 2>/dev/null; then
+        if awk '
+            /^\[Service\]/ && !done { print; print "TimeoutStopSec=20"; print "KillMode=mixed"; done=1; next }
+            { print }
+        ' "$_unit" > "${_unit}.new" 2>/dev/null && [ -s "${_unit}.new" ]; then
+            cat "${_unit}.new" > "$_unit"
+            log_info "已为服务文件补充 TimeoutStopSec=20 / KillMode=mixed"
+        fi
+        rm -f "${_unit}.new"
     fi
     systemctl daemon-reload 2>/dev/null
 
@@ -470,35 +607,103 @@ EOF
     fi
 
     # 重新安装依赖（requirements.txt 可能变化，用清华镜像加速 + 回退）
+    # 必须带 --upgrade：
+    #   requirements.txt 只 pin 了直接依赖，bidict / python-engineio 等是间接依赖。
+    #   不带 --upgrade 时 pip 认为 python-socketio==5.8.0「已安装且满足」，直接跳过，
+    #   于是旧 venv 里 vestigial 的 bidict 0.16.0（要求 >=0.21.0）不会被修正，
+    #   新进程 import socketio 就炸，表现为「服务重启后未正常运行」并回滚。
     log_step "更新 Python 依赖..."
     local PIP_ARGS=""
     if curl -fsS --connect-timeout 2 https://mirrors.tuna.tsinghua.edu.cn >/dev/null 2>&1; then
         PIP_ARGS="-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
         log_info "使用清华镜像加速"
     fi
-    if ! "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" $PIP_ARGS 2>/dev/null; then
-        if [ -n "$PIP_ARGS" ]; then
-            log_warn "清华镜像安装失败，回退官方源..."
-            "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" 2>/dev/null || {
-                log_error "依赖安装失败"
-                do_rollback
-                exit 1
-            }
-        else
-            log_error "依赖安装失败"
+
+    local pip_ok=0
+    if "$INSTALL_DIR/venv/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt" $PIP_ARGS; then
+        pip_ok=1
+    elif [ -n "$PIP_ARGS" ]; then
+        log_warn "清华镜像安装失败，回退官方源..."
+        if "$INSTALL_DIR/venv/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt"; then
+            pip_ok=1
+        fi
+    fi
+    if [ "$pip_ok" -ne 1 ]; then
+        log_error "依赖安装失败"
+        do_rollback
+        exit 1
+    fi
+
+    # 依赖一致性校验：pip check 能发现「间接依赖版本不满足」这类静默冲突
+    if ! "$INSTALL_DIR/venv/bin/pip" check >/dev/null 2>&1; then
+        log_warn "检测到依赖版本冲突，尝试修复："
+        "$INSTALL_DIR/venv/bin/pip" check 2>&1 | awk 'NF' | head -8 | sed 's/^/    /'
+        "$INSTALL_DIR/venv/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt" $PIP_ARGS >/dev/null 2>&1 \
+            || "$INSTALL_DIR/venv/bin/pip" install --upgrade -r "$INSTALL_DIR/requirements.txt" >/dev/null 2>&1
+    fi
+    log_ok "依赖更新完成"
+
+    # 启动前自检：真实导入一次核心模块。
+    # 否则依赖坏了只能看到「服务未正常运行」，看不到真正的 ImportError 原因。
+    log_step "启动前自检（导入核心模块）..."
+    local import_err import_rc
+    import_err=$("$INSTALL_DIR/venv/bin/python" -c "
+import sys
+mods = ['flask', 'flask_socketio', 'socketio', 'engineio', 'werkzeug',
+        'psutil', 'pyrtcm', 'pyproj', 'reverse_geocode']
+bad = []
+for m in mods:
+    try:
+        __import__(m)
+    except Exception as e:
+        bad.append('  %s -> %s: %s' % (m, type(e).__name__, e))
+if bad:
+    print('\n'.join(bad))
+    sys.exit(1)
+" 2>&1)
+    import_rc=$?
+
+    if [ "$import_rc" -ne 0 ]; then
+        log_warn "核心依赖导入失败，尝试强制重装依赖..."
+        echo "$import_err" | head -12 | sed 's/^/    /'
+        "$INSTALL_DIR/venv/bin/pip" install --upgrade --force-reinstall \
+            -r "$INSTALL_DIR/requirements.txt" $PIP_ARGS >/dev/null 2>&1 \
+            || "$INSTALL_DIR/venv/bin/pip" install --upgrade --force-reinstall \
+            -r "$INSTALL_DIR/requirements.txt" >/dev/null 2>&1
+
+        import_err=$("$INSTALL_DIR/venv/bin/python" -c "
+import sys
+mods = ['flask', 'flask_socketio', 'socketio', 'engineio', 'werkzeug',
+        'psutil', 'pyrtcm', 'pyproj', 'reverse_geocode']
+bad = []
+for m in mods:
+    try:
+        __import__(m)
+    except Exception as e:
+        bad.append('  %s -> %s: %s' % (m, type(e).__name__, e))
+if bad:
+    print('\n'.join(bad))
+    sys.exit(1)
+" 2>&1)
+        import_rc=$?
+        if [ "$import_rc" -ne 0 ]; then
+            log_error "依赖无法导入，新版本无法启动，回滚到旧版本"
+            echo "$import_err" | head -12 | sed 's/^/    /'
+            echo ""
+            echo "  可手动排查：$INSTALL_DIR/venv/bin/pip check"
             do_rollback
             exit 1
         fi
     fi
-    log_ok "依赖更新完成"
+    log_ok "核心依赖导入正常"
 
     # 重启服务
-    log_step "重启服务..."
-    systemctl restart "$SERVICE_NAME" 2>/dev/null
+    restart_service
 
     # 健康检查
     if ! health_check; then
         log_error "服务重启后未正常运行"
+        print_diagnostics
         do_rollback
         exit 1
     fi

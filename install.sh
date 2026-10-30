@@ -260,11 +260,11 @@ if ! $INSTALL_DIR/venv/bin/pip install --upgrade pip $PIP_INDEX_ARGS $PIP_TRUST_
     echo -e "${YELLOW}pip 升级失败，尝试继续安装依赖...${NC}"
 fi
 
-if ! $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt $PIP_INDEX_ARGS $PIP_TRUST_HOST; then
+if ! $INSTALL_DIR/venv/bin/pip install --upgrade -r $INSTALL_DIR/requirements.txt $PIP_INDEX_ARGS $PIP_TRUST_HOST; then
     # 若指定镜像失败，回退官方源重试一次
     if [ -n "$PIP_INDEX_ARGS" ]; then
         echo -e "${YELLOW}清华镜像安装失败，回退官方 PyPI 重试...${NC}"
-        if ! $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt; then
+        if ! $INSTALL_DIR/venv/bin/pip install --upgrade -r $INSTALL_DIR/requirements.txt; then
             echo -e "${RED}错误: Python 依赖安装失败${NC}"
             exit 1
         fi
@@ -290,6 +290,11 @@ Environment="NTRIP_CONFIG_FILE=$CONFIG_DIR/config.ini"
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/main.py
 Restart=always
 RestartSec=5
+# 优雅关闭要 join 转发器/线程池/推送线程，最长约 20 秒。
+# 显式限定 20 秒，超时由 systemd 直接 SIGKILL：避免默认 90 秒期间
+# systemctl restart 一直阻塞、且旧进程不退导致 2101/5757 端口不释放。
+TimeoutStopSec=20
+KillMode=mixed
 StandardOutput=append:$LOG_DIR/main.log
 StandardError=append:$LOG_DIR/errors.log
 
