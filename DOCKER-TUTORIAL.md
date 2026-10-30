@@ -1,6 +1,6 @@
 # NTRIP Caster Docker 安装和使用教程
 
-本教程将指导您如何使用 Docker 快速部署和运行 NTRIP Caster v2.3.3。
+本教程将指导您如何使用 Docker 快速部署和运行 NTRIP Caster v2.3.4。
 
 > **镜像仓库选择**：本教程面向中国区用户，默认使用腾讯云镜像仓库（无需登录、国内直连快）。国际用户可把下面命令中的镜像地址换成 Docker Hub 官方镜像（把 `ccr.ccs.tencentyun.com/2rtk/ntripcaster` 换成 `2rtk/ntripcaster` 即可），两者内容完全一致。
 >
@@ -498,6 +498,6 @@ docker exec ntrip-caster python /app/healthcheck.py
 
 ---
 
-**版本信息：** NTRIP Caster v2.3.3  
+**版本信息：** NTRIP Caster v2.3.4  
 **更新时间：** 2025年8月  
 **作者：** i@jia.im

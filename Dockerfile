@@ -1,4 +1,4 @@
-# NTRIP Caster v2.3.3 Docker镜像
+# NTRIP Caster v2.3.4 Docker镜像
 # 使用多阶段构建优化镜像大小
 FROM python:3.11-slim AS builder
 
@@ -30,11 +30,11 @@ FROM python:3.11-slim AS production
 
 # 设置标签信息
 LABEL maintainer="2rtk <i@jia.im>" \
-      version="2.3.3" \
+      version="2.3.4" \
       description="High-performance NTRIP Caster with RTCM parsing" \
       org.opencontainers.image.title="NTRIP Caster" \
       org.opencontainers.image.description="High-performance NTRIP Caster with RTCM parsing" \
-      org.opencontainers.image.version="2.3.3" \
+      org.opencontainers.image.version="2.3.4" \
       org.opencontainers.image.vendor="2RTK" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/Rampump/NTRIPcaster"

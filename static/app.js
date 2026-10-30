@@ -911,6 +911,84 @@ function wgs84ToGcj02(lng, lat) {
     return [mglng, mglat];
 }
 
+// ==================== 基准站标记图标 ====================
+// 图标是同源静态 SVG（static/img/basestation-tower.svg）。
+// 这里维护一个「是否可用」的判定，供标记样式降级使用。
+const STATION_ICON_SRC = '/static/img/basestation-tower.svg';
+let stationIconOk = null;   // null=尚未探测，true=可加载，false=不可用
+
+function probeStationIcon(callback) {
+    if (stationIconOk !== null) {
+        if (typeof callback === 'function') callback(stationIconOk);
+        return;
+    }
+    if (typeof Image === 'undefined') {   // 非浏览器环境（测试/SSR）
+        stationIconOk = false;
+        if (typeof callback === 'function') callback(false);
+        return;
+    }
+    const probe = new Image();
+    probe.onload = () => {
+        stationIconOk = true;
+        if (typeof callback === 'function') callback(true);
+    };
+    probe.onerror = () => {
+        stationIconOk = false;
+        console.warn('[地图] 站点图标加载失败，改用圆点标记:', STATION_ICON_SRC);
+        if (typeof callback === 'function') callback(false);
+    };
+    probe.src = STATION_ICON_SRC;
+}
+
+function buildStationIconStyle() {
+    return new ol.style.Style({
+        image: new ol.style.Icon({
+            src: STATION_ICON_SRC,
+            // SVG 自带 width/height，这里显式声明尺寸，避免部分浏览器读不到内在尺寸
+            imgSize: [40, 40],
+            scale: 1,
+            // 塔底对准站点坐标，而不是图标中心
+            anchor: [0.5, 1.0]
+        })
+    });
+}
+
+// 图标不可用时的降级样式：带白边的蓝色圆点，保证地图上一定能看到站点位置
+function buildStationDotStyle() {
+    return new ol.style.Style({
+        image: new ol.style.Circle({
+            radius: 8,
+            fill: new ol.style.Fill({ color: '#1565C0' }),
+            stroke: new ol.style.Stroke({ color: '#FFFFFF', width: 2.5 })
+        })
+    });
+}
+
+// ==================== 覆盖范围圈 ====================
+// 传入的是「真实地面半径（米）」，内部按 Web Mercator 的纬度变形做修正。
+// EPSG:3857 里 1 个投影单位在纬度 lat 处约等于 cos(lat) 米地面距离，
+// 所以地面半径 R 对应的投影半径是 R / cos(lat)。
+// 不做这个修正的话，圈会随纬度变"小"：30°N 时 20km 圈只有 17.3km，45°N 只有 14.1km，
+// 地图上量出来的距离和标注不符。
+function buildCoverageCircleFeature(center, groundRadiusMeters, latitude, style) {
+    const cosLat = Math.max(Math.cos((latitude || 0) * Math.PI / 180), 0.01); // 防止极区除零
+    const projectedRadius = groundRadiusMeters / cosLat;
+    const feature = new ol.Feature({
+        geometry: new ol.geom.Circle(center, projectedRadius),
+        name: 'Coverage ' + groundRadiusMeters + 'm'
+    });
+    feature.setStyle(style);
+    return feature;
+}
+
+// 圈样式：半透明填充 + 虚线边界，边界清楚，两个圈叠加也不至于糊成一片
+function buildCoverageCircleStyle(fillColor, strokeColor) {
+    return new ol.style.Style({
+        fill: new ol.style.Fill({ color: fillColor }),
+        stroke: new ol.style.Stroke({ color: strokeColor, width: 1.5, lineDash: [6, 5] })
+    });
+}
+
 function updateMapLocation(latitude, longitude, mountName = null, isInitialMarking = false) {
     if (!currentMap) return;
     
@@ -949,49 +1027,43 @@ function updateMapLocation(latitude, longitude, mountName = null, isInitialMarki
             geometry: new ol.geom.Point(center),
             name: 'Base Station Location'
         });
-        
-        markerFeature.setStyle(new ol.style.Style({
-            image: new ol.style.Icon({
-                src: 'data:image/svg+xml;base64,' + btoa(`
-                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-                        <defs>
-                            <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-                                <feDropShadow dx="1.5" dy="2.5" stdDeviation="2" flood-color="rgba(0,0,0,0.35)"/>
-                            </filter>
-                            <linearGradient id="towerGrad" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stop-color="#42A5F5"/>
-                                <stop offset="100%" stop-color="#1565C0"/>
-                            </linearGradient>
-                        </defs>
-                        <!-- 底座 -->
-                        <rect x="13" y="32" width="14" height="3" rx="1.5" fill="#0D47A1"/>
-                        <rect x="15" y="28" width="10" height="4" rx="1.5" fill="#0D47A1"/>
-                        <!-- 塔身 -->
-                        <path d="M20 5 L24 28 L16 28 Z" fill="url(#towerGrad)" stroke="#0D47A1" stroke-width="1"/>
-                        <!-- 顶部圆点（信号源） -->
-                        <circle cx="20" cy="5" r="4" fill="#FFC107" stroke="#0D47A1" stroke-width="1.2" filter="url(#shadow)"/>
-                        <!-- 信号波纹 -->
-                        <path d="M20 2 C24 -2 32 -2 34 4" fill="none" stroke="#FF7043" stroke-width="1.6" stroke-linecap="round"/>
-                        <path d="M20 3 C25 -4 36 -4 39 3" fill="none" stroke="#FF7043" stroke-width="1.4" stroke-linecap="round" opacity="0.6"/>
-                        <!-- 横梁 -->
-                        <rect x="14" y="18" width="12" height="1.8" rx="0.9" fill="#0D47A1"/>
-                        <rect x="15" y="12" width="10" height="1.6" rx="0.8" fill="#0D47A1"/>
-                    </svg>
-                `),
-                scale: 1,
-                anchor: [0.5, 1.0]
-            })
-        }));
-        
-        source.addFeature(markerFeature);
-        
-        
+
+        // 图标用同源静态 SVG，不再用 btoa() 内联。
+        // 教训：btoa 只能处理 Latin-1，SVG 里只要出现一个中文字符（例如中文注释）就会
+        // 抛 InvalidCharacterError，导致整个 updateMapLocation 中断 —— 地图会平移过去，
+        // 但标记、站名、覆盖圈全部不绘制，表现就是「不自动标记」。
+        markerFeature.setStyle(stationIconOk === false ? buildStationDotStyle() : buildStationIconStyle());
+
+        // 首次绘制时异步探测图标是否可加载，失败则把当前标记换成圆点，
+        // 避免图标 404 / 被拦截时地图上「什么都没有」。
+        if (stationIconOk === null) {
+            probeStationIcon(ok => {
+                if (!ok) {
+                    try { markerFeature.setStyle(buildStationDotStyle()); } catch (e) { /* 地图已销毁 */ }
+                }
+            });
+        }
+
+        // ---------- 覆盖范围圈 ----------
+        // 顺序很重要：同一 Vector 层内按 feature 添加顺序渲染，后加的压在上层。
+        // 原来圈放在图标之后添加，半透明填充整个盖在图标和站名上，图标看着发灰。
+        // 现在先大圈后小圈，图标留到最后加，保证浮在最上层。
+        source.addFeature(buildCoverageCircleFeature(
+            center, 50000, displayLat,
+            buildCoverageCircleStyle('rgba(66, 165, 245, 0.12)', 'rgba(66, 165, 245, 0.55)')
+        ));
+        source.addFeature(buildCoverageCircleFeature(
+            center, 20000, displayLat,
+            buildCoverageCircleStyle('rgba(21, 101, 192, 0.16)', 'rgba(21, 101, 192, 0.60)')
+        ));
+
+        // ---------- 站名 ----------
         if (mountName) {
             const textFeature = new ol.Feature({
                 geometry: new ol.geom.Point(center),
                 name: 'Mount Name Label'
             });
-            
+
             textFeature.setStyle(new ol.style.Style({
                 text: new ol.style.Text({
                     text: mountName,
@@ -1008,35 +1080,12 @@ function updateMapLocation(latitude, longitude, mountName = null, isInitialMarki
                     textBaseline: 'bottom'
                 })
             }));
-            
+
             source.addFeature(textFeature);
         }
-        
-        
-        const circle20km = new ol.Feature({
-            geometry: new ol.geom.Circle(center, 20000)
-        });
-        
-        circle20km.setStyle(new ol.style.Style({
-            fill: new ol.style.Fill({
-                color: 'rgba(21, 101, 192, 0.15)'
-            })
-        }));
-        
-        source.addFeature(circle20km);
-        
-        
-        const circle50km = new ol.Feature({
-            geometry: new ol.geom.Circle(center, 50000)
-        });
-        
-        circle50km.setStyle(new ol.style.Style({
-            fill: new ol.style.Fill({
-                color: 'rgba(66, 165, 245, 0.2)'
-            })
-        }));
-        
-        source.addFeature(circle50km);
+
+        // ---------- 站点图标（最后加，位于最上层） ----------
+        source.addFeature(markerFeature);
     }
 }
 

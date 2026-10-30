@@ -4,7 +4,7 @@
 services:
   ntrip-caster:
     # 生产环境配置
-    image: ntripcaster:2.3.3
+    image: ntripcaster:2.3.4
     # 使用预构建镜像：本文件不覆盖基础 compose 的 build 段，
     # 需要构建时请用 docker-compose.yml（或 build 后打 tag）
     environment:
