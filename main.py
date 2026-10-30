@@ -92,13 +92,41 @@ def check_environment():
     import socket
     
     def check_port(port, name):
+        """检查端口能否用于监听。
+
+        必须先设置 SO_REUSEADDR 再 bind：服务停止后，(本地IP, 端口) 上往往还
+        残留着上一轮连接的 TIME_WAIT 状态。Web 端口尤其明显——浏览器 socket.io
+        轮询会持续建立/关闭短连接，一次运行下来能累积几百个 TIME_WAIT。
+        没有 SO_REUSEADDR 的 bind 会直接 EADDRINUSE，于是重启时误报「端口已被占用」。
+
+        真正的监听端也是这么做的（src/ntrip.py 的 NTRIP 监听、Werkzeug 的
+        BaseWSGIServer 都设置了该选项），这里保持一致，否则检查通过与否
+        和实际能不能 bind 就不是一回事了。
+
+        Windows 不设：那边 SO_REUSEADDR 语义不同，会允许抢占已被其他进程
+        绑定的端口，反而让检查失效。
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', port))
+            if os.name != 'nt':
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('', port))
             return True
-        except OSError:
-            logger.error(f"{name}端口 {port} 已被占用")
+        except OSError as e:
+            # bind 失败时再探一次：能连上才说明确实有进程在监听，提示更准确
+            listening = False
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=1):
+                    listening = True
+            except OSError:
+                pass
+            if listening:
+                logger.error(f"{name}端口 {port} 已被占用（有进程正在监听，请先停止该进程）")
+            else:
+                logger.error(f"{name}端口 {port} 不可用: {e}")
             return False
+        finally:
+            s.close()
     
     ports_ok = True
     ports_ok &= check_port(config.NTRIP_PORT, "NTRIP")

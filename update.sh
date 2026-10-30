@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# NTRIP Caster 一键无损更新脚本 v2.3.1
+# NTRIP Caster 一键无损更新脚本 v2.3.2
 #
 # 功能：自动检测部署形态（源码+systemd / Docker），从可用源拉取最新版本，
 #       升级前先检查并停止正在运行的旧版本（systemd 服务 + 游离进程 + 端口），
@@ -31,7 +31,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_ok()    { echo -e "${CYAN}[OK]${NC} $1"; }
 
 # ==================== 常量 ====================
-SCRIPT_VERSION="2.3.1"
+SCRIPT_VERSION="2.3.2"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
@@ -567,6 +567,41 @@ print_port_detail() {
     fi
 }
 
+# 统计某端口的 TCP 连接状态数量
+#   用法: count_tcp_state <端口> <listen|time-wait|established>
+# 作用：区分「真的有进程在监听」和「只剩 TIME_WAIT 残留」。
+#   TIME_WAIT 是上一轮连接正常关闭后的收尾状态，不响应新连接、也不持有监听，
+#   带 SO_REUSEADDR 的 bind 完全不受影响；只有不带该选项的旧代码才会误判成「端口被占用」。
+# 优先 ss，没有 ss 就直接读 /proc/net/tcp（不依赖 iproute2）。
+count_tcp_state() {
+    local port="$1" state="$2" n=""
+
+    if command -v ss >/dev/null 2>&1; then
+        n=$(ss -tanH "state $state" "( sport = :$port )" 2>/dev/null | wc -l)
+        n=$(echo "$n" | tr -d '[:space:]')
+        [ -n "$n" ] && { echo "$n"; return 0; }
+    fi
+
+    local code=""
+    case "$state" in
+        established) code="01" ;;
+        time-wait)   code="06" ;;
+        listen)      code="0A" ;;
+        *)           echo "0"; return 0 ;;
+    esac
+
+    [ -r /proc/net/tcp ] || { echo "0"; return 0; }
+    local hexport
+    hexport=$(printf '%04X' "$port" 2>/dev/null) || { echo "0"; return 0; }
+    awk -v c="$code" -v p="$hexport" '
+        NR > 1 {
+            n = split($2, a, ":")
+            if (n == 2 && a[2] == p && $4 == c) cnt++
+        }
+        END { print cnt + 0 }
+    ' /proc/net/tcp 2>/dev/null
+}
+
 # 列出所有仍被占用的端口（输出的每一项形如 "5757:12345"，无占用则为空）
 busy_ports() {
     local p h out=""
@@ -644,6 +679,26 @@ health_check() {
         fi
 
         sleep 2
+    done
+    return 1
+}
+
+# 等待端口的 TIME_WAIT 残留消退（无监听进程时才需要）。
+# 用途：给「旧代码」兜底。2.3.1 之前的 main.py 端口检查没设 SO_REUSEADDR，
+# 会把 TIME_WAIT 误判成「端口被占用」然后 sys.exit(1)；新版本已修复，正常不会走到这里。
+# 触发条件严格限定为「端口无监听者 + 存在 TIME_WAIT」，因此不会掩盖真正起不来的问题。
+wait_time_wait_drain() {
+    local left="${1:-70}" p tw busy
+    while [ "${left:-0}" -gt 0 ]; do
+        busy=0
+        for p in $(get_ntrip_port) $(get_web_port); do
+            [ -z "$p" ] && continue
+            tw=$(count_tcp_state "$p" time-wait)
+            [ "${tw:-0}" -gt 0 ] 2>/dev/null && busy=1
+        done
+        [ "$busy" -eq 0 ] && return 0
+        sleep 2
+        left=$((left - 2))
     done
     return 1
 }
@@ -948,16 +1003,25 @@ print_diagnostics() {
         tail -12 "$LOG_DIR/errors.log" 2>/dev/null | sed 's/^/    /'
     fi
 
-    local p holder
+    local p holder ls tw
     for p in $(get_ntrip_port) $(get_web_port); do
         [ -z "$p" ] && continue
+        ls=$(count_tcp_state "$p" listen)
+        tw=$(count_tcp_state "$p" time-wait)
+        echo ""
         if port_in_use "$p"; then
             holder=$(port_holder "$p")
-            echo ""
-            echo "  [端口 $p 被占用，进程 PID: ${holder:-未知}]"
+            echo "  [端口 $p 被占用，进程 PID: ${holder:-未知}]  LISTEN=$ls  TIME_WAIT=$tw"
             print_port_detail "$p"
             if [ -n "$holder" ]; then
                 ps -fp "$holder" 2>/dev/null | tail -1 | sed 's/^/      /'
+            fi
+        else
+            echo "  [端口 $p 无监听进程]  LISTEN=$ls  TIME_WAIT=$tw"
+            if [ "${tw:-0}" -gt 0 ] 2>/dev/null; then
+                echo "      TIME_WAIT 是上一轮连接关闭后的收尾状态，不占监听端口，"
+                echo "      带 SO_REUSEADDR 的程序（2.3.1 起 main.py 已修复）可直接启动。"
+                echo "      若程序仍报「端口已被占用」，说明运行的是旧代码。"
             fi
         fi
     done
@@ -1304,6 +1368,29 @@ if bad:
 
     # 健康检查
     if ! health_check; then
+        # 先分清「真的起不来」还是「旧代码被 TIME_WAIT 挡住」：
+        # 端口没有监听者、但存在 TIME_WAIT 残留时，等它消退再试一次，
+        # 避免一次本可成功的更新被误判并回滚。
+        local _tw_pending=0 _p _tw
+        for _p in $(get_ntrip_port) $(get_web_port); do
+            [ -z "$_p" ] && continue
+            if ! port_in_use "$_p"; then
+                _tw=$(count_tcp_state "$_p" time-wait)
+                [ "${_tw:-0}" -gt 0 ] 2>/dev/null && _tw_pending=1
+            fi
+        done
+
+        if [ "$_tw_pending" -eq 1 ]; then
+            log_warn "端口无监听进程，但存在 TIME_WAIT 残留（旧代码会误判为被占用）"
+            log_info "等待残留连接消退后重试启动（最多 70 秒）..."
+            wait_time_wait_drain 70 || true
+            start_service
+            if health_check; then
+                log_ok "服务已正常运行（TIME_WAIT 消退后重试成功）"
+                return 0
+            fi
+        fi
+
         log_error "服务重启后未正常运行"
         print_diagnostics
         do_rollback

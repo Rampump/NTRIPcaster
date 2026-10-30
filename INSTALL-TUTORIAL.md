@@ -1,6 +1,6 @@
 # NTRIP Caster Linux 系统安装教程
 
-在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.1，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
+在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.2，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
 
 ## 目录
 - [系统要求](#系统要求)
@@ -287,7 +287,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.1
+version = 2.3.2
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -952,6 +952,7 @@ sudo ufw delete allow 5757/tcp
 
 ## 更新日志
 
+- **v2.3.2**: 修复重启时误报「端口已被占用」——端口检查补上 SO_REUSEADDR，不再把 TIME_WAIT 残留误判为占用；一键更新脚本增加 TCP 状态诊断，并在 TIME_WAIT 消退后自动重试启动
 - **v2.3.1**: 修复一键更新脚本部署形态检测误判（pipefail 下 grep -q 触发 SIGPIPE）；STR 表按钮改为显示站点名并高亮选中；地图标记改为信号塔图标；健康检查支持自定义 Web 端口
 - **v2.3.0**: 支持更多 Linux 发行版
 - **v2.1.8**: 性能优化和安全增强
@@ -959,7 +960,7 @@ sudo ufw delete allow 5757/tcp
 
 ---
 
-**版本信息：** NTRIP Caster v2.3.1  
+**版本信息：** NTRIP Caster v2.3.2  
 **更新时间：** 2024年12月  
 **作者：** 2RTK Team  
 **许可证：** Apache 2.0

@@ -1,5 +1,5 @@
 #!/bin/bash
-# NTRIP Caster Docker部署脚本 v2.3.1
+# NTRIP Caster Docker部署脚本 v2.3.2
 # 支持开发、测试、生产环境的完整部署解决方案
 
 set -euo pipefail
@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 # 配置变量
 IMAGE_NAME="ntripcaster"
-IMAGE_TAG="2.3.1"
+IMAGE_TAG="2.3.2"
 CONTAINER_NAME="ntrip-caster"
 NETWORK_NAME="ntrip-network"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,7 +62,7 @@ show_banner() {
     ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
 EOF
     echo -e "${NC}"
-    echo -e "${GREEN}    NTRIP Caster Docker 部署脚本 v2.3.1${NC}"
+    echo -e "${GREEN}    NTRIP Caster Docker 部署脚本 v2.3.2${NC}"
     echo -e "${BLUE}    环境: ${ENVIRONMENT} | 配置文件: ${COMPOSE_FILES}${NC}"
     echo
 }
@@ -491,7 +491,7 @@ view_status() {
 
 # 显示帮助信息
 show_help() {
-    echo "NTRIP Caster Docker部署脚本 v2.3.1"
+    echo "NTRIP Caster Docker部署脚本 v2.3.2"
     echo
     echo "用法: $0 [选项] [命令] [参数]"
     echo
