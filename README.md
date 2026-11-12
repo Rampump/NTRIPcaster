@@ -1,4 +1,4 @@
-# 2RTK NTRIP Caster v2.3.4
+# 2RTK NTRIP Caster v2.3.6
 
 **Language / 语言选择:**
 - [English](#) (Current)
@@ -279,6 +279,73 @@ password = admin123            # Administrator password (change in production)
   password). Run `cp config.ini.example config.ini` on first deploy.
 - Behind a reverse proxy set `[security] trust_proxy_headers = true`; with HTTPS also
   enable `session_cookie_secure`.
+
+### Demo Mode (public test instances)
+
+When you expose the caster to the internet for people to try out, the risk is that a
+visitor edits or deletes somebody else's data. Add one line to `config.ini`:
+
+```ini
+[security]
+demo_mode = true
+```
+
+(or set the env var `DEMO_MODE=1`, which is easier with Docker).
+
+| Operation | Normal | Demo mode |
+|---|---|---|
+| View users / mounts / live data | ✅ | ✅ |
+| Add users, add mounts | ✅ | ✅ |
+| Edit / delete users, mounts | ✅ | ❌ 403 |
+| Change admin password, restart | ✅ | ❌ 403 |
+| Start / stop RTCM parsing | ✅ | ✅ (in-memory viewer only) |
+
+- The backend is **fail-closed**: everything that is not explicitly whitelisted returns
+  403, so future write endpoints are safe by default. The UI also hides the entry points,
+  but calling the API directly is blocked too.
+- Only the default admin (`admin / admin123`) can sign in while demo mode is on.
+- Startup self-check warns if the admin password is not the default — demo mode cannot
+  change it, so a modified password would lock everyone out. Use a fresh database.
+- **Never enable demo mode on an instance that carries real users.**
+
+Long-running public instances should also prune data (60 days by default):
+
+```bash
+python3 scripts/demo_reset.py                 # dry run
+python3 scripts/demo_reset.py --apply --days 60
+```
+
+### Opening the data pages to anonymous visitors
+
+By default a signed-out visitor is sent to the login page. To publish
+"Overview / Live Data" to everyone (anonymous visitors can switch stations and start
+their own parsing):
+
+```ini
+[web]
+public_access = true
+```
+
+- Anonymous requests only reach the `/api/public/` namespace; user details, source IPs
+  and system logs are never included;
+- Anonymous visitors can start parsing (that is what feeds the satellite view). Abuse is
+  bounded by `max_web_parsers` and `parser_ip_rate_per_minute` — tune them for your box;
+- User management, mount management and settings still require signing in.
+
+### How RTCM parsing scales
+
+Live parsing threads are **reused per mount**: 10 visitors watching the same station
+share one thread, each holding its own subscription, and one visitor switching stations
+no longer interrupts the others. Tuning lives in `[web]`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `max_web_parsers` | 4 | Max mounts parsed at once; extra subscriptions get 429 |
+| `parser_client_ttl` | 45 | Heartbeat timeout (s) before a subscription is dropped |
+| `parser_grace_seconds` | 5 | Grace period after the last subscriber leaves |
+| `parser_ip_rate_per_minute` | 10 | Max parse starts per IP per minute |
+
+MSM parsing is CPU-bound; keep the limit at 4 or lower on a 2C2G box.
 
 ### Common Issue Diagnosis
 

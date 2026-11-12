@@ -1130,6 +1130,26 @@ textarea.form-control {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  /* 整行可点击：按钮与行是同一个动作，行上给出可点提示 */
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.str-row:hover {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
+}
+
+/* 该行对应的挂载点正在解析：边框转绿，与按钮的绿色状态呼应 */
+.str-row.is-active {
+  background: var(--success-soft);
+  border-color: var(--success);
+}
+
+.str-row.is-active:hover {
+  background: var(--success-soft);
+  border-color: var(--success);
 }
 
 .str-info-btn {
@@ -1864,4 +1884,40 @@ input.field-error {
   .page-header {
     align-items: flex-start;
   }
+}
+
+/* ------------------------------------------------------------------
+   演示模式（demo_mode）
+   黄色提示条 + 列表里「不可修改」的灰色占位，配色统一走 --warning
+   ------------------------------------------------------------------ */
+.demo-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 11px 14px;
+  border: 1px solid rgba(194, 118, 10, 0.28);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.demo-notice i {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+
+/* 弹窗内的提示条不需要底部外边距 */
+.modal-content .demo-notice {
+  margin-bottom: 14px;
+}
+
+.demo-readonly {
+  display: inline-block;
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
 }

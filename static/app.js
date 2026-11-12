@@ -10,6 +10,15 @@ const socket = io({
 let currentPage = 'dashboard';
 let connectionStatus = 'connecting';
 
+// 运行模式（由服务端模板直接注入，首帧就确定，不会闪出写入口）
+//   IS_AUTHED  : 是否已登录后台
+//   IS_DEMO    : 演示模式（只能新增，不能改删）
+//   API_BASE   : 匿名访客只能走 /api/public/，登录后走完整接口
+const IS_AUTHED = !!window.__LOGGED_IN__;
+const IS_DEMO = !!window.__DEMO_MODE__;
+const API_BASE = IS_AUTHED ? '/api' : '/api/public';
+function apiUrl(path) { return API_BASE + path; }
+
 // HTML 转义：所有来自服务端/上行的字符串（用户名、挂载点名、User-Agent、STR 内容）
 // 在拼进 innerHTML 之前都必须经过这里，否则构成存储型 XSS。
 function escapeHtml(value) {
@@ -22,11 +31,25 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+// 演示模式提示条：用户页 / 挂载点页 / 两个新增弹窗共用
+function demoNoticeHtml() {
+    if (!IS_DEMO) return '';
+    return `<div class="demo-notice" role="note">
+        <i class="fas fa-info-circle" aria-hidden="true"></i>
+        <span>${escapeHtml(t('demo.notice'))}</span>
+    </div>`;
+}
+
 // WebSocket connection status monitoring
 socket.on('connect', function() {
     connectionStatus = 'connected';
     // console.log('WebSocket connection established');
     updateConnectionStatus();
+    // 断线重连后 Socket.IO 房间已经丢了，必须重新加入当前挂载点房间，
+    // 否则界面看着在解析、却一条数据都收不到
+    if (typeof activeParsingMount !== 'undefined' && activeParsingMount) {
+        socket.emit('rtcm_subscribe', { mount_name: activeParsingMount });
+    }
     // If currently on dashboard page, request system statistics
     if (currentPage === 'dashboard') {
         requestSystemStats();
@@ -105,23 +128,14 @@ function updateConnectionStatus() {
 
 // Page navigation
 function navigateTo(page) {
-    // Check pages that require login
+    // 管理页需要登录。登录态由服务端模板注入，不必先打一次 /api/users 再决定，
+    // 少一次往返，也不会在会话过期时先渲染出一个空页面。
     const requireLoginPages = ['users', 'mounts', 'settings'];
-    if (requireLoginPages.includes(page)) {
-        // Check login status
-        checkLoginStatusForProtectedPage().then(isLoggedIn => {
-            if (!isLoggedIn) {
-                // Redirect to login page with target page parameter
-                window.location.href = `/login?redirect=${page}`;
-                return;
-            }
-            // Logged in, continue navigation
-            performNavigation(page);
-        });
-    } else {
-        // Navigate directly for pages that don't require login
-        performNavigation(page);
+    if (requireLoginPages.includes(page) && !IS_AUTHED) {
+        window.location.href = `/login?redirect=${page}`;
+        return;
     }
+    performNavigation(page);
 }
 
 // Execute actual page navigation
@@ -291,6 +305,7 @@ let currentSelectedMount = null;   // 用户最近点击的挂载点（仅用于
 let activeParsingMount = null;     // 后端确实在推送数据的挂载点（决定绿色）
 let parsingSyncTimer = null;       // 周期校验定时器
 let parsingSyncInFlight = false;   // 防止请求堆积
+let parsingSubscribeGuardUntil = 0; // 订阅请求发出后的保护窗口（毫秒时间戳）
 
 function addInfoButtonsToSTRItems() {
     const infoButtons = document.querySelectorAll('.str-info-btn');
@@ -308,53 +323,107 @@ function addInfoButtonsToSTRItems() {
         
         button.title = t('monitor.infoTitle', { name: mountName });
         
-        button.addEventListener('click', () => {
-            // 记录当前选中的挂载点并高亮对应按钮
-            currentSelectedMount = mountName;
-            // 乐观高亮：点击立刻给反馈，随后由后端状态校正（启动失败会自动撤销）
-            activeParsingMount = mountName;
-            applyMountButtonHighlight();
-            
-            // Start RTCM parsing and update container content
-            startRTCMParsing(mountName);
+        button.addEventListener('click', (event) => {
+            // 按钮已处理，阻止冒泡到行上重复触发
+            event.stopPropagation();
+            activateMountParsing(mountName);
         });
         
         // Mark as event bound
         button.setAttribute('data-event-bound', 'true');
     });
     
+    // 整行点击（事件委托，容器重渲染后依然有效）
+    bindSTRRowActivation();
+    
     // 重渲染后恢复选中态（避免 socket 推送重绘导致绿字丢失）
     applyMountButtonHighlight();
 }
 
-// 高亮「后端正在解析」的挂载点按钮：选中的变绿（--success），其余恢复原色
+// 统一的「开始解析某个挂载点」入口：按钮点击与整行点击都走这里
+function activateMountParsing(mountName) {
+    if (!mountName) return;
+    // 同一个挂载点已经在解析：不重复调 start，避免解析器被反复销毁重建
+    if (activeParsingMount === mountName) return;
+
+    currentSelectedMount = mountName;
+    // 乐观高亮：点击立刻给反馈，随后由后端状态校正（启动失败会自动撤销）。
+    // 保护窗口：订阅请求还没回来时，5 秒轮询可能先拿到「未解析」，会把刚点亮的高亮清掉，
+    // 造成「点了没反应」的错觉。
+    activeParsingMount = mountName;
+    parsingSubscribeGuardUntil = Date.now() + 3000;
+    applyMountButtonHighlight();
+
+    startRTCMParsing(mountName);
+}
+
+// STR 表整行可点击。监听挂在 #str-data 容器上做事件委托：
+// 该容器每次收到 socket 推送都会被 innerHTML 整块覆盖，绑在行上的监听会丢，
+// 绑在容器上就不会。
+function bindSTRRowActivation() {
+    const container = document.getElementById('str-data');
+    if (!container || container.dataset.rowActivationBound === 'true') return;
+    container.dataset.rowActivationBound = 'true';
+
+    let wasSelecting = false;
+
+    // 复制 STR 报文时是「拖选 → 松开」，松开同样会触发 click。
+    // mousedown 时选区还没被浏览器清掉，先记下「本次按下前是否已有选区」，有就认作复制。
+    container.addEventListener('mousedown', () => {
+        const selection = window.getSelection ? window.getSelection() : null;
+        wasSelecting = !!(selection && selection.toString().length > 0);
+    });
+
+    container.addEventListener('click', (event) => {
+        const selecting = wasSelecting;
+        wasSelecting = false;
+        if (selecting) return;
+        // 按钮有自己的处理逻辑（内部已 stopPropagation），这里再兜一层
+        if (event.target.closest('.str-info-btn')) return;
+        const row = event.target.closest('.str-row');
+        if (!row) return;
+        activateMountParsing(row.getAttribute('data-mount'));
+    });
+
+    // 键盘与读屏用户仍然走行内的 .str-info-btn：它是原生按钮，
+    // 触发的是同一个 activateMountParsing，功能和整行点击完全等价。
+}
+
+// 高亮「后端正在解析」的挂载点：选中的按钮变绿（--success），所在行同步加绿边
 function applyMountButtonHighlight() {
     const infoButtons = document.querySelectorAll('.str-info-btn');
     infoButtons.forEach(button => {
         const mountName = button.getAttribute('data-mount');
-        if (mountName && mountName === activeParsingMount) {
-            button.classList.add('active');
-        } else {
-            button.classList.remove('active');
-        }
+        const isActive = !!(mountName && mountName === activeParsingMount);
+        button.classList.toggle('active', isActive);
+        const row = button.closest('.str-row');
+        if (row) row.classList.toggle('is-active', isActive);
     });
 }
 
-// 从后端同步「正在解析」的挂载点并刷新按钮颜色。
-// 这是绿色的唯一依据：后端 current_web_mount 为空，说明解析已停，按钮必须复原色。
-// 覆盖的时机包括：刷新页面、后端因 WebSocket 断开自动清理、其他页面/用户切换挂载点。
+// 从后端同步「我正在解析」的挂载点并刷新按钮颜色。
+// 这是绿色的唯一依据：后端返回的 current_web_mount 现在是「本客户端」的
+// 挂载点（按 cid 区分），别人切站不会再把自己的按钮点亮。
+// 覆盖的时机包括：刷新页面、后台因源站离线自动停止、心跳超时被回收。
 function syncParsingHighlight() {
     if (parsingSyncInFlight) return Promise.resolve();
     parsingSyncInFlight = true;
-    return fetch('/api/mount/rtcm-parse/status')
-        .then(response => response.json())
+    return fetch(apiUrl('/mount/rtcm-parse/status'))
+        .then(response => response.ok ? response.json() : null)
         .then(res => {
             if (!res || !res.success || !res.status) return;
             const current = res.status.current_web_mount || null;
+            // 订阅请求还在飞：别用旧状态把乐观高亮清掉
+            if (!current && Date.now() < parsingSubscribeGuardUntil) return;
             if (current !== activeParsingMount) {
                 activeParsingMount = current;
                 currentSelectedMount = current;
                 applyMountButtonHighlight();
+                if (current) {
+                    startParsingHeartbeat(current);
+                } else {
+                    stopParsingHeartbeat();
+                }
             }
         })
         .catch(() => {})
@@ -375,17 +444,44 @@ function stopParsingSync() {
     }
 }
 
-// 离开监控页：通知后端停止解析，并立即清除高亮。
-// 不做这一步就会出现「后台已经停了、按钮还绿着」的错位；
-// stop 接口本身是全局停止（与 WebSocket 断开时的清理逻辑一致）。
+// 心跳：告诉后端「我还在看这个站」，避免长时间无操作被巡检当成已离开。
+// 后端 45 秒收不到心跳就退订；这里 15 秒发一次，留足重试余量。
+let parsingHeartbeatTimer = null;
+
+function startParsingHeartbeat(mountName) {
+    stopParsingHeartbeat();
+    parsingHeartbeatTimer = setInterval(() => {
+        // 后台标签页不发心跳：用户切走了就不该继续占着解析线程
+        if (document.hidden) return;
+        fetch(apiUrl('/mount/rtcm-parse/heartbeat'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mount_name: mountName })
+        }).catch(() => {});
+    }, 15000);
+}
+
+function stopParsingHeartbeat() {
+    if (parsingHeartbeatTimer) {
+        clearInterval(parsingHeartbeatTimer);
+        parsingHeartbeatTimer = null;
+    }
+}
+
+// 离开监控页：退订并清除高亮。
+// 注意退订只摘掉「自己」那条订阅边，不会像改造前那样把所有人的解析停掉。
 function stopParsingOnLeave() {
     stopParsingSync();
+    stopParsingHeartbeat();
     const had = activeParsingMount;
     activeParsingMount = null;
     currentSelectedMount = null;
     applyMountButtonHighlight();
+    if (socket && socket.connected) {
+        socket.emit('rtcm_unsubscribe', {});
+    }
     if (!had) return;
-    fetch('/api/mount/rtcm-parse/stop', { method: 'POST' }).catch(() => {});
+    fetch(apiUrl('/mount/rtcm-parse/stop'), { method: 'POST' }).catch(() => {});
 }
 
 // Start RTCM parsing
@@ -401,88 +497,74 @@ let mapSwitched = false;
 let currentMountName = null;
 
 function startRTCMParsing(mountName) {
-    console.log(`[前端] 开始启动RTCM解析: ${mountName}`);
-    
-    // 
-    fetch('/api/mount/rtcm-parse/status')
-    .then(response => response.json())
-    .then(statusData => {
-        if (statusData.success) {
-            const status = statusData.status;
-            console.log(`[前端] 当前解析器状态:`, status);
-            console.log(`[前端] 当前活跃Web挂载点: ${status.current_web_mount || '无'}`);
-            console.log(`[前端] Web解析线程数: ${status.web_parsers}, STR解析线程数: ${status.str_parsers}`);
-            
-            if (status.current_web_mount && status.current_web_mount !== mountName) {
-                console.log(`[前端] 检测到前一个活跃挂载点: ${status.current_web_mount}，将被自动清理`);
-            }
-        }
-    })
-    .catch(error => {
-        console.warn(`[前端] 获取解析器状态失败:`, error);
-    });
-    
     // Reset marking status for new mount point
     isFirstMarking = true;
     mapSwitched = false;
     lastPosition = { latitude: null, longitude: null };
     mapCenter = { latitude: null, longitude: null };
-    
+
     // Update base station information container
     updateStationInfo(mountName);
-    
+
     // Initialize satellite visualization
     initializeSatelliteVisualization();
-    
-    // Call backend API to start RTCM parsing
-    console.log(`[前端] 调用后端API启动RTCM解析: ${mountName}`);
-    fetch(`/api/mount/${mountName}/rtcm-parse/start`, {
+
+    // 后端这里是「订阅」而不是「启动全局解析线程」：
+    // 同一个站多人看只跑一个线程，重复订阅是幂等的，也不会把别人打断。
+    fetch(apiUrl(`/mount/${encodeURIComponent(mountName)}/rtcm-parse/start`), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         }
     })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            console.log(`[前端] RTCM解析启动成功: ${mountName}`);
-            // 启动成功后用后端真实状态校正按钮高亮（避免乐观高亮与实际不符）
-            setTimeout(syncParsingHighlight, 600);
-            // 
-            setTimeout(() => {
-                fetch('/api/mount/rtcm-parse/status')
-                .then(response => response.json())
-                .then(statusData => {
-                    if (statusData.success) {
-                        console.log(`[前端] 启动后解析器状态:`, statusData.status);
-                    }
-                })
-                .catch(error => console.warn(`[前端] 获取启动后状态失败:`, error));
-            }, 1000);
-        } else {
-            console.error(`[前端] RTCM解析启动失败: ${data.error || 'Unknown error'}`);
-            // 启动失败（例如站点离线）：撤销乐观高亮，避免按钮绿着但后台没在解析
-            if (activeParsingMount === mountName) {
-                activeParsingMount = null;
-                currentSelectedMount = null;
-                applyMountButtonHighlight();
+    .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        return { ok: response.ok, status: response.status, data };
+    })
+    .then(({ ok, status, data }) => {
+        if (ok && data.success) {
+            activeParsingMount = mountName;
+            currentSelectedMount = mountName;
+            applyMountButtonHighlight();
+            // 数据面：加入该挂载点的 Socket.IO 房间。
+            // 不 join 的话后端解析在跑，但数据只会发给「已订阅房间」的客户端。
+            if (socket && socket.connected) {
+                socket.emit('rtcm_subscribe', { mount_name: mountName });
             }
+            startParsingHeartbeat(mountName);
+            return;
+        }
+
+        // 启动失败（站点离线 / 并发上限 / 限流）：撤销乐观高亮，避免绿着但没数据
+        if (activeParsingMount === mountName) {
+            activeParsingMount = null;
+            currentSelectedMount = null;
+            applyMountButtonHighlight();
+        }
+        stopParsingHeartbeat();
+
+        if (status === 429) {
+            showAlert(t('monitor.rtcmBusy'), 'warning');
+        } else if (data.code === 'mount_offline') {
+            showAlert(t('monitor.rtcmOffline', { name: mountName }), 'warning');
+        } else {
             showAlert(t('monitor.rtcmStartFailed', {
                 error: localizeServerMessage(data.error) || t('err.unknown')
             }), 'error');
         }
     })
     .catch(error => {
-        console.error('[前端] 调用RTCM解析API失败:', error);
         // 请求失败：同样撤销乐观高亮
         if (activeParsingMount === mountName) {
             activeParsingMount = null;
             currentSelectedMount = null;
             applyMountButtonHighlight();
         }
+        stopParsingHeartbeat();
         showAlert(t('monitor.rtcmApiFailed'), 'error');
     });
 }
+
 
 // Calculate distance between two points (meters)
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -912,9 +994,10 @@ function wgs84ToGcj02(lng, lat) {
 }
 
 // ==================== 基准站标记图标 ====================
-// 图标是同源静态 SVG（static/img/basestation-tower.svg）。
+// 图标是同源静态 SVG（static/img/station-marker.svg）：蓝底白环圆盘 + 白色信号塔。
 // 这里维护一个「是否可用」的判定，供标记样式降级使用。
-const STATION_ICON_SRC = '/static/img/basestation-tower.svg';
+const STATION_ICON_SRC = '/static/img/station-marker.svg';
+const STATION_ICON_SIZE = 48;
 let stationIconOk = null;   // null=尚未探测，true=可加载，false=不可用
 
 function probeStationIcon(callback) {
@@ -945,10 +1028,10 @@ function buildStationIconStyle() {
         image: new ol.style.Icon({
             src: STATION_ICON_SRC,
             // SVG 自带 width/height，这里显式声明尺寸，避免部分浏览器读不到内在尺寸
-            imgSize: [40, 40],
+            imgSize: [STATION_ICON_SIZE, STATION_ICON_SIZE],
             scale: 1,
-            // 塔底对准站点坐标，而不是图标中心
-            anchor: [0.5, 1.0]
+            // 圆盘徽标是同心圆，以中心对准站点坐标
+            anchor: [0.5, 0.5]
         })
     });
 }
@@ -1049,12 +1132,12 @@ function updateMapLocation(latitude, longitude, mountName = null, isInitialMarki
         // 原来圈放在图标之后添加，半透明填充整个盖在图标和站名上，图标看着发灰。
         // 现在先大圈后小圈，图标留到最后加，保证浮在最上层。
         source.addFeature(buildCoverageCircleFeature(
-            center, 50000, displayLat,
-            buildCoverageCircleStyle('rgba(66, 165, 245, 0.12)', 'rgba(66, 165, 245, 0.55)')
+            center, 20000, displayLat,
+            buildCoverageCircleStyle('rgba(66, 165, 245, 0.10)', 'rgba(66, 165, 245, 0.50)')
         ));
         source.addFeature(buildCoverageCircleFeature(
-            center, 20000, displayLat,
-            buildCoverageCircleStyle('rgba(21, 101, 192, 0.16)', 'rgba(21, 101, 192, 0.60)')
+            center, 10000, displayLat,
+            buildCoverageCircleStyle('rgba(21, 101, 192, 0.15)', 'rgba(21, 101, 192, 0.58)')
         ));
 
         // ---------- 站名 ----------
@@ -1075,7 +1158,7 @@ function updateMapLocation(latitude, longitude, mountName = null, isInitialMarki
                         color: '#FFFFFF',
                         width: 3
                     }),
-                    offsetY: -25,
+                    offsetY: -30,
                     textAlign: 'center',
                     textBaseline: 'bottom'
                 })
@@ -1658,6 +1741,7 @@ function getUsersContent(users) {
             <h3>${L('users.title')}</h3>
             <button onclick="showAddUserForm()" class="btn btn-primary">${L('users.add')}</button>
         </div>
+        ${demoNoticeHtml()}
         <div class="list-toolbar">
             <div class="list-search">
                 <i class="fas fa-search search-icon" aria-hidden="true"></i>
@@ -1728,8 +1812,10 @@ function userRowRenderer(user) {
             <td><span${connTitle} style="cursor:default">${escapeHtml(connCount)}</span></td>
             <td><span${ipTitle} style="cursor:default">${escapeHtml(user.connect_time || '-')}</span></td>
             <td>
-                <button class="btn btn-primary btn-sm edit-user-btn" data-username="${escapeHtml(user.username)}">${L('common.edit')}</button>
-                <button class="btn btn-danger btn-sm delete-user-btn" data-username="${escapeHtml(user.username)}">${L('common.delete')}</button>
+                ${IS_DEMO
+                    ? `<span class="demo-readonly">${L('demo.readonlyCell')}</span>`
+                    : `<button class="btn btn-primary btn-sm edit-user-btn" data-username="${escapeHtml(user.username)}">${L('common.edit')}</button>
+                       <button class="btn btn-danger btn-sm delete-user-btn" data-username="${escapeHtml(user.username)}">${L('common.delete')}</button>`}
             </td>
         </tr>
     `;
@@ -1745,6 +1831,7 @@ function getMountsContent(mounts) {
             <h3>${L('mounts.title')}</h3>
             <button onclick="showAddMountForm()" class="btn btn-primary">${L('mounts.add')}</button>
         </div>
+        ${demoNoticeHtml()}
         <div class="list-toolbar">
             <div class="list-search">
                 <i class="fas fa-search search-icon" aria-hidden="true"></i>
@@ -1822,8 +1909,10 @@ function mountRowRenderer(mount) {
             <td>${escapeHtml(mount.username || t('common.unspecified'))}</td>
             <td>${escapeHtml(mount.description || '-')}</td>
             <td>
-                <button onclick="editMount('${escapeHtml(mount.mount)}')" class="btn btn-primary btn-sm">${L('common.edit')}</button>
-                <button onclick="deleteMount('${escapeHtml(mount.mount)}')" class="btn btn-danger btn-sm">${L('common.delete')}</button>
+                ${IS_DEMO
+                    ? `<span class="demo-readonly">${L('demo.readonlyCell')}</span>`
+                    : `<button onclick="editMount('${escapeHtml(mount.mount)}')" class="btn btn-primary btn-sm">${L('common.edit')}</button>
+                       <button onclick="deleteMount('${escapeHtml(mount.mount)}')" class="btn btn-danger btn-sm">${L('common.delete')}</button>`}
             </td>
         </tr>
     `;
@@ -1917,6 +2006,29 @@ function getMonitorContent() {
 function getSettingsContent() {
     const L = (key) => escapeHtml(t(key));
     const P = (key) => escapeHtml(t(key)); // 占位符同 t()
+
+    // 演示模式：改密与重启都被后端 403 挡住，界面上不再渲染入口，
+    // 换成一段说明，避免用户点了才发现「操作失败」
+    if (IS_DEMO) {
+        return `
+        <div class="page-header">
+            <h3><i class="fas fa-sliders-h"></i> ${L('settings.title')}</h3>
+        </div>
+        <div class="settings-container">
+            <section class="settings-section">
+                <h4><i class="fas fa-flask"></i> ${L('demo.settingsTitle')}</h4>
+                <div class="field-hint" style="margin-bottom: 12px;">
+                    ${L('demo.settingsHint')}
+                </div>
+                <div class="demo-notice" role="note">
+                    <i class="fas fa-info-circle" aria-hidden="true"></i>
+                    <span>${L('demo.notice')}</span>
+                </div>
+            </section>
+        </div>
+        `;
+    }
+
     return `
         <div class="page-header">
             <h3><i class="fas fa-sliders-h"></i> ${L('settings.title')}</h3>
@@ -1988,6 +2100,40 @@ socket.on('system_stats_update', function(data) {
     }
 });
 
+// 回到前台时补齐订阅：后台标签被浏览器限流，心跳可能断了、房间也可能掉了。
+// 不做这一步，用户切走一会儿再回来就会看到「按钮灰了、数据也不动」。
+document.addEventListener('visibilitychange', function () {
+    if (document.hidden || !activeParsingMount) return;
+    const mount = activeParsingMount;
+    if (socket && socket.connected) {
+        socket.emit('rtcm_subscribe', { mount_name: mount });
+    }
+    startParsingHeartbeat(mount);
+    fetch(apiUrl('/mount/rtcm-parse/status'))
+        .then(r => r.ok ? r.json() : null)
+        .then(res => {
+            if (!res || !res.status) return;
+            if (res.status.current_web_mount === mount) return;
+            // 后端已经把这条订阅回收了：重新走一遍订阅流程
+            activeParsingMount = null;
+            currentSelectedMount = null;
+            applyMountButtonHighlight();
+            activateMountParsing(mount);
+        })
+        .catch(() => {});
+});
+
+// 后端被动停止解析（源站下线 / 线程被回收）：立刻复原界面，别让按钮继续绿着
+socket.on('rtcm_parse_stopped', function (data) {
+    const mount = data && data.mount_name;
+    if (mount && activeParsingMount && mount !== activeParsingMount) return;
+    activeParsingMount = null;
+    currentSelectedMount = null;
+    stopParsingHeartbeat();
+    applyMountButtonHighlight();
+    showAlert(t('monitor.rtcmStopped', { name: mount || '' }), 'warning');
+});
+
 // 调试RTCM 数据
 socket.on('rtcm_realtime_data', function(data) {
     // console.log('[前端接收] 收到RTCM实时数据:', data);
@@ -2022,14 +2168,14 @@ socket.on('rtcm_realtime_data', function(data) {
         return;
     }
 
-    // 收到推送就证明后端确实在解析这个挂载点（rtcm_realtime_data 只由 Web 解析
-    // 的 push_callback 发出）。若与当前高亮不一致，立即校正，不必等 5 秒轮询。
+    // 只处理「我正在看」的挂载点。
+    // 服务端已经按挂载点房间下发，这里再兜一层：旧消息、切站瞬间的竞态、
+    // 以及将来可能的房间配置错误，都不会把别的站的数据画到当前页面上。
+    // 改造前这里反过来——收到推送就把 activeParsingMount 改成推送来源，
+    // 于是别人切站会把自己的界面一起带走。
     const _pushMount = data.mount_name || data.mount;
-    if (_pushMount && _pushMount !== activeParsingMount) {
-        activeParsingMount = _pushMount;
-        currentSelectedMount = _pushMount;
-        applyMountButtonHighlight();
-    }
+    if (!activeParsingMount) return;
+    if (_pushMount && _pushMount !== activeParsingMount) return;
     
     try {
         switch (data.data_type) {
@@ -2335,7 +2481,8 @@ function requestSystemStats() {
 // （API）
 async function fetchSystemStats() {
     try {
-        const response = await fetch('/api/system/stats');
+        // 匿名访客走 /api/public/system/stats（只有聚合值），不会触发 401 跳登录页
+        const response = await fetch(apiUrl('/system/stats'));
         if (response.ok) {
             const stats = await response.json();
             updateSystemStats(stats);
@@ -2477,7 +2624,7 @@ function updateMonitorData() {
                 let strHtml = '';
                 Object.entries(window.strData).forEach(([mountName, strContent]) => {
                     strHtml += `
-                        <div class="str-row">
+                        <div class="str-row" data-mount="${escapeHtml(mountName)}" title="${escapeHtml(t('monitor.rowClickHint', { name: mountName }))}">
                             <button class="str-info-btn" data-mount="${escapeHtml(mountName)}">${escapeHtml(mountName)}</button>
                             <div class="str-content-wrapper">
                                 <div class="str-content-inline">${escapeHtml(strContent) || escapeHtml(t('monitor.noData'))}</div>
@@ -2755,6 +2902,7 @@ function showAddUserForm() {
         <div class="modal-overlay" id="userModal">
             <div class="modal-content">
                 <h4>${escapeHtml(t('users.addTitle'))}</h4>
+                ${demoNoticeHtml()}
                 <div class="form-group">
                     <label>${escapeHtml(t('users.col.username'))}</label>
                     <input class="form-control" type="text" id="newUsername" placeholder="${escapeHtml(t('ph.username'))}" maxlength="50"
@@ -2979,6 +3127,7 @@ async function showAddMountForm() {
         <div class="modal-overlay" id="mountModal">
             <div class="modal-content">
                 <h4>${escapeHtml(t('mounts.addTitle'))}</h4>
+                ${demoNoticeHtml()}
                 <div class="form-group">
                     <label>${escapeHtml(t('mounts.name'))}</label>
                     <input class="form-control" type="text" id="newMountName" placeholder="${escapeHtml(t('ph.mountName'))}" maxlength="50"

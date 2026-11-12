@@ -50,8 +50,16 @@
             'nav.settings': 'Settings',
             'nav.donate': 'Donate',
             'nav.logout': 'Sign out',
+            'nav.login': 'Sign in',
             'nav.main': 'Main navigation',
             'lang.label': 'Language',
+
+            /* 演示模式 */
+            'demo.notice': 'This is a test service: you may only add users and mounts, not edit or delete them. If you forget your password, simply create a new account.',
+            'demo.readonlyCell': 'Read-only in demo mode',
+            'demo.settingsTitle': 'Demo mode',
+            'demo.settingsHint': 'Read-only demo: you may only add users and mounts. Existing data cannot be edited or deleted, and changing the admin password or restarting the service is disabled.',
+            'demo.loginHint': 'Demo account: admin / admin123',
 
             /* 实时通道状态 */
             'rt.connecting': 'Connecting…',
@@ -75,6 +83,7 @@
             'login.submitting': 'Signing in…',
             'login.hint': 'Default credentials',
             'login.hintTail': '— change it in Settings before going live.',
+            'demo.loginHintTail': '— demo mode: the password cannot be changed here.',
             'login.redirect.users': 'User Management',
             'login.redirect.mounts': 'Mount Point Management',
             'login.redirect.settings': 'System Settings',
@@ -164,7 +173,7 @@
             'monitor.stationInfo': 'Base Station Information',
             'monitor.waitSelect': 'Waiting for selection',
             'monitor.selected': 'Selected',
-            'monitor.selectHint': 'Click a station button in the STR table to view its base station information',
+            'monitor.selectHint': 'Click any station row in the STR table to view its base station information',
             'monitor.stationLocation': 'Base Station Location',
             'monitor.waitLocation': 'Waiting for location data...',
             'monitor.satViz': 'Satellite Data Visualization',
@@ -177,8 +186,12 @@
             'monitor.noData': 'No data available',
             'monitor.rtcmStartFailed': 'Failed to start RTCM parsing: {error}',
             'monitor.rtcmApiFailed': 'Failed to call RTCM parsing API',
+            'monitor.rtcmBusy': 'The server is busy parsing other stations right now. Please try again in a moment.',
+            'monitor.rtcmOffline': 'Station {name} is offline, so it cannot be parsed.',
+            'monitor.rtcmStopped': 'Parsing of {name} has stopped: the station went offline or the session expired.',
             'monitor.rtcmParsing': 'Parsing RTCM data for {name}…',
             'monitor.infoTitle': 'View real-time RTCM parsing for {name}',
+            'monitor.rowClickHint': 'Click this row to parse RTCM data and locate {name} on the map',
 
             /* 基准站字段 */
             'station.mount': 'Mount Point:',
@@ -296,8 +309,16 @@
             'nav.settings': '设置',
             'nav.donate': '打赏',
             'nav.logout': '退出登录',
+            'nav.login': '登录',
             'nav.main': '主导航',
             'lang.label': '语言',
+
+            /* 演示模式 */
+            'demo.notice': '当前为测试服务：只能添加用户和挂载点，不能修改或删除。若忘记密码，请直接新建一个账号。',
+            'demo.readonlyCell': '演示模式不可修改',
+            'demo.settingsTitle': '演示模式',
+            'demo.settingsHint': '当前为演示 / 只读模式：只能新增用户和挂载点，不能修改、删除已有数据，也不能修改管理员密码或重启服务。',
+            'demo.loginHint': '演示账号：admin / admin123',
 
             /* 实时通道状态 */
             'rt.connecting': '连接中…',
@@ -321,6 +342,7 @@
             'login.submitting': '登录中…',
             'login.hint': '默认账号',
             'login.hintTail': '— 上线前请先在“设置”里修改。',
+            'demo.loginHintTail': '— 演示模式下无法在此修改密码。',
             'login.redirect.users': '用户管理',
             'login.redirect.mounts': '挂载点管理',
             'login.redirect.settings': '系统设置',
@@ -410,7 +432,7 @@
             'monitor.stationInfo': '基准站信息',
             'monitor.waitSelect': '等待选择',
             'monitor.selected': '已选择',
-            'monitor.selectHint': '点击 STR 表中的站点按钮可查看对应基准站的实时信息',
+            'monitor.selectHint': '点击 STR 表中的任意站点行即可查看对应基准站的实时信息',
             'monitor.stationLocation': '基准站位置',
             'monitor.waitLocation': '等待定位数据…',
             'monitor.satViz': '卫星数据可视化',
@@ -423,8 +445,12 @@
             'monitor.noData': '暂无数据',
             'monitor.rtcmStartFailed': '启动 RTCM 解析失败：{error}',
             'monitor.rtcmApiFailed': '调用 RTCM 解析接口失败',
+            'monitor.rtcmBusy': '当前解析任务已满，请稍后再试',
+            'monitor.rtcmOffline': '挂载点 {name} 当前离线，无法解析',
+            'monitor.rtcmStopped': '{name} 的解析已停止：源站离线或会话已过期',
             'monitor.rtcmParsing': '正在解析 {name} 的 RTCM 数据…',
             'monitor.infoTitle': '查看 {name} 的实时 RTCM 解析',
+            'monitor.rowClickHint': '点击该行即可解析 RTCM 数据，并在图上定位 {name}',
 
             /* 基准站字段 */
             'station.mount': '挂载点：',

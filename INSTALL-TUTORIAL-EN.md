@@ -1,6 +1,6 @@
 # NTRIP Caster Linux System Installation Tutorial
 
-This tutorial will guide you through installing and deploying NTRIP Caster v2.3.4 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
+This tutorial will guide you through installing and deploying NTRIP Caster v2.3.6 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
 
 ## Table of Contents
 - [System Requirements](#system-requirements)
@@ -193,7 +193,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.4
+version = 2.3.6
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -858,6 +858,8 @@ If you encounter issues during installation or usage:
 
 ## Changelog
 
+- **v2.3.5**: Any click on an STR row now starts parsing (no need to hit the button precisely), drag-selecting the message to copy no longer triggers it, and re-clicking the same station does not restart the parser; base station marker redrawn as a blue circular badge with a white ring; coverage rings changed to 10 km / 20 km
+- **v2.3.6**: Live parsing is now "one thread per mount + one subscription per visitor", so one visitor switching stations no longer interrupts another and data no longer leaks across viewers; heartbeat and janitor keep zombie subscriptions in check (closing the tab unsubscribes automatically), with a thread cap and per-IP rate limit; new demo mode (`demo_mode`) allowing only additions, with password change / restart blocked by 403; new anonymous namespace `/api/public/` so signed-out visitors can browse live data and start their own parsing; new `scripts/demo_reset.py` to prune demo data after 60 days
 - **v2.3.4**: Fixed the base station marker not rendering on the map — the icon was inlined via btoa, and the Chinese comments inside the SVG raised InvalidCharacterError, aborting the whole draw (the map panned but no icon, label or coverage circles appeared); the icon is now a same-origin static file with a dot fallback; coverage circles moved below the icon, their radius corrected for Web Mercator latitude scale, and given dashed outlines
 - **v2.3.3**: Fixed STR table button highlight drifting out of sync with the backend — the highlight now follows the backend's current_web_mount, and leaving the monitor page stops parsing and restores the button colour
 - **v2.3.2**: Fixed a false "port already in use" error on restart — the port check now sets SO_REUSEADDR so TIME_WAIT connections are no longer mistaken for an occupied port; the update script reports TCP state and retries startup once TIME_WAIT has drained
@@ -868,7 +870,7 @@ If you encounter issues during installation or usage:
 
 ---
 
-**Version**: NTRIP Caster v2.3.4  
+**Version**: NTRIP Caster v2.3.6  
 **Updated**: December 2024  
 **Author**: 2RTK Team  
 **License**: Apache 2.0

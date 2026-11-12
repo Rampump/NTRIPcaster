@@ -13,7 +13,7 @@
 [app]
 # 应用基本信息
 name = 2RTK Ntrip Caster
-version = 2.3.4
+version = 2.3.6
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -54,6 +54,19 @@ connection_timeout = 1800
 port = 5757
 realtime_push_interval = 3
 page_refresh_interval = 30
+# Web 端 RTCM 实时解析线程上限（MSM 解析是 CPU 密集型，单线程约吃 10%~15% 单核）
+# 同一个挂载点多人看只跑 1 个线程；上限只限制「同时被解析的挂载点个数」
+max_web_parsers = 4
+# 客户端心跳超时（秒）：超时未收到心跳自动退订，兜住「直接关浏览器」
+parser_client_ttl = 45
+# 订阅数归零后的宽限期（秒）：避免来回切站反复销毁/重建解析线程
+parser_grace_seconds = 5
+# 单 IP 每分钟最多发起多少次解析（0 = 不限）
+parser_ip_rate_per_minute = 10
+# 匿名公开访问：开启后未登录访客也能看「总览 / 实时数据」并自行发起解析
+# （走 /api/public/，用户明细与源站 IP 仍不下发）。默认关闭，
+# 关闭时未登录访问一律跳登录页，与旧版行为一致。
+public_access = false
 
 [database]
 # SQLite 数据库路径；容器内建议用绝对路径（如 /app/data/2rtk.db）并挂卷
@@ -86,6 +99,11 @@ login_lockout_seconds = 300
 session_cookie_secure = false
 # 在 Nginx 等反向代理后面时设为 true，才信任 X-Forwarded-For
 trust_proxy_headers = false
+# 演示模式：开启后登录后台的人「只能新增用户/挂载点、启停自己的解析」，
+# 改、删、改管理员密码、重启服务等写操作一律被后端 403 拦住。
+# 仅用于对外公开的测试站，切勿在承载真实用户的实例上开启。
+# 也可用环境变量 DEMO_MODE=1 覆盖（Docker 部署更方便）。
+demo_mode = false
 
 [admin]
 # 首次启动时创建的管理员账号，登录后请立即修改密码

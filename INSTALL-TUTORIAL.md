@@ -1,6 +1,6 @@
 # NTRIP Caster Linux 系统安装教程
 
-在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.4，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
+在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.6，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
 
 ## 目录
 - [系统要求](#系统要求)
@@ -287,7 +287,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.4
+version = 2.3.6
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -952,6 +952,8 @@ sudo ufw delete allow 5757/tcp
 
 ## 更新日志
 
+- **v2.3.5**: STR 表支持点整行开始解析（不必再精确点按钮），拖选报文复制时不会误触发，重复点同一站点也不会重启解析器；地图基准站标记换成蓝底白环圆盘徽标；覆盖范围圈调整为 10km / 20km
+- **v2.3.6**: 实时解析改为「按挂载点复用线程 + 每个访客独立订阅」，A 访客切站不再打断 B，数据按房间下发不再串台；新增心跳与巡检，关浏览器自动退订，解析线程上限与单 IP 频率限制；新增演示模式（`demo_mode`，只能新增不能改删，改密码/重启被 403 拦死）；新增匿名公开接口 `/api/public/`，未登录也能看实时数据并自行发起解析；新增 `scripts/demo_reset.py` 按 60 天清理演示数据
 - **v2.3.4**: 修复地图基准站标记不显示——图标原先用 btoa 内联 SVG，SVG 里的中文注释触发 InvalidCharacterError，导致整个绘制中断（地图平移过去但没有图标、站名和覆盖圈）；图标改为同源静态文件并加圆点降级兜底；覆盖圈重排到图标下层、半径按纬度做投影修正、补虚线边界
 - **v2.3.3**: 修复 STR 表按钮绿色与后台解析状态脱节的问题——按钮高亮改为跟随后端 current_web_mount，离开监控页会主动停止解析并复原色
 - **v2.3.2**: 修复重启时误报「端口已被占用」——端口检查补上 SO_REUSEADDR，不再把 TIME_WAIT 残留误判为占用；一键更新脚本增加 TCP 状态诊断，并在 TIME_WAIT 消退后自动重试启动
@@ -962,7 +964,7 @@ sudo ufw delete allow 5757/tcp
 
 ---
 
-**版本信息：** NTRIP Caster v2.3.4  
+**版本信息：** NTRIP Caster v2.3.6  
 **更新时间：** 2024年12月  
 **作者：** 2RTK Team  
 **许可证：** Apache 2.0

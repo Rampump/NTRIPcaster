@@ -15,6 +15,11 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol.css" type="text/css">
     <script src="https://cdn.jsdelivr.net/npm/ol@v8.2.0/dist/ol.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <!-- 运行模式由服务端直接注入：首帧就确定，避免「先闪出编辑/删除按钮再消失」 -->
+    <script>
+        window.__LOGGED_IN__ = {{ 'true' if logged_in else 'false' }};
+        window.__DEMO_MODE__ = {{ 'true' if demo_mode else 'false' }};
+    </script>
     <!-- i18n 必须在 app.js 之前加载：app.js 里的模板字符串直接调用全局 t() -->
     <script src="/static/i18n.js?v={{ app_version }}"></script>
 </head>
@@ -29,15 +34,23 @@
 
             <nav class="nav" aria-label="Main" data-i18n-aria="nav.main">
                 <button type="button" class="nav-item active" data-page="dashboard" onclick="navigateTo('dashboard')" data-i18n="nav.dashboard">Overview</button>
+                {% if logged_in %}
                 <button type="button" class="nav-item" data-page="mounts" onclick="navigateTo('mounts')" data-i18n="nav.mounts">Mount Points</button>
                 <button type="button" class="nav-item" data-page="users" onclick="navigateTo('users')" data-i18n="nav.users">Users</button>
+                {% endif %}
                 <button type="button" class="nav-item" data-page="monitor" onclick="navigateTo('monitor')" data-i18n="nav.monitor">Live Data</button>
+                {% if logged_in %}
                 <button type="button" class="nav-item" data-page="settings" onclick="navigateTo('settings')" data-i18n="nav.settings">Settings</button>
+                {% endif %}
                 <button type="button" class="nav-item nav-donate" onclick="openDonateModal()" data-i18n-title="donate.open">
                     <i class="fas fa-heart" aria-hidden="true"></i>
                     <span data-i18n="nav.donate">Donate</span>
                 </button>
+                {% if logged_in %}
                 <button type="button" class="nav-item is-danger" onclick="logout()" data-i18n="nav.logout">Sign out</button>
+                {% else %}
+                <button type="button" class="nav-item" onclick="window.location.href='/login'" data-i18n="nav.login">Sign in</button>
+                {% endif %}
             </nav>
 
             <div class="header-meta">

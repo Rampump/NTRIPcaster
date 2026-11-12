@@ -6,6 +6,7 @@ import hmac
 import secrets
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from threading import Lock
 from . import config
@@ -282,6 +283,19 @@ def init_db():
             c.execute("INSERT INTO admins (username, password) VALUES (?, ?)", (admin_username, hashed_password))
             print(f"已创建默认管理员: {admin_username}/{admin_password}（请首次登录后立即修改）")
             log_warning("检测到使用默认管理员口令，请登录后立刻修改密码，并在 config.ini 中设置强口令")
+
+        # 演示站需要按时间清理过期数据，但 users/mounts 原来没有创建时间列。
+        # 用 ALTER TABLE 增量补列（老库无痛升级），已有行留空表示「时间未知」，
+        # 清理脚本对空时间按「保留」处理，不会误删历史数据。
+        for table in ('users', 'mounts'):
+            try:
+                c.execute(f"PRAGMA table_info({table})")
+                columns = {row[1] for row in c.fetchall()}
+                if 'created_at' not in columns:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN created_at REAL")
+                    log_info(f"{table} 表已补充 created_at 列")
+            except sqlite3.DatabaseError as e:
+                log_warning(f"为 {table} 表补充 created_at 失败: {e}")
         
         conn.commit()
         _release(conn)
@@ -377,7 +391,8 @@ def add_user(username, password):
             
             # 哈希密码并添加用户
             hashed_password = hash_password(password)
-            c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
+            c.execute("INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)",
+                      (username, hashed_password, time.time()))
             conn.commit()
             log_database_operation('add_user', 'users', True, f'用户: {username}')
             return True, "用户添加成功"
@@ -515,8 +530,8 @@ def add_mount(mount, password, user_id=None):
             
             # 挂载点口令与用户口令同样按 PBKDF2 存储；
             # 校验端使用 verify_password()，兼容历史明文行（无 '$' 时走常量时间比较）
-            c.execute("INSERT INTO mounts (mount, password, user_id) VALUES (?, ?, ?)",
-                      (mount, hash_password(password), user_id))
+            c.execute("INSERT INTO mounts (mount, password, user_id, created_at) VALUES (?, ?, ?, ?)",
+                      (mount, hash_password(password), user_id, time.time()))
             conn.commit()
             log_database_operation('add_mount', 'mounts', True, f'挂载点: {mount}, 用户ID: {user_id}')
             return True, "挂载点添加成功"

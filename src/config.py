@@ -276,6 +276,14 @@ SESSION_COOKIE_SECURE = get_config_value('security', 'session_cookie_secure', Fa
 # 仅在确实位于可信反向代理（Nginx）之后时启用，否则客户端可伪造 X-Forwarded-For
 TRUST_PROXY_HEADERS = get_config_value('security', 'trust_proxy_headers', False, bool)
 
+# 演示模式总开关：开启后，登录后台的人只能「新增用户 / 新增挂载点 / 启停自己的解析」，
+# 改、删、改管理员密码、重启服务等写操作一律 403（后端拦截，不依赖前端藏按钮）。
+# 环境变量 DEMO_MODE=1 可覆盖配置文件，方便 Docker 部署时不用改挂载的 config.ini。
+DEMO_MODE = (
+    os.environ.get('DEMO_MODE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+    or get_config_value('security', 'demo_mode', False, bool)
+)
+
 # 默认管理员账户
 DEFAULT_ADMIN = {
     'username': get_config_value('admin', 'username', 'admin'),
@@ -394,6 +402,23 @@ REALTIME_PUSH_INTERVAL = get_config_value('web', 'realtime_push_interval', 3, in
 
 
 PAGE_REFRESH_INTERVAL = get_config_value('web', 'page_refresh_interval', 30, int)
+
+# 匿名公开访问：开启后未登录访客也能看「总览 / 实时数据」并自行发起解析，
+# 走 /api/public/ 命名空间，敏感信息（用户明细、源站 IP、系统日志）仍然不下发。
+# 默认关闭 —— 不开时行为与旧版完全一致（未登录一律跳登录页），
+# 需要把数据页开放给所有人时再置 true。
+PUBLIC_ACCESS = get_config_value('web', 'public_access', False, bool)
+
+# Web 端 RTCM 实时解析线程上限。
+# MSM 解析是 CPU 密集型，单线程大约吃 10%~15% 单核；公网演示站多人同时切站时，
+# 不做上限会直接把 CPU 打满。超限的新订阅返回 429。
+WEB_PARSER_LIMIT = get_config_value('web', 'max_web_parsers', 4, int)
+# 客户端心跳超时（秒）：超过这个时间没收到 heartbeat 就视为访客已离开，自动退订
+WEB_PARSER_CLIENT_TTL = get_config_value('web', 'parser_client_ttl', 45, int)
+# 订阅数归零后的宽限期（秒）：避免用户来回切站时反复销毁/重建解析线程
+WEB_PARSER_GRACE_SECONDS = get_config_value('web', 'parser_grace_seconds', 5, int)
+# 单 IP 每分钟最多发起多少次解析启动（0 表示不限）
+WEB_PARSER_IP_RATE = get_config_value('web', 'parser_ip_rate_per_minute', 10, int)
 
 # ==================== 预留 ====================
 # 支付二维码URL

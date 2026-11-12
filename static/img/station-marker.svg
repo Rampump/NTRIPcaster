@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" role="img" aria-label="Base station">
+  <defs>
+    <linearGradient id="smFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5CB0FF"/>
+      <stop offset="55%" stop-color="#2276D2"/>
+      <stop offset="100%" stop-color="#0F55A8"/>
+    </linearGradient>
+    <radialGradient id="smGloss" cx="0.34" cy="0.26" r="0.72">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.45"/>
+      <stop offset="60%" stop-color="#FFFFFF" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="smShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2.2" stdDeviation="2.4" flood-color="#0B2E4F" flood-opacity="0.40"/>
+    </filter>
+  </defs>
+
+  <circle cx="24" cy="24" r="19" fill="url(#smFill)" stroke="#FFFFFF" stroke-width="3.2" filter="url(#smShadow)"/>
+  <circle cx="24" cy="24" r="19" fill="url(#smGloss)"/>
+  <circle cx="24" cy="24" r="16.4" fill="none" stroke="#FFFFFF" stroke-opacity="0.30" stroke-width="1"/>
+
+  <g stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round" fill="none" stroke-opacity="0.88">
+    <path d="M14.4 11.9 A10.2 10.2 0 0 1 14.4 19.7"/>
+    <path d="M33.6 11.9 A10.2 10.2 0 0 0 33.6 19.7"/>
+  </g>
+
+  <g stroke="#FFFFFF" stroke-width="2.3" stroke-linecap="round" fill="none">
+    <path d="M24 17.9 L18.9 32.4"/>
+    <path d="M24 17.9 L29.1 32.4"/>
+    <path d="M20.6 27 H27.4"/>
+    <path d="M17.9 32.4 H30.1"/>
+  </g>
+
+  <circle cx="24" cy="15.5" r="2.4" fill="#FFC400" stroke="#FFFFFF" stroke-width="1.7"/>
+</svg>

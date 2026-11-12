@@ -63,6 +63,11 @@ NTRIP端口: {config.NTRIP_PORT:<8} Web管理端口: {config.WEB_PORT:<8}
 调试模式: {str(config.DEBUG):<9} 最大连接: {config.MAX_CONNECTIONS:<8} 
 
     """
+    if config.DEMO_MODE:
+        # 醒目告警：演示模式会拦掉所有改/删操作，生产库误开会被当成「程序坏了」
+        banner += """    ⚠  演示模式（DEMO MODE）已启用
+        只能新增用户/挂载点、启停解析；改、删、改密码、重启一律 403。
+        切勿在承载真实用户的实例上开启。\n\n"""
     print(banner)
 
 def check_environment():
@@ -526,6 +531,12 @@ class ServiceManager:
             # 停止Web管理器
             if self.web_manager:
                 try:
+                    # 先停所有 Web 解析订阅（线程按挂载点复用，可能不止一个），
+                    # 再停推送循环
+                    try:
+                        self.web_manager.parser_registry.shutdown()
+                    except Exception as e:
+                        logger.log_error(f'停止Web解析订阅时出错: {e}')
                     self.web_manager.stop_rtcm_parsing()
                 except Exception as e:
                     logger.log_error(f'停止Web管理器时出错: {e}')

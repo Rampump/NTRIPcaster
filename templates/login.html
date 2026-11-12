@@ -52,7 +52,11 @@
             <p class="auth-footer" id="defaultCredentials">
                 <span data-i18n="login.hint">Default credentials</span>
                 <code>admin / admin123</code>
+                {% if demo_mode %}
+                <span data-i18n="demo.loginHintTail">— demo mode: the password cannot be changed here.</span>
+                {% else %}
                 <span data-i18n="login.hintTail">— change it in Settings before going live.</span>
+                {% endif %}
             </p>
 
             <p class="auth-footer auth-donate">

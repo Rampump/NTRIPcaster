@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         - BUILDKIT_INLINE_CACHE=1
-    image: ntripcaster:2.3.4
+    image: ntripcaster:2.3.6
     container_name: ntrip-caster
     hostname: ntrip-caster
     restart: unless-stopped
@@ -27,6 +27,8 @@ services:
       - DATABASE_PATH=/app/data/2rtk.db
       - LOG_DIR=/app/logs
       - DATA_DIR=/app/data
+      # 演示模式：.env 里 DEMO_MODE=true 即可开启，无需改 config.ini
+      - DEMO_MODE=${DEMO_MODE:-false}
     networks:
       ntrip-network:
         ipv4_address: 172.20.0.10

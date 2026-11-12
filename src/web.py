@@ -9,14 +9,16 @@ import json
 import logging
 import psutil
 import re
+import uuid
 from datetime import datetime
 from functools import wraps
 from threading import Thread, Lock
 
-from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, send_from_directory
+from flask import (Flask, render_template_string, request, redirect, url_for, session,
+                   jsonify, send_from_directory, g)
 # from flask_cors import CORS  # 已移除，不需要CORS功能
 import os
-from flask_socketio import SocketIO, emit, join_room
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from .database import DatabaseManager, KEEP_USER_BINDING
 from . import config
@@ -25,6 +27,21 @@ from .logger import log_debug, log_info, log_warning, log_error, log_critical, l
 from . import connection
 from . import forwarder
 from .rtcm2_manager import parser_manager as rtcm_manager
+from .web_parser_registry import WebParserRegistry, SubscribeBusy, SubscribeRejected
+
+# 客户端标识 Cookie：匿名访客与登录管理员共用一套身份，
+# 用来把「谁在解析哪个站」这条关系记在服务端，而不是全局单值。
+CLIENT_COOKIE = 'ntrip_cid'
+CLIENT_COOKIE_MAX_AGE = 365 * 24 * 3600
+_CID_PATTERN = re.compile(r'^[0-9a-f]{32}$')
+
+# Socket.IO 房间名：每个挂载点一个房间，解析数据只发给订阅了该站的人
+MOUNT_ROOM_PREFIX = 'mount:'
+
+
+def mount_room(mount_name):
+    return f'{MOUNT_ROOM_PREFIX}{mount_name}'
+
 
 # 全局服务器实例引用
 server_instance = None
@@ -43,7 +60,16 @@ def get_server_instance():
 
 class WebManager:
     """Web管理器"""
-    
+
+    #: 演示模式下仍允许的 POST 接口（新增用户 / 新增挂载点 / 登录）
+    DEMO_ALLOWED_POSTS = {'/api/login', '/api/users', '/api/mounts'}
+    #: 演示模式下仍允许的 POST 后缀（RTCM 解析启停与心跳：只动内存里的查看线程，不动数据库）
+    DEMO_ALLOWED_PARSE_SUFFIXES = (
+        '/rtcm-parse/start',
+        '/rtcm-parse/stop',
+        '/rtcm-parse/heartbeat',
+    )
+
     def __init__(self, db_manager, data_forwarder, start_time):
         self.db_manager = db_manager
         self.data_forwarder = data_forwarder
@@ -87,6 +113,19 @@ class WebManager:
             ping_interval=config.WEBSOCKET_CONFIG['ping_interval']
         )
         
+        # Web 端 RTCM 实时解析的订阅注册表。
+        # 线程按挂载点复用、客户端只持有订阅：10 个人看同一个站只跑 1 个解析线程，
+        # A 切站不会再把 B 打断（改造前是全局单线程，start 会主动杀掉上一个）。
+        self.parser_registry = WebParserRegistry(
+            push_callback_provider=self._make_push_callback,
+            event_sink=self._emit_parse_event,
+        )
+        self.parser_registry.start()
+
+        # socket sid -> 当前订阅的挂载点（用于切站时先离开旧房间）
+        self._sid_rooms = {}
+        self._sid_room_lock = Lock()
+
         # 注册路由
         self._register_routes()
         self._register_socketio_events()
@@ -97,6 +136,9 @@ class WebManager:
         
         # 设置logger的web实例引用，用于实时日志推送
         logger.set_web_instance(self)
+
+        # 演示模式启动自检（仅告警，不重置口令）
+        self._demo_self_check()
     
     def _format_uptime_simple(self, uptime_seconds):
         """格式化运行时间（简单版本）"""
@@ -125,6 +167,246 @@ class WebManager:
             if forwarded:
                 return forwarded.split(',')[0].strip()
         return request.remote_addr or 'unknown'
+
+    # ------------------------------------------------------------ 客户端标识
+    def _ensure_client_id(self):
+        """读取（或新建）客户端标识 cid
+
+        cid 只是「这台浏览器」的随机标识，用来记录它订阅了哪个挂载点，
+        不承载任何权限语义——真正的权限仍然看 session。所以放在 HttpOnly Cookie
+        里即可，前端不需要（也读不到）它。
+        """
+        cid = request.cookies.get(CLIENT_COOKIE)
+        if cid and _CID_PATTERN.match(cid):
+            return cid
+        cid = uuid.uuid4().hex
+        g.new_client_id = cid
+        return cid
+
+    def _client_id(self):
+        """取当前请求的 cid（before_request 已算好，兜底再算一次）"""
+        cid = getattr(g, 'client_id', None)
+        if cid:
+            return cid
+        cid = self._ensure_client_id()
+        g.client_id = cid
+        return cid
+
+    # ------------------------------------------------------------ 演示模式
+    def _demo_write_blocked(self):
+        """演示模式下拦截写操作
+
+        规则是 fail-closed：除了明确列出的「新增用户 / 新增挂载点 / 启停解析」，
+        其余任何非只读请求一律 403。将来新增的写接口默认是安全的，
+        要放开必须显式加进白名单。
+        """
+        if not config.DEMO_MODE:
+            return None
+        method = request.method.upper()
+        if method in ('GET', 'HEAD', 'OPTIONS'):
+            return None
+
+        path = request.path
+        if not path.startswith('/api/'):
+            return None
+
+        if method == 'POST':
+            if path in self.DEMO_ALLOWED_POSTS:
+                return None
+            if path.startswith('/api/mount/') and path.endswith(self.DEMO_ALLOWED_PARSE_SUFFIXES):
+                return None
+            if path.startswith('/api/public/'):
+                return None
+
+        return jsonify({
+            'error': '演示模式：仅允许新增，不支持修改或删除',
+            'code': 'demo_readonly',
+        }), 403
+
+    def _demo_self_check(self):
+        """启动自检：演示模式下 admin 口令必须是默认值
+
+        不强制重置（用户明确要求），只在口令已被改过时告警——
+        否则演示站会变成「谁都进不去」，而且改密码本身又被 403 挡住，无法自救。
+        """
+        if not config.DEMO_MODE:
+            return
+        username = config.DEFAULT_ADMIN.get('username', 'admin')
+        password = config.DEFAULT_ADMIN.get('password', 'admin123')
+        try:
+            ok = self.db_manager.verify_admin(username, password)
+        except Exception as e:
+            log_warning(f"演示模式自检失败，无法校验管理员口令: {e}")
+            return
+        if not ok:
+            log_warning(
+                f"演示模式已开启，但管理员 {username} 的口令不是默认值 {password}。"
+                "演示模式下无法通过界面修改口令，请确认数据库是否为新建库，"
+                "或临时关闭 demo_mode 改回默认口令。"
+            )
+        else:
+            log_info(f"演示模式已开启：管理员 {username} / {password}，写操作仅限新增")
+
+
+    # ------------------------------------------------------------ Socket 房间
+    def _bind_socket_room(self, mount):
+        """把当前 socket 从旧挂载点房间移到新挂载点房间（mount=None 表示离开）"""
+        sid = request.sid
+        with self._sid_room_lock:
+            old = self._sid_rooms.get(sid)
+            if old == mount:
+                return
+        if old:
+            try:
+                leave_room(mount_room(old))
+            except Exception as e:
+                log_debug(f"离开房间失败 [挂载点: {old}]: {e}")
+        if mount:
+            try:
+                join_room(mount_room(mount))
+            except Exception as e:
+                log_warning(f"加入房间失败 [挂载点: {mount}]: {e}")
+                return
+            with self._sid_room_lock:
+                self._sid_rooms[sid] = mount
+        else:
+            with self._sid_room_lock:
+                self._sid_rooms.pop(sid, None)
+
+    @staticmethod
+    def _public_stats(stats):
+        """把完整系统统计裁剪成可以给匿名访客的版本
+
+        去掉用户明细（账号名 + 连接 IP）与源站 IP：这些属于内部信息，
+        「数据页对所有人开放」不等于「把用户和源站地址也公开」。
+        """
+        if not isinstance(stats, dict):
+            return stats
+        out = dict(stats)
+        out.pop('users', None)
+        mounts = stats.get('mounts')
+        if isinstance(mounts, list):
+            safe = []
+            for m in mounts:
+                if not isinstance(m, dict):
+                    continue
+                safe.append({
+                    'mount_name': m.get('mount_name'),
+                    'uptime': m.get('uptime'),
+                    'data_count': m.get('data_count'),
+                    'total_bytes': m.get('total_bytes'),
+                    'total_messages': m.get('total_messages'),
+                    'data_rate': m.get('data_rate'),
+                    'user_count': m.get('user_count'),
+                    'status': m.get('status'),
+                })
+            out['mounts'] = safe
+        return out
+
+
+    # ------------------------------------------------------------ RTCM 解析
+    def _make_push_callback(self, mount_name):
+        """构造某个挂载点的解析数据推送回调
+
+        关键改动：emit 带上 room，只发给订阅了该站的人。
+        改造前是无房间广播，所有人收到所有人的数据 —— 这是「串台」的直接原因。
+        """
+        def _push(parsed_data):
+            if not isinstance(parsed_data, dict):
+                return
+            mount = parsed_data.get('mount_name') or parsed_data.get('mount') or mount_name
+            if not mount:
+                return
+            try:
+                self.socketio.emit('rtcm_realtime_data', parsed_data, room=mount_room(mount))
+            except Exception as e:
+                log_debug(f"推送解析数据失败 [挂载点: {mount}]: {e}")
+        return _push
+
+    def _emit_parse_event(self, event, payload, mount_name):
+        """把控制类事件推给某个挂载点的订阅者（例如源站离线导致解析被动停止）"""
+        try:
+            self.socketio.emit(event, payload, room=mount_room(mount_name))
+        except Exception as e:
+            log_debug(f"推送解析事件失败 [挂载点: {mount_name}]: {e}")
+
+    def _validate_mount_param(self, mount_name):
+        """校验 URL 路径里的挂载点名（它会被拼进日志与房间名）"""
+        valid, err = self._validate_alphanumeric(mount_name, '挂载点名称')
+        if not valid:
+            return err or '挂载点名称非法'
+        if len(mount_name) > 50:
+            return '挂载点名称过长'
+        return None
+
+    def _get_parsed_mount_data(self, mount_name):
+        """取某个挂载点的解析结果
+
+        Web 解析线程由订阅注册表持有（按挂载点复用），不再登记到 RTCM2ParserManager，
+        所以先问注册表，再回退到旧接口（STR 修正线程仍走旧管理器）。
+        """
+        try:
+            parser = self.parser_registry.get_parser(mount_name)
+            if parser is not None and hasattr(parser, 'result'):
+                return rtcm_manager._convert_result_format(parser.result.copy())
+        except Exception as e:
+            log_debug(f"从注册表读取解析结果失败 [挂载点: {mount_name}]: {e}")
+        return rtcm_manager.get_parsed_mount_data(mount_name)
+
+    def _parse_subscribe(self, mount_name):
+        """订阅某挂载点的实时解析（HTTP 层统一入口，登录与匿名共用）"""
+        err = self._validate_mount_param(mount_name)
+        if err:
+            return jsonify({'error': err, 'code': 'bad_request'}), 400
+
+        cm = connection.get_connection_manager()
+        if not cm.is_mount_online(mount_name):
+            return jsonify({'error': f'挂载点 {mount_name} 当前离线，无法解析', 'code': 'mount_offline'}), 400
+
+        cid = self._client_id()
+        try:
+            snapshot = self.parser_registry.subscribe(cid, mount_name, self._client_ip())
+        except SubscribeBusy as e:
+            return jsonify({'error': e.message, 'code': e.code}), 429
+        except SubscribeRejected as e:
+            return jsonify({'error': e.message, 'code': e.code}), 400
+
+        log_system_event(f"挂载点 {mount_name} 实时RTCM解析已订阅（订阅者 {snapshot.get('subscribers', 1)}）")
+        return jsonify({
+            'success': True,
+            'message': f'Real-time RTCM parsing subscribed: {mount_name}',
+            'mount_name': mount_name,
+            'subscribers': snapshot.get('subscribers', 1),
+        })
+
+    def _parse_unsubscribe(self, mount_name=None):
+        """退订：只摘掉当前客户端那条边，不影响别人"""
+        cid = self._client_id()
+        released = self.parser_registry.unsubscribe(cid)
+        if released:
+            log_system_event(f"已退订挂载点 {released} 的实时RTCM解析")
+            return jsonify({'success': True, 'released': released})
+        return jsonify({'success': True, 'released': None})
+
+    def _parse_status(self):
+        cid = self._client_id()
+        status = self.parser_registry.status(cid)
+        # STR 修正线程仍由原管理器负责，这里一并回传，保持旧字段兼容
+        try:
+            legacy = rtcm_manager.get_parser_status()
+            status['str_parsers'] = legacy.get('str_parsers', 0)
+            status['str_mounts'] = legacy.get('str_mounts', [])
+        except Exception:
+            status.setdefault('str_parsers', 0)
+            status.setdefault('str_mounts', [])
+        return jsonify({'success': True, 'status': status,
+                        'message': 'Parser status retrieved successfully'})
+
+    def _parse_heartbeat(self):
+        data = request.get_json(silent=True) or {}
+        mount_name = (data.get('mount_name') or '').strip() or None
+        alive = self.parser_registry.touch(self._client_id(), mount_name)
+        return jsonify({'success': True, 'parsing': alive})
 
     def _login_lock_remaining(self, username):
         """返回剩余锁定秒数，0 表示未锁定"""
@@ -175,6 +457,11 @@ class WebManager:
     
     def _load_template(self, template_name, **kwargs):
         """加载外部模板文件"""
+        # 演示模式 / 登录态对所有模板可见：登录页据此提示演示账号，
+        # 主界面据此决定是否渲染写入口。各调用点不必逐个传。
+        kwargs.setdefault('demo_mode', bool(config.DEMO_MODE))
+        kwargs.setdefault('logged_in', bool(session.get('admin_logged_in')))
+        kwargs.setdefault('public_access', bool(config.PUBLIC_ACCESS))
         template_path = os.path.join(self.template_dir, template_name)
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
@@ -192,18 +479,53 @@ class WebManager:
         
         # 默认拒绝：/api/ 下的接口一律要求登录，白名单放行少数公开接口。
         # 之前靠逐个接口手加 @require_login，漏加过 /api/system/stats 等 4 个敏感接口。
+        #
+        # /api/public/ 是「匿名公开命名空间」：只有这个前缀对未登录访客开放，
+        # 内部复用同一个实现。以后要把数据页开放给所有人，新增只读接口只要挂在
+        # 这个前缀下，就不会因为「白名单里再塞一条路径」而误暴露私有接口。
         PUBLIC_API_PATHS = {'/api/login', '/api/app_info'}
-        
+        PUBLIC_API_PREFIX = '/api/public/'
+
         @self.app.before_request
         def _enforce_api_login():
             path = request.path
             if not path.startswith('/api/'):
                 return None
+
+            # 所有 /api 请求统一分配（或读取）客户端标识，供解析订阅使用
+            g.client_id = self._ensure_client_id()
+
             if path in PUBLIC_API_PATHS:
                 return None
-            if session.get('admin_logged_in'):
-                return None
-            return jsonify({'error': '未登录或登录已过期'}), 401
+            if path.startswith(PUBLIC_API_PREFIX):
+                # 公开命名空间默认关闭：不开启时匿名访问按未登录处理，
+                # 避免私有部署把自己的站点清单和 CPU 负载公开出去
+                if config.PUBLIC_ACCESS:
+                    return None
+                return jsonify({'error': '未登录或登录已过期'}), 401
+
+            if not session.get('admin_logged_in'):
+                return jsonify({'error': '未登录或登录已过期'}), 401
+
+            # 已登录后再叠一道演示模式写锁：GET 放行，写操作按白名单 fail-closed
+            return self._demo_write_blocked()
+
+        @self.app.after_request
+        def _persist_client_id(response):
+            """首次访问时下发 cid；之后每次访问顺延有效期"""
+            if not request.path.startswith('/api/'):
+                return response
+            cid = getattr(g, 'new_client_id', None) or getattr(g, 'client_id', None)
+            if cid:
+                response.set_cookie(
+                    CLIENT_COOKIE, cid,
+                    max_age=CLIENT_COOKIE_MAX_AGE,
+                    httponly=True,
+                    samesite='Lax',
+                    secure=bool(getattr(config, 'SESSION_COOKIE_SECURE', False)),
+                    path='/',
+                )
+            return response
         
         @self.app.route('/static/<path:filename>')
         def static_files(filename):
@@ -222,12 +544,18 @@ class WebManager:
             return jsonify({
                 'status': 'ok',
                 'version': config.APP_VERSION,
-                'uptime': round(uptime, 3)
+                'uptime': round(uptime, 3),
+                'demo_mode': bool(config.DEMO_MODE),
             }), 200
 
         @self.app.route('/')
         def index():
             """主页 - SPA应用"""
+            # 未登录且未开启公开访问：直接去登录页（与旧版行为一致），
+            # 而不是先渲染一个什么数据都取不到的空壳
+            if not session.get('admin_logged_in') and not config.PUBLIC_ACCESS:
+                return redirect(url_for('login'))
+
             # 应用信息统一来自 config（版本取 VERSION 文件，联系方式取 config.ini [app]），
             # 这里不再写死任何字面量，改配置/改版本号后前端自动跟着变。
             current_year = datetime.now().year
@@ -237,7 +565,12 @@ class WebManager:
                                      app_version=config.APP_VERSION,
                                      current_year=current_year,
                                      contact_email=config.APP_CONTACT,
-                                     website_url=config.APP_WEBSITE)
+                                     website_url=config.APP_WEBSITE,
+                                     # 服务端直接注入，前端首帧就知道该不该渲染写入口，
+                                     # 避免「先闪出编辑/删除按钮、几百毫秒后消失」
+                                     logged_in=bool(session.get('admin_logged_in')),
+                                     demo_mode=bool(config.DEMO_MODE),
+                                     public_access=bool(config.PUBLIC_ACCESS))
         
         @self.app.route('/classic')
         def classic_index():
@@ -277,7 +610,11 @@ class WebManager:
                 remaining = self._login_lock_remaining(username)
                 if remaining > 0:
                     return self._load_template('login.html', error=f"登录失败次数过多，请 {remaining} 秒后再试")
-                
+
+                # 演示模式：只认默认管理员账号，避免历史库里残留的其它管理员也能进后台
+                if config.DEMO_MODE and username != config.DEFAULT_ADMIN.get('username', 'admin'):
+                    return self._load_template('login.html', error="演示模式仅允许使用默认管理员账号登录")
+
                 if self.db_manager.verify_admin(username, password):
                     self._clear_login_failure(username)
                     session.permanent = True   # 启用 PERMANENT_SESSION_LIFETIME 空闲超时
@@ -334,7 +671,12 @@ class WebManager:
                 remaining = self._login_lock_remaining(username)
                 if remaining > 0:
                     return jsonify({'error': f'登录失败次数过多，请 {remaining} 秒后再试'}), 429
-                
+
+                # 演示模式：只认默认管理员账号
+                if config.DEMO_MODE and username != config.DEFAULT_ADMIN.get('username', 'admin'):
+                    return jsonify({'error': '演示模式仅允许使用默认管理员账号登录',
+                                    'code': 'demo_account'}), 403
+
                 if self.db_manager.verify_admin(username, password):
                     self._clear_login_failure(username)
                     session.permanent = True
@@ -357,7 +699,7 @@ class WebManager:
         @self.require_login
         def mount_info(mount):
             """获取指定挂载点的解析信息并返回给前端"""
-            parsed_data = rtcm_manager.get_parsed_mount_data(mount)
+            parsed_data = self._get_parsed_mount_data(mount)
             statistics = rtcm_manager.get_mount_statistics(mount)
             
             if parsed_data:
@@ -418,7 +760,7 @@ class WebManager:
         def api_get_mount_realtime(mount_name):
             """获取指定挂载点的实时解析数据"""
             try:
-                realtime_data = rtcm_manager.get_parsed_mount_data(mount_name, limit=10)
+                realtime_data = self._get_parsed_mount_data(mount_name)
                 if realtime_data is None:
                     return jsonify({'error': 'Mount not found'}), 404
                 return jsonify(realtime_data)
@@ -463,11 +805,12 @@ class WebManager:
         @self.app.route('/api/bypass/stop-all', methods=['POST'])
         @self.require_login
         def api_stop_all_bypass_parsing():
-            """停止所有挂载点的旁路解析"""
+            """停止所有挂载点的旁路解析（管理员运维动作，会真的停掉所有人的解析）"""
             try:
-                rtcm_manager.stop_realtime_parsing()
-                log_system_event("所有挂载点旁路解析停止成功")
-                return jsonify({'success': True, 'message': 'All bypass parsing stopped'})
+                stopped = self.parser_registry.stop_all()
+                log_system_event(f"所有旁路解析已停止，共 {len(stopped)} 个挂载点")
+                return jsonify({'success': True, 'stopped': stopped,
+                                'message': 'All bypass parsing stopped'})
             except Exception as e:
                 log_error(f"停止所有旁路解析失败: {e}")
                 return jsonify({'error': str(e)}), 500
@@ -486,157 +829,119 @@ class WebManager:
                 log_error(f"模拟挂载点数据失败: {e}")
                 return jsonify({'error': str(e)}), 500
         
+        # ==================== RTCM 实时解析（登录接口） ====================
+        # 语义改造（v2.3.6）：
+        #   start  = 订阅（幂等：重复调不重启线程，也不会打断别人）
+        #   stop   = 只退订自己；/api/mount/rtcm-parse/stop 退订我的全部订阅
+        #   status = 只回显「我」的挂载点，不再把别人在看什么暴露出去
         @self.app.route('/api/mount/<mount_name>/rtcm-parse/start', methods=['POST'])
         @self.require_login
         def api_start_rtcm_parsing(mount_name):
-            """启动指定挂载点的实时RTCM解析"""
+            """订阅指定挂载点的实时RTCM解析"""
             try:
-                # print(f"[后端API] 收到启动RTCM解析请求 - 挂载点: {mount_name}")
-                
-                # 注意：不再手动调用stop_realtime_parsing()，
-                # 因为新的start_realtime_parsing方法已经内置了智能清理逻辑
-                # print(f"[后端API] 准备启动解析任务，内置清理逻辑将自动处理前一个解析线程")
-                
-                # 定义推送回调：接收rtcm.py解析的数据并推送到前端
-                def push_callback(parsed_data):
-                    mount_name = parsed_data.get("mount_name", "N/A")
-                    data_type = parsed_data.get("data_type", "N/A")
-                    timestamp = parsed_data.get("timestamp", "N/A")
-                    data_keys = list(parsed_data.keys()) if isinstance(parsed_data, dict) else "N/A"
-                    
-                    # print(f"\n[后端推送] 准备推送数据到前端:")
-        # print(f"   挂载点: {mount_name}")
-        # print(f"   数据类型: {data_type}")
-        # print(f"   时间戳: {timestamp}")
-        # print(f"   数据键: {data_keys}")
-                    
-                    # 详细打印不同类型的数据
-                    if data_type == 'msm_satellite':
-                        # MSM卫星数据调试信息已注释，避免刷屏
-                        # print(f"   MSM卫星数据详情:")
-                        # print(f"      GNSS类型: {parsed_data.get('gnss', 'N/A')}")
-                        # print(f"      消息类型: {parsed_data.get('msg_type', 'N/A')}")
-                        # print(f"      MSM等级: {parsed_data.get('msm_level', 'N/A')}")
-                        # print(f"      卫星数量: {parsed_data.get('total_sats', 'N/A')}")
-                        # if 'sats' in parsed_data and isinstance(parsed_data['sats'], list):
-                        #     print(f"      前3个卫星数据:")
-                        #     for i, sat in enumerate(parsed_data['sats'][:3]):
-                        #         print(f"        卫星{i+1}: PRN={sat.get('id', 'N/A')}, SNR={sat.get('snr', 'N/A')}, 信号={sat.get('signal_type', 'N/A')}")
-                        #     if len(parsed_data['sats']) > 3:
-                        #         print(f"        ... 还有 {len(parsed_data['sats']) - 3} 个卫星")
-                        pass
-                    elif data_type == 'geography':
-                        # print(f"   地理位置数据详情:")
-                        # print(f"      基准站ID: {parsed_data.get('station_id', 'N/A')}")
-                        # print(f"      纬度: {parsed_data.get('lat', 'N/A')}")
-                        # print(f"      经度: {parsed_data.get('lon', 'N/A')}")
-                        # print(f"      高度: {parsed_data.get('height', 'N/A')}")
-                        # print(f"      国家: {parsed_data.get('country', 'N/A')}")
-                        # print(f"      城市: {parsed_data.get('city', 'N/A')}")
-                        pass
-                    elif data_type == 'device_info':
-                        # print(f"   设备信息数据详情:")
-                        # print(f"      接收机: {parsed_data.get('receiver', 'N/A')}")
-                        # print(f"      固件版本: {parsed_data.get('firmware', 'N/A')}")
-                        # print(f"      天线: {parsed_data.get('antenna', 'N/A')}")
-                        # print(f"      天线固件: {parsed_data.get('antenna_firmware', 'N/A')}")
-                        pass
-                    elif data_type == 'message_stats':
-                        # print(f"   消息统计数据详情:")
-                        # print(f"      消息类型: {parsed_data.get('message_types', 'N/A')}")
-                        # print(f"      GNSS系统: {parsed_data.get('gnss', 'N/A')}")
-                        # print(f"      载波频段: {parsed_data.get('carriers', 'N/A')}")
-                        pass
-                    
-                    # 打印完整数据（截断显示）- 对MSM数据不打印以避免刷屏
-                    if data_type != 'msm_satellite':
-                        data_str = str(parsed_data)
-                        # print(f"   完整数据: {data_str[:500]}{'...' if len(data_str) > 500 else ''}")
-                    
-                    # 确保数据包含mount_name
-                    if 'mount_name' not in parsed_data:
-                        # print(f"[后端推送] 推送数据缺少mount_name字段")
-                        log_warning("推送数据缺少mount_name字段")
-                        return
-                        
-                    # 通过SocketIO推送给前端，事件名为'rtcm_realtime_data'
-                    if data_type != 'msm_satellite':
-                        # print(f"[后端推送] 通过SocketIO推送数据到前端 - 事件: rtcm_realtime_data")
-                        pass
-                    self.socketio.emit(
-                        'rtcm_realtime_data',
-                        parsed_data
-                    )
-                    if data_type != 'msm_satellite':
-                        # print(f"[后端推送] 数据推送完成\n")
-                        pass
-                
-                # 启动新的解析任务，传入回调
-                # print(f"[后端API] 启动新的解析任务 - 挂载点: {mount_name}")
-                success = rtcm_manager.start_realtime_parsing(
-                    mount_name=mount_name,
-                    push_callback=push_callback  # 替换原有的self.socketio参数
-                )
-                if success:
-                    # print(f" [后端API] 解析启动成功 - 挂载点: {mount_name}")
-                    log_system_event(f"挂载点 {mount_name} 实时RTCM解析已启动")
-                    return jsonify({'success': True, 'message': f'Real-time RTCM parsing started for {mount_name}'})
-                else:
-                    # print(f"[后端API] 解析启动失败 - 挂载点: {mount_name} (可能离线)")
-                    return jsonify({'error': 'Failed to start parsing - mount may be offline'}), 400
+                return self._parse_subscribe(mount_name)
             except Exception as e:
-                # print(f"[后端API] 启动RTCM解析异常: {e}")
                 log_error(f"启动实时RTCM解析失败: {e}")
                 return jsonify({'error': str(e)}), 500
-        
+
+        @self.app.route('/api/mount/<mount_name>/rtcm-parse/stop', methods=['POST'])
+        @self.require_login
+        def api_stop_rtcm_parsing_for_mount(mount_name):
+            """退订指定挂载点（只影响当前客户端，不打断其他访客）"""
+            try:
+                err = self._validate_mount_param(mount_name)
+                if err:
+                    return jsonify({'error': err, 'code': 'bad_request'}), 400
+                return self._parse_unsubscribe(mount_name)
+            except Exception as e:
+                log_error(f"退订实时RTCM解析失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/mount/rtcm-parse/stop', methods=['POST'])
         @self.require_login
         def api_stop_rtcm_parsing():
-            """停止所有实时RTCM解析"""
+            """退订当前客户端的全部解析订阅
+
+            改造前这里是「停掉所有人的解析线程」，一个人关标签页就能打断全部访客。
+            现在只摘掉自己那条订阅边；线程的引用计数归零后由注册表宽限期回收。
+            """
             try:
-                rtcm_manager.stop_realtime_parsing()
-                log_system_event("所有实时RTCM解析已停止")
-                return jsonify({'success': True, 'message': 'Real-time RTCM parsing stopped'})
+                return self._parse_unsubscribe()
             except Exception as e:
                 log_error(f"停止实时RTCM解析失败: {e}")
                 return jsonify({'error': str(e)}), 500
-        
+
         @self.app.route('/api/mount/rtcm-parse/status', methods=['GET'])
         @self.require_login
         def api_get_rtcm_parsing_status():
-            """获取RTCM解析器状态信息"""
+            """获取当前客户端的RTCM解析状态"""
             try:
-                status = rtcm_manager.get_parser_status()
-                return jsonify({
-                    'success': True, 
-                    'status': status,
-                    'message': 'Parser status retrieved successfully'
-                })
+                return self._parse_status()
             except Exception as e:
                 log_error(f"获取解析器状态失败: {e}")
                 return jsonify({'error': str(e)}), 500
-        
+
         @self.app.route('/api/mount/rtcm-parse/heartbeat', methods=['POST'])
         @self.require_login
         def api_rtcm_parsing_heartbeat():
-            """实时RTCM解析心跳维持"""
+            """实时RTCM解析心跳维持
+
+            改造前是空实现（update_parsing_heartbeat 里只有 pass），
+            前端也从没调用过，所以「访客直接关浏览器」留下的订阅永远不回收。
+            """
             try:
-                data = request.get_json()
-                mount_name = data.get('mount_name') if data else None
-                
-                if mount_name:
-                    # 更新心跳时间戳
-                    rtcm_manager.update_parsing_heartbeat(mount_name)
-                    return jsonify({'success': True, 'message': 'Heartbeat updated'})
-                else:
-                    return jsonify({'error': 'Mount name is required'}), 400
+                return self._parse_heartbeat()
             except Exception as e:
                 log_error(f"更新解析心跳失败: {e}")
                 return jsonify({'error': str(e)}), 500
-        
 
+        # ==================== RTCM 实时解析（匿名公开接口） ====================
+        # 与登录接口共用同一套实现，只是不要求登录。
+        # 匿名访客必须能自己发起解析，数据页（卫星图、覆盖圈）才可能对所有人开放。
+        # 真正防滥用的手段是线程上限 + 单 IP 频率，而不是「必须登录」。
+        @self.app.route('/api/public/mount/<mount_name>/rtcm-parse/start', methods=['POST'])
+        def public_start_rtcm_parsing(mount_name):
+            try:
+                return self._parse_subscribe(mount_name)
+            except Exception as e:
+                log_error(f"匿名订阅解析失败: {e}")
+                return jsonify({'error': str(e)}), 500
 
-        
+        @self.app.route('/api/public/mount/<mount_name>/rtcm-parse/stop', methods=['POST'])
+        def public_stop_rtcm_parsing_for_mount(mount_name):
+            try:
+                err = self._validate_mount_param(mount_name)
+                if err:
+                    return jsonify({'error': err, 'code': 'bad_request'}), 400
+                return self._parse_unsubscribe(mount_name)
+            except Exception as e:
+                log_error(f"匿名退订解析失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/public/mount/rtcm-parse/stop', methods=['POST'])
+        def public_stop_rtcm_parsing():
+            try:
+                return self._parse_unsubscribe()
+            except Exception as e:
+                log_error(f"匿名停止解析失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/public/mount/rtcm-parse/status', methods=['GET'])
+        def public_get_rtcm_parsing_status():
+            try:
+                return self._parse_status()
+            except Exception as e:
+                log_error(f"匿名查询解析状态失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/public/mount/rtcm-parse/heartbeat', methods=['POST'])
+        def public_rtcm_parsing_heartbeat():
+            try:
+                return self._parse_heartbeat()
+            except Exception as e:
+                log_error(f"匿名解析心跳失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/alipay_qr')
         def alipay_qr():
             """支付宝二维码"""
@@ -658,7 +963,11 @@ class WebManager:
                     'description': config.APP_DESCRIPTION,
                     'author': config.APP_AUTHOR,
                     'contact': config.APP_CONTACT,
-                    'website': config.APP_WEBSITE
+                    'website': config.APP_WEBSITE,
+                    # 登录页 / 外部调用据此判断演示模式；界面主体用服务端注入的
+                    # window.__DEMO_MODE__，避免首帧闪出写入口
+                    'demo_mode': bool(config.DEMO_MODE),
+                    'logged_in': bool(session.get('admin_logged_in')),
                 })
             except Exception as e:
                 log_error(f"获取应用信息失败: {e}")
@@ -1227,7 +1536,23 @@ class WebManager:
             except Exception as e:
                 log_error(f"API异常: 获取系统统计数据失败: {e}")
                 return jsonify({'error': str(e)}), 500
-        
+
+        @self.app.route('/api/public/system/stats')
+        def api_public_system_stats():
+            """匿名版系统统计：只给聚合值
+
+            数据页对所有人开放，但用户明细（账号名 + 连接 IP）和源站 IP 属于
+            内部信息，必须裁掉——「公开数据」不等于「公开用户」。
+            """
+            try:
+                server = get_server_instance()
+                if server and hasattr(server, 'get_system_stats'):
+                    return jsonify(self._public_stats(server.get_system_stats()))
+                return jsonify({'error': '无法获取系统统计数据'}), 500
+            except Exception as e:
+                log_error(f"匿名系统统计失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/str-table', methods=['GET'])
         @self.require_login
         def api_str_table():
@@ -1289,8 +1614,9 @@ class WebManager:
         def api_get_rtcm_history(mount_name):
             """获取指定挂载点的历史解析数据"""
             try:
-                # 获取解析结果
-                parsed_data = rtcm_manager.get_parsed_mount_data(mount_name)
+                # Web 解析线程现在挂在订阅注册表里（按挂载点复用），
+                # 不再登记到 RTCM2ParserManager，所以先问注册表再回退旧接口。
+                parsed_data = self._get_parsed_mount_data(mount_name)
                 if parsed_data:
                     return jsonify({
                         'success': True,
@@ -1316,63 +1642,100 @@ class WebManager:
         
         @self.socketio.on('connect')
         def handle_connect(auth=None):
-            """客户端连接：必须先登录，否则直接拒绝握手"""
-            from flask import session as flask_session
-            if not flask_session.get('admin_logged_in'):
+            """客户端连接
+
+            改造后不再强制登录：数据页（STR 表、在线挂载点、实时解析）要对所有人开放，
+            匿名访客必须能收推送。敏感内容（用户列表、系统日志、含 IP 的统计）
+            仍然只发给已登录的 data_push 房间。
+            """
+            authed = bool(session.get('admin_logged_in'))
+            if not authed and not config.PUBLIC_ACCESS:
+                # 默认（公开访问关闭）仍要求先登录，与旧版行为一致
                 log_warning(f"拒绝未登录的 WebSocket 连接: {request.remote_addr}")
                 return False
-            client_id = flask_session.get('sid', 'unknown')
-            log_web_request('websocket', 'connect', client_id, 'WebSocket客户端连接')
-            # 将客户端加入到数据推送房间
-            join_room('data_push')
-            if config.LOG_FREQUENT_STATUS:
-                log_info(f"客户端 {client_id} 已加入data_push房间")
-            emit('status', {'message': '连接成功'})
-        
+            room = 'data_push' if authed else 'data_public'
+            join_room(room)
+            log_web_request('websocket', 'connect',
+                            (request.sid or 'unknown')[:12],
+                            'WebSocket客户端连接（%s）' % ('管理员' if authed else '匿名'))
+            emit('status', {
+                'message': '连接成功',
+                'authenticated': authed,
+                'demo_mode': bool(config.DEMO_MODE),
+            })
+
         @self.socketio.on('disconnect')
         def handle_disconnect():
-            """客户端断开连接"""
-            from flask import session
-            client_id = session.get('sid', 'unknown')
-            log_web_request('websocket', 'disconnect', client_id, 'WebSocket客户端断开')
-            
-            # 当WebSocket连接断开时，自动清理Web解析线程
-            try:
-                # 获取当前活跃的Web解析挂载点
-                current_web_mount = rtcm_manager.get_current_web_mount()
-                if current_web_mount:
-                    log_info(f"WebSocket断开连接，自动清理Web解析线程 [挂载点: {current_web_mount}]")
-                    rtcm_manager.stop_realtime_parsing()
-                    log_system_event(f"WebSocket断开连接已自动清理Web解析线程: {current_web_mount}")
-                else:
-                    log_debug("WebSocket断开连接，但没有活跃的Web解析线程需要清理")
-            except Exception as e:
-                log_error(f"WebSocket断开连接时清理Web解析线程失败: {e}")
-        
+            """客户端断开连接
+
+            改造前这里会调用 stop_realtime_parsing()，等于「一个人关标签页，
+            所有人的解析都停掉」。现在只清理该 socket 自己的房间记录：
+            订阅关系由心跳超时（web_parser_registry 巡检）回收，
+            短暂重连窗口内的解析不会被打断。
+            """
+            sid = request.sid
+            with self._sid_room_lock:
+                mount = self._sid_rooms.pop(sid, None)
+            log_web_request('websocket', 'disconnect', (sid or 'unknown')[:12],
+                            'WebSocket客户端断开' + (f'（挂载点 {mount}）' if mount else ''))
+
+        @self.socketio.on('rtcm_subscribe')
+        def handle_rtcm_subscribe(data):
+            """订阅某挂载点的解析数据（加入 Socket.IO 房间）
+
+            房间在握手连接上是「免费」的：join 之后服务端按房间 emit，
+            同一个站的访客收到同一份数据，不同站互相看不见。
+            """
+            payload = data or {}
+            mount = (payload.get('mount_name') or payload.get('mount') or '').strip()
+            if not mount:
+                emit('error', {'message': '缺少挂载点名称'})
+                return
+            err = self._validate_mount_param(mount)
+            if err:
+                emit('error', {'message': err})
+                return
+            self._bind_socket_room(mount)
+            emit('rtcm_subscribed', {'mount_name': mount})
+
+        @self.socketio.on('rtcm_unsubscribe')
+        def handle_rtcm_unsubscribe(data=None):
+            """离开挂载点房间（不传参数表示全部离开）"""
+            payload = data or {}
+            mount = (payload.get('mount_name') or payload.get('mount') or '').strip()
+            with self._sid_room_lock:
+                current = self._sid_rooms.get(request.sid)
+            # 指定了挂载点但不是我当前所在房间：忽略，避免把新订阅误退掉
+            if mount and current and mount != current:
+                emit('rtcm_unsubscribed', {'mount_name': mount, 'ignored': True})
+                return
+            self._bind_socket_room(None)
+            emit('rtcm_unsubscribed', {'mount_name': mount or current})
+
         @self.socketio.on('request_mount_data')
         def handle_request_mount_data(data):
             """请求挂载点数据"""
-            mount = data.get('mount')
+            mount = (data or {}).get('mount')
             if mount:
-                parsed_data = rtcm_manager.get_parsed_mount_data(mount)
+                parsed_data = self._get_parsed_mount_data(mount)
                 statistics = rtcm_manager.get_mount_statistics(mount)
                 emit('mount_data', {
                     'mount': mount,
                     'data': parsed_data,
                     'statistics': statistics
                 })
-        
+
         @self.socketio.on('request_recent_data')
         def handle_request_recent_data(data):
             """前端请求挂载点最近解析的数据"""
-            mount_name = data.get('mount_name')
+            mount_name = (data or {}).get('mount_name')
             if mount_name:
-                recent_data = rtcm_manager.get_parsed_mount_data(mount_name)
+                recent_data = self._get_parsed_mount_data(mount_name)
                 emit('recent_data_response', {
                     'mount_name': mount_name,
                     'data': recent_data
                 })
-        
+
         @self.socketio.on('request_system_stats')
         def handle_request_system_stats():
             """请求系统统计数据"""
@@ -1381,6 +1744,8 @@ class WebManager:
                 if server and hasattr(server, 'get_system_stats'):
                     stats = server.get_system_stats()
                     if stats:
+                        if not session.get('admin_logged_in'):
+                            stats = self._public_stats(stats)
                         emit('system_stats_update', {
                             'stats': stats,
                             'timestamp': time.time()
@@ -1455,14 +1820,17 @@ class WebManager:
                 full_due = (now - last_full_push) >= config.REALTIME_PUSH_INTERVAL
 
                 if changed or full_due:
+                    # 用户明细只给登录后台的人；挂载点列表数据页也要用，两个房间都发
                     self.socketio.emit('online_users_update', {
                         'users': cm.get_online_users(),
                         'timestamp': now
                     }, to='data_push')
-                    self.socketio.emit('online_mounts_update', {
+                    mounts_payload = {
                         'mounts': cm.get_online_mounts(),
                         'timestamp': now
-                    }, to='data_push')
+                    }
+                    self.socketio.emit('online_mounts_update', mounts_payload, to='data_push')
+                    self.socketio.emit('online_mounts_update', mounts_payload, to='data_public')
                     last_users_sig = users_sig
                     last_mounts_sig = mounts_sig
 
@@ -1476,12 +1844,20 @@ class WebManager:
                             'stats': stats,
                             'timestamp': now
                         }, to='data_push')
+                        # 匿名房间只给聚合值：不含用户明细与源站 IP
+                        self.socketio.emit('system_stats_update', {
+                            'stats': self._public_stats(stats),
+                            'timestamp': now
+                        }, to='data_public')
 
+                    # STR 表就是「大家都能看的实时数据」，两个房间都推
                     str_data = cm.get_all_str_data()
-                    self.socketio.emit('str_data_update', {
+                    str_payload = {
                         'str_data': str_data,
                         'timestamp': now
-                    }, to='data_push')
+                    }
+                    self.socketio.emit('str_data_update', str_payload, to='data_push')
+                    self.socketio.emit('str_data_update', str_payload, to='data_public')
 
                 time.sleep(tick)
             except Exception as e:

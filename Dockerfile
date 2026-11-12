@@ -1,4 +1,4 @@
-# NTRIP Caster v2.3.4 Docker镜像
+# NTRIP Caster v2.3.6 Docker镜像
 # 使用多阶段构建优化镜像大小
 FROM python:3.11-slim AS builder
 
@@ -30,11 +30,11 @@ FROM python:3.11-slim AS production
 
 # 设置标签信息
 LABEL maintainer="2rtk <i@jia.im>" \
-      version="2.3.4" \
+      version="2.3.6" \
       description="High-performance NTRIP Caster with RTCM parsing" \
       org.opencontainers.image.title="NTRIP Caster" \
       org.opencontainers.image.description="High-performance NTRIP Caster with RTCM parsing" \
-      org.opencontainers.image.version="2.3.4" \
+      org.opencontainers.image.version="2.3.6" \
       org.opencontainers.image.vendor="2RTK" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/Rampump/NTRIPcaster"
@@ -81,6 +81,9 @@ COPY --chown=ntrip:ntrip main.py healthcheck.py config.ini.example VERSION ./
 COPY --chown=ntrip:ntrip src/ ./src/
 COPY --chown=ntrip:ntrip static/ ./static/
 COPY --chown=ntrip:ntrip templates/ ./templates/
+# 运维脚本（演示站数据清理 demo_reset.py 等）：容器内可直接
+#   docker exec -it <容器> python scripts/demo_reset.py --apply --days 60
+COPY --chown=ntrip:ntrip scripts/ ./scripts/
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/logs /app/data /app/config && \
