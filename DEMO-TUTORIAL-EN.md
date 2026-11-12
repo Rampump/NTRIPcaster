@@ -41,9 +41,16 @@ In one line: **the demo database is a trash can. Nothing you want to keep may li
 - Only one machine → use [3.2](#32-path-b-coexisting-on-one-machine-docker); every port and volume must be offset
 - Just want to look at the UI → use [3.3](#33-path-c-run-locally-no-public-access)
 
-**② Domain and HTTPS**
+**② Domain and HTTPS (strongly recommended, not a functional requirement)**
 
-The demo is for strangers, and both login sessions and the `ntrip_cid` identifier travel in cookies. **HTTPS is mandatory**, otherwise cookies cross the public internet in clear text. See [section 8](#8-nginx--https-mandatory).
+The demo serves strangers, and both login sessions and the `ntrip_cid` identifier travel in
+cookies. With a domain, use HTTPS so cookies are not sent in clear text. **Plain HTTP works
+fine too** — the only cost is that the password and cookies are readable on the wire, so
+anyone who captures them can sign in as your admin (in demo mode that still only allows
+additions; edits/deletes stay 403). If you skip HTTPS, make sure
+`session_cookie_secure = false` (that is the default) — with `true` the browser stops sending
+the cookie over HTTP and the symptom is "login succeeds, then bounces straight back to the
+login page". Both setups are covered in [section 8](#8-nginx--https-strongly-recommended).
 
 **③ The database must be newly created**
 
@@ -413,9 +420,28 @@ docker compose -f docker-compose.demo.yml exec ntrip-demo \
 
 ---
 
-## 8. Nginx + HTTPS (mandatory)
+## 8. Nginx + HTTPS (strongly recommended)
 
-A demo site serves strangers; cookies and passwords must not travel in clear text. Minimal working config — **save the whole block as `/etc/nginx/conf.d/demo.conf`** (those files are included from `http {}`, so `limit_req_zone` is legal there):
+### 8.0 HTTP only: no domain, no certificate
+
+Nothing in the program depends on TLS — `http://SERVER_IP:5757` runs every feature (login,
+switching stations, live parsing, satellite view). Just confirm these three:
+
+| Option | HTTP only | Why |
+|---|---|---|
+| `security.session_cookie_secure` | **false** (default) | With `true` the browser will not send the cookie over HTTP; the symptom is "login succeeds, then bounces back to the login page" |
+| `security.trust_proxy_headers` | **false** (default) | Must stay off without a proxy; only turn it on behind Nginx, otherwise per-IP rate limits all collapse onto 127.0.0.1 |
+| `web.public_access` | as needed | `true` lets visitors browse the data pages without signing in; otherwise they need `admin / admin123` once |
+
+Be honest about the trade-off: `admin / admin123` and the cookie are plain text on the wire,
+so anyone sniffing traffic can sign in. In demo mode that still only buys
+"add user / add mount / start-stop parsing" — edits, deletes, password changes and restarts
+stay 403 — and the data is pruned on a schedule anyway. Fine for a throwaway demo; for anything
+long-lived or with real users, use 8.1.
+
+### 8.1 With a domain: Nginx + HTTPS
+
+A demo site serves strangers; cookies and passwords should not travel in clear text. Minimal working config — **save the whole block as `/etc/nginx/conf.d/demo.conf`** (those files are included from `http {}`, so `limit_req_zone` is legal there):
 
 ```nginx
 # Rate-limit write endpoints only — cheaper than doing it in the app
@@ -586,8 +612,8 @@ Before converting this machine into production, do three more things:
 # /etc/2rtk/config.ini
 [security]
 demo_mode = true                 # master switch
-trust_proxy_headers = true       # only behind a trusted proxy
-session_cookie_secure = true     # required with HTTPS
+trust_proxy_headers = true       # only behind a trusted proxy; false when hitting 5757 directly
+session_cookie_secure = true     # only with HTTPS; must stay false on plain HTTP
 
 [web]
 public_access = true             # optional: anonymous data page

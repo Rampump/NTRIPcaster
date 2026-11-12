@@ -41,9 +41,9 @@
 - 只有一台机器 → 走 [3.2](#32-路径-b同机共存docker)，端口和卷要全部错开
 - 只想先看看效果 → 走 [3.3](#33-路径-c本机试跑不对外)
 
-**② 域名和 HTTPS**
+**② 域名和 HTTPS（强烈建议，但不是功能必需）**
 
-演示站面向陌生人，登录和 `ntrip_cid` 标识都靠 Cookie。**必须上 HTTPS**，否则 Cookie 在公网明文传输。Nginx 配置片段见[第 8 节](#8-nginx--https必须)。
+演示站面向陌生人，登录态和 `ntrip_cid` 标识都靠 Cookie。有域名就上 HTTPS，Cookie 不会在公网明文传输；**纯 HTTP 一样能跑**，只是口令和 Cookie 全程明文——抓到就能用你的 admin 登录（演示模式下也只能新增，改删仍被 403 挡住）。不开 HTTPS 时务必确认 `session_cookie_secure = false`（默认就是 false），否则浏览器在 HTTP 下不回传 Cookie，表现为「登录成功却立刻跳回登录页」。两种情况的配置见[第 8 节](#8-nginx--https强烈建议)。
 
 **③ 数据库必须是新建的**
 
@@ -412,9 +412,26 @@ docker compose -f docker-compose.demo.yml exec ntrip-demo \
 
 ---
 
-## 8. Nginx + HTTPS（必须）
+## 8. Nginx + HTTPS（强烈建议）
 
-演示站是给陌生人用的，Cookie 和口令不能裸奔。最小可用配置——**整段直接存成 `/etc/nginx/conf.d/demo.conf` 即可**（`conf.d/*.conf` 是被 `http {}` 包含的，所以 `limit_req_zone` 放在这个文件里也合法）：
+### 8.0 只跑 HTTP：不配域名和证书也能用
+
+程序里没有任何逻辑依赖 TLS，演示站直接 `http://服务器IP:5757` 就能跑完全部功能（登录、切换挂载点、
+实时解析、卫星图）。只要确认这三条：
+
+| 配置项 | 纯 HTTP 时 | 说明 |
+|---|---|---|
+| `security.session_cookie_secure` | **false**（默认值） | 设成 true 后浏览器在 HTTP 下不回传 Cookie，症状是「登录成功但立刻跳回登录页」 |
+| `security.trust_proxy_headers` | **false**（默认值） | 没有反代时必须关；挂了 Nginx 才改 true，否则按 IP 限流全算在 127.0.0.1 上 |
+| `web.public_access` | 按需 | 想让访客不登录也能看数据页就设 true，否则他们要用 `admin / admin123` 登录一次 |
+
+代价说清楚：`admin / admin123` 与 Cookie 都是明文，谁抓包谁就能登录；但演示模式下能做的只有
+「新增用户 / 新增挂载点 / 启停解析」，改、删、改密码、重启仍被后端 403 挡住，数据本来也会定期清空 ——
+纯演示用途可以接受。要长期挂着、或者有真实用户，还是按 8.1 上 HTTPS。
+
+### 8.1 有域名时：Nginx + HTTPS
+
+演示站是给陌生人用的，Cookie 和口令不该裸奔。最小可用配置——**整段直接存成 `/etc/nginx/conf.d/demo.conf` 即可**（`conf.d/*.conf` 是被 `http {}` 包含的，所以 `limit_req_zone` 放在这个文件里也合法）：
 
 ```nginx
 # 对写接口单独限流，比在应用层做更省 CPU
@@ -585,8 +602,8 @@ curl -s http://127.0.0.1:5757/health | grep -o '"demo_mode":false'
 # /etc/2rtk/config.ini
 [security]
 demo_mode = true                 # 演示模式总开关
-trust_proxy_headers = true       # 在 Nginx 之后才开
-session_cookie_secure = true     # HTTPS 必须开
+trust_proxy_headers = true       # 只在 Nginx 之后开；直连 5757 保持 false
+session_cookie_secure = true     # 只在 HTTPS 下开；纯 HTTP 必须保持 false
 
 [web]
 public_access = true             # 可选：匿名也能看数据页
