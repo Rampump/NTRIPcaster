@@ -17,6 +17,8 @@ services:
       - DATABASE_PATH=/app/data/2rtk.db
       - LOG_DIR=/app/logs
       - DATA_DIR=/app/data
+      # 演示模式：.env 里 DEMO_MODE=true 即可开启，无需改 config.ini
+      - DEMO_MODE=${DEMO_MODE:-false}
     # 生产环境资源限制
     deploy:
       mode: replicated

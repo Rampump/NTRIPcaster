@@ -282,6 +282,10 @@ password = admin123            # Administrator password (change in production)
 
 ### Demo Mode (public test instances)
 
+> A step-by-step guide for standing up a demo site (dedicated instance, Docker coexistence,
+> Nginx/HTTPS, acceptance checks, troubleshooting) is in
+> [Running a Public Demo Site](DEMO-TUTORIAL-EN.md). The section below only describes the switch itself.
+
 When you expose the caster to the internet for people to try out, the risk is that a
 visitor edits or deletes somebody else's data. Add one line to `config.ini`:
 
