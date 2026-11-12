@@ -1893,7 +1893,7 @@ class WebManager:
     
     def run(self, host=None, port=None, debug=None):
         """启动Web服务器"""
-        host = host or config.HOST
+        host = host or config.WEB_HOST
         port = port or config.WEB_PORT
         debug = debug if debug is not None else config.DEBUG
         self.socketio.run(self.app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)

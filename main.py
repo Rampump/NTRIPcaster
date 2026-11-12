@@ -226,7 +226,7 @@ class ServiceManager:
         self.web_manager.start_rtcm_parsing()
         
         def run_web():
-            self.web_manager.run(host=config.HOST, port=config.WEB_PORT, debug=False)
+            self.web_manager.run(host=config.WEB_HOST, port=config.WEB_PORT, debug=False)
         
         self.web_thread = Thread(target=run_web, daemon=True)
         self.web_thread.start()

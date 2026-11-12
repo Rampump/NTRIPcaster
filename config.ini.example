@@ -13,7 +13,7 @@
 [app]
 # 应用基本信息
 name = 2RTK Ntrip Caster
-version = 2.3.6
+version = 2.3.7
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -118,8 +118,9 @@ keepalive_count = 3
 socket_timeout = 120
 
 [data_forwarding]
-# 环形缓冲：保留最近 N 秒的数据，同时限制最多 ring_buffer_max_chunks 块
+# 环形缓冲：保留最近 N 秒的数据
 ring_buffer_size = 60
+# 同时限制最多缓存多少块，防止上游高频小包把内存打满
 ring_buffer_max_chunks = 3000
 # 广播间隔（秒）
 broadcast_interval = 0.01

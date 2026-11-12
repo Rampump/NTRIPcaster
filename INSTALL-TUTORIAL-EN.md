@@ -1,6 +1,6 @@
 # NTRIP Caster Linux System Installation Tutorial
 
-This tutorial will guide you through installing and deploying NTRIP Caster v2.3.6 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
+This tutorial will guide you through installing and deploying NTRIP Caster v2.3.7 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
 
 ## Table of Contents
 - [System Requirements](#system-requirements)
@@ -193,7 +193,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.6
+version = 2.3.7
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -208,6 +208,11 @@ port = 2101
 
 [web]
 port = 5757
+# Let signed-out visitors browse the data pages and start their own parsing
+# (public / demo instances only, default false)
+public_access = false
+# Max mounts parsed at once; extra subscriptions get 429 (3-4 on a 2C2G box)
+max_web_parsers = 4
 
 [database]
 path = /opt/2rtk/data/2rtk.db
@@ -224,6 +229,9 @@ backup_count = 5
 secret_key = $(openssl rand -hex 32)
 password_hash_rounds = 3
 session_timeout = 3600
+# Demo mode: set true when opening the instance to testers — additions only,
+# edits/deletes/password change/restart are rejected with 403
+demo_mode = false
 ```
 
 ### 5. Generate Keys and Initialize Database
@@ -347,7 +355,40 @@ Environment=WEB_PORT=5757
 Environment=DEBUG=false
 Environment=DATABASE_PATH=/opt/2rtk/data/2rtk.db
 Environment=LOG_LEVEL=INFO
+# Demo mode / public data pages: toggle without editing the config file
+Environment=DEMO_MODE=false
+Environment=PUBLIC_ACCESS=false
+# Bind addresses: NTRIP_HOST affects 2101 only, WEB_HOST affects 5757 only
+Environment=WEB_HOST=0.0.0.0
 ```
+
+### Merging New Config Options After an Upgrade
+
+New releases add sections and keys to `config.ini` (`demo_mode`, `public_access`,
+`max_web_parsers`, ...). `update.sh` never overwrites `config.ini` — those are your
+deployment settings — so the new keys simply do not exist in an old file, and it looks
+like "the code has the feature but the config has no such option". `update.sh` now
+merges them automatically; you can also run it by hand (idempotent, only fills in
+missing keys, never touches existing values):
+
+```bash
+# 1) Preview what would be added (read-only)
+sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py \
+    --config /etc/2rtk/config.ini \
+    --example /opt/2rtk/config.ini.example
+
+# 2) Apply (backs up to config.ini.bak.YYYYmmdd-HHMMSS first)
+sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py --apply \
+    --config /etc/2rtk/config.ini \
+    --example /opt/2rtk/config.ini.example
+
+# 3) Config is only read at startup
+sudo systemctl restart 2rtk
+```
+
+> Duplicate keys in the same section (two `demo_mode` lines) make the program fail to
+> start. The script refuses to touch such a file and exits with an error — remove the
+> duplicate first, then re-run.
 
 ### Log Configuration
 
@@ -858,6 +899,7 @@ If you encounter issues during installation or usage:
 
 ## Changelog
 
+- **v2.3.7**: Fixed "the code grew a new option but the config file has no such key" — added `scripts/merge_config.py`, which merges the sections/keys an old `config.ini` is missing (missing keys only, existing values untouched, backup before writing, idempotent); `update.sh` runs it on upgrade and the container entrypoint runs it on every boot; `demo_mode` / `public_access` / parser concurrency / log level can now be set through `DEMO_MODE`, `PUBLIC_ACCESS`, `MAX_WEB_PARSERS`, `PARSER_*` and `LOG_LEVEL`, and `NTRIP_HOST` / `WEB_HOST` now really bind 2101 and 5757 separately
 - **v2.3.5**: Any click on an STR row now starts parsing (no need to hit the button precisely), drag-selecting the message to copy no longer triggers it, and re-clicking the same station does not restart the parser; base station marker redrawn as a blue circular badge with a white ring; coverage rings changed to 10 km / 20 km
 - **v2.3.6**: Live parsing is now "one thread per mount + one subscription per visitor", so one visitor switching stations no longer interrupts another and data no longer leaks across viewers; heartbeat and janitor keep zombie subscriptions in check (closing the tab unsubscribes automatically), with a thread cap and per-IP rate limit; new demo mode (`demo_mode`) allowing only additions, with password change / restart blocked by 403; new anonymous namespace `/api/public/` so signed-out visitors can browse live data and start their own parsing; new `scripts/demo_reset.py` to prune demo data after 60 days
 - **v2.3.4**: Fixed the base station marker not rendering on the map — the icon was inlined via btoa, and the Chinese comments inside the SVG raised InvalidCharacterError, aborting the whole draw (the map panned but no icon, label or coverage circles appeared); the icon is now a same-origin static file with a dot fallback; coverage circles moved below the icon, their radius corrected for Web Mercator latitude scale, and given dashed outlines
@@ -870,7 +912,7 @@ If you encounter issues during installation or usage:
 
 ---
 
-**Version**: NTRIP Caster v2.3.6  
+**Version**: NTRIP Caster v2.3.7  
 **Updated**: December 2024  
 **Author**: 2RTK Team  
 **License**: Apache 2.0

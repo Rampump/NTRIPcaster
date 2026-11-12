@@ -92,6 +92,17 @@ If the response contains `"demo_mode": true`, the switch is live.
 
 > That `if/else` is not overkill: **two `demo_mode` lines in the same section make the program fail to start** (configparser raises on duplicate keys). So either rewrite the value or insert it — never append blindly.
 
+> Upgraded from an older release? The keys `demo_mode` / `max_web_parsers` may not exist at
+> all. Instead of hand-editing, run the merge script once — it only fills in missing keys and
+> never touches values you already set:
+>
+> ```bash
+> sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py --apply \
+>     --config /etc/2rtk/config.ini --example /opt/2rtk/config.ini.example
+> ```
+>
+> Then run steps 3 and 4 above (`grep` now matches, so the "rewrite the value" branch is used).
+
 > Prefer an editor? Editing `/etc/2rtk/config.ini` by hand is identical — just remember `systemctl restart 2rtk` afterwards.
 
 ### 3.2 Path B: coexisting on one machine (Docker)
@@ -160,7 +171,7 @@ docker compose -f docker-compose.demo.yml ps
 curl -s http://127.0.0.1:5758/health
 ```
 
-On first boot the container copies `config.ini.example` to `/app/config/config.ini`, so **`DEMO_MODE=true` is the only thing you need**; there is no file to edit inside the container.
+On first boot the container copies `config.ini.example` to `/app/config/config.ini`, so **`DEMO_MODE=true` is the only thing you need**; there is no file to edit inside the container. When the volume already holds an older `config.ini`, the entrypoint merges in the missing keys (again without touching existing values), so upgrading the image needs no manual config migration.
 
 Three things that must be offset (getting them wrong hurts):
 

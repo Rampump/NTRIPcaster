@@ -1,4 +1,4 @@
-# 2RTK NTRIP Caster v2.3.6
+# 2RTK NTRIP Caster v2.3.7
 
 **Language / 语言选择:**
 - [English](README.md)
@@ -124,6 +124,17 @@ Docker 形态同理，**必须先停容器、再删容器、最后才创建新�
 
 这样新版本启动时不会因端口被旧实例占用而失败，避免出现「服务重启后未正常运行」。
 
+**新增的配置项是「补进去」的，不是丢掉。** `config.ini` 永远不会被覆盖（里面是你的端口、
+路径和密钥），但新版本会往配置里加新的段和键 —— `demo_mode`、`public_access`、
+`max_web_parsers` 等等，它们不可能自己出现在老文件里。所以 `update.sh` 在同步代码后会跑一次
+`scripts/merge_config.py`：只补**缺的键**（值和注释取自 `config.ini.example`），
+已经存在的值一个都不动，写之前先备份。容器部署则每次启动都会做一次同样的事。也可以随时手动跑：
+
+```bash
+sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py --apply \
+    --config /etc/2rtk/config.ini --example /opt/2rtk/config.ini.example
+```
+
 ### 推荐方式：在项目源码目录执行
 
 ```bash
@@ -223,6 +234,8 @@ download_enforce_user_binding = false  # 拉流是否强制校验挂载点与用
 [web]
 port = 5757                        # Web管理端口
 realtime_push_interval = 3         # 实时数据推送间隔
+public_access = false              # 未登录访客也能看数据页并自行发起解析
+max_web_parsers = 4                # 同时被解析的挂载点上限，超限返回 429
 
 [database]
 path = 2rtk.db                     # SQLite 路径，容器内请用 /app/data/2rtk.db
@@ -242,6 +255,7 @@ thread_pool_size = 5000            # 并发连接线程池大小
 secret_key =                       # 留空则自动生成并落盘到 data/.secret_key
 login_max_attempts = 5             # 登录失败次数上限
 login_lockout_seconds = 300        # 锁定时长
+demo_mode = false                  # 演示模式：只能新增，改删一律 403
 
 [admin]
 username = admin                   # 管理员用户名

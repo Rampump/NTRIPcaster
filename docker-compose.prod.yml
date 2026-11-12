@@ -4,7 +4,7 @@
 services:
   ntrip-caster:
     # 生产环境配置
-    image: ntripcaster:2.3.6
+    image: ntripcaster:2.3.7
     # 使用预构建镜像：本文件不覆盖基础 compose 的 build 段，
     # 需要构建时请用 docker-compose.yml（或 build 后打 tag）
     environment:
@@ -19,6 +19,12 @@ services:
       - DATA_DIR=/app/data
       # 演示模式：.env 里 DEMO_MODE=true 即可开启，无需改 config.ini
       - DEMO_MODE=${DEMO_MODE:-false}
+      # 数据页公开 / 解析并发：同样可用 .env 覆盖
+      - PUBLIC_ACCESS=${PUBLIC_ACCESS:-false}
+      - MAX_WEB_PARSERS=${MAX_WEB_PARSERS:-4}
+      - PARSER_CLIENT_TTL=${PARSER_CLIENT_TTL:-45}
+      - PARSER_GRACE_SECONDS=${PARSER_GRACE_SECONDS:-5}
+      - PARSER_IP_RATE=${PARSER_IP_RATE:-10}
     # 生产环境资源限制
     deploy:
       mode: replicated

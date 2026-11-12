@@ -1,4 +1,4 @@
-# 2RTK NTRIP Caster v2.3.6
+# 2RTK NTRIP Caster v2.3.7
 
 **Language / 语言选择:**
 - [English](#) (Current)
@@ -137,6 +137,19 @@ old container holding 2101/5757.
 This prevents the new version from failing to start because the old instance still holds the
 ports — the usual cause of "service did not come back up after restart".
 
+**New config options are merged in, not dropped.** `config.ini` is never overwritten (it holds
+your ports, paths and secret key), but a new release also adds new sections and keys —
+`demo_mode`, `public_access`, `max_web_parsers`, ... — and those cannot appear in an old file
+by themselves. `update.sh` therefore runs `scripts/merge_config.py` after syncing the code:
+it only fills in **missing** keys (values from `config.ini.example`, comments included), never
+touches a value you already set, and backs the file up first. The Docker entrypoint does the
+same on every boot. Run it by hand any time:
+
+```bash
+sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py --apply \
+    --config /etc/2rtk/config.ini --example /opt/2rtk/config.ini.example
+```
+
 ### Recommended: run it inside your source directory
 
 ```bash
@@ -236,6 +249,8 @@ download_enforce_user_binding = false  # Require mount<->user binding for downlo
 [web]
 port = 5757                        # Web management port
 realtime_push_interval = 3         # Realtime push interval (seconds)
+public_access = false              # Let signed-out visitors browse the data pages
+max_web_parsers = 4                # Mounts parsed at once; extras get 429
 
 [database]
 path = 2rtk.db                     # SQLite path; use /app/data/2rtk.db inside Docker
@@ -255,6 +270,7 @@ thread_pool_size = 5000            # Concurrent connection thread pool size
 secret_key =                       # Leave empty to auto-generate into data/.secret_key
 login_max_attempts = 5             # Failed login limit before lockout
 login_lockout_seconds = 300        # Lockout duration
+demo_mode = false                  # Public test instance: additions only, edits 403
 ```
 
 ```ini

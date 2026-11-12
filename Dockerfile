@@ -1,4 +1,4 @@
-# NTRIP Caster v2.3.6 Docker镜像
+# NTRIP Caster v2.3.7 Docker镜像
 # 使用多阶段构建优化镜像大小
 FROM python:3.11-slim AS builder
 
@@ -30,11 +30,11 @@ FROM python:3.11-slim AS production
 
 # 设置标签信息
 LABEL maintainer="2rtk <i@jia.im>" \
-      version="2.3.6" \
+      version="2.3.7" \
       description="High-performance NTRIP Caster with RTCM parsing" \
       org.opencontainers.image.title="NTRIP Caster" \
       org.opencontainers.image.description="High-performance NTRIP Caster with RTCM parsing" \
-      org.opencontainers.image.version="2.3.6" \
+      org.opencontainers.image.version="2.3.7" \
       org.opencontainers.image.vendor="2RTK" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/Rampump/NTRIPcaster"
@@ -115,8 +115,12 @@ chmod -R 755 /app/logs /app/data /app/config\n\
 if [ ! -f "/app/config/config.ini" ]; then\n\
     echo "初始化配置文件..."\n\
     cp /app/config.ini.example /app/config/config.ini\n\
-    chown ntrip:ntrip /app/config/config.ini\n\
 fi\n\
+\n\
+# 补全新版本新增的配置项（demo_mode / public_access / max_web_parsers …）。\n\
+# 卷里的 config.ini 是旧版本留下的，新键不在里面 —— 只补缺的键，已有值一个都不动。\n\
+python /app/scripts/merge_config.py --apply --quiet --config /app/config/config.ini --example /app/config.ini.example || echo "配置项补全跳过（不影响启动）"\n\
+chown ntrip:ntrip /app/config/config.ini\n\
 \n\
 # 设置配置文件路径\n\
 export NTRIP_CONFIG_FILE="/app/config/config.ini"\n\

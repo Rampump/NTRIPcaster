@@ -92,6 +92,16 @@ curl -s http://127.0.0.1:5757/health
 
 > 这段 `if/else` 不是啰嗦：**同一个段里出现两行 `demo_mode` 会让程序直接启动失败**（configparser 遇到重复键会抛异常）。所以要么改值、要么插入，不能无脑追加。
 
+> 从老版本升上来的实例，配置里可能连 `demo_mode` / `max_web_parsers` 这些键都没有。
+> 不想手工插的话，先跑一次迁移脚本让它自动补齐（只补缺的键，已有值一个都不动）：
+>
+> ```bash
+> sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py --apply \
+>     --config /etc/2rtk/config.ini --example /opt/2rtk/config.ini.example
+> ```
+>
+> 补完再执行上面的第 3、4 步即可（`grep` 会命中，走的是「改值」分支）。
+
 > 不想碰命令行的，直接用编辑器改 `/etc/2rtk/config.ini` 效果相同，改完记得 `systemctl restart 2rtk`。
 
 ### 3.2 路径 B：同机共存（Docker）
@@ -160,7 +170,7 @@ docker compose -f docker-compose.demo.yml ps
 curl -s http://127.0.0.1:5758/health
 ```
 
-容器首次启动会自动把 `config.ini.example` 复制成 `/app/config/config.ini`，所以**只需要 `DEMO_MODE=true` 这一个环境变量**，不用进容器改文件。
+容器首次启动会自动把 `config.ini.example` 复制成 `/app/config/config.ini`，所以**只需要 `DEMO_MODE=true` 这一个环境变量**，不用进容器改文件。卷里已经有旧版 `config.ini` 时，启动脚本会按 `config.ini.example` 把缺的键补进去（同样不覆盖已有值），所以升级镜像不用手动迁移配置。
 
 两个一定要错开的地方（写错就会撞车）：
 

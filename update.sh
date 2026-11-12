@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# NTRIP Caster 一键无损更新脚本 v2.3.6
+# NTRIP Caster 一键无损更新脚本 v2.3.7
 #
 # 功能：自动检测部署形态（源码+systemd / Docker），从可用源拉取最新版本，
 #       升级前先检查并停止正在运行的旧版本（systemd 服务 + 游离进程 + 端口），
@@ -31,7 +31,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_ok()    { echo -e "${CYAN}[OK]${NC} $1"; }
 
 # ==================== 常量 ====================
-SCRIPT_VERSION="2.3.6"
+SCRIPT_VERSION="2.3.7"
 INSTALL_DIR="/opt/2rtk"
 CONFIG_DIR="/etc/2rtk"
 LOG_DIR="/var/log/2rtk"
@@ -1293,6 +1293,34 @@ EOF
             log_warn "配置版本号同步失败（不影响程序运行）"
         fi
         rm -f "$_cfg_tmp"
+    fi
+
+    # 补全新版本新增的配置项（不覆盖已有值）。
+    # update.sh 从不覆盖 config.ini —— 用户改过的端口、路径、密钥必须原样保留；
+    # 但新版本新增的段和键（demo_mode / public_access / max_web_parsers …）在老配置里
+    # 根本不存在，用户既看不到也不知道有这些开关，表现为「代码加了功能，配置文件里查无此项」。
+    # 这里按 config.ini.example 补「缺的键」，已有值一个都不动，写前自动备份。
+    if [ -f "$CONFIG_DIR/config.ini" ] && [ -f "$INSTALL_DIR/config.ini.example" ] \
+       && [ -f "$INSTALL_DIR/scripts/merge_config.py" ]; then
+        local _merge_py="$INSTALL_DIR/venv/bin/python3"
+        [ -x "$_merge_py" ] || _merge_py="$(command -v python3 || command -v python)"
+        local _merge_out=""
+        if [ -n "$_merge_py" ] && _merge_out=$("$_merge_py" "$INSTALL_DIR/scripts/merge_config.py" --apply \
+                --config "$CONFIG_DIR/config.ini" \
+                --example "$INSTALL_DIR/config.ini.example" 2>&1); then
+            if printf '%s' "$_merge_out" | grep -q '新增 '; then
+                local _n
+                _n=$(printf '%s' "$_merge_out" | sed -n 's/^新增 \([0-9]*\) 项.*/\1/p' | head -1)
+                log_ok "已把新版新增的 ${_n:-若干} 个配置项补进 config.ini（已有值未改动，原文件已备份）"
+            else
+                log_info "config.ini 配置项已是最新，无需补全"
+            fi
+        else
+            log_warn "配置项补全跳过（不影响运行，可手动执行 scripts/merge_config.py --apply）"
+            printf '%s\n' "$_merge_out" | tail -2 | while IFS= read -r _l; do
+                [ -n "$_l" ] && log_info "  $_l"
+            done
+        fi
     fi
 
     # 重新安装依赖（requirements.txt 可能变化，用清华镜像加速 + 回退）

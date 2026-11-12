@@ -47,6 +47,22 @@ def get_config_value(section, key, fallback=None, value_type=str):
     except (configparser.NoSectionError, configparser.NoOptionError):
         return fallback
 
+def _env_flag(name):
+    """环境变量布尔开关：1/true/yes/on 视为开启；未设置或其它值视为未开启。"""
+    return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _env_int(name):
+    """环境变量整数；未设置或非法值返回 None，由调用方回退到配置文件/默认值。"""
+    raw = os.environ.get(name, '').strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 # ==================== 版本号：全项目唯一事实源 ====================
 # 版本号只在根目录的 VERSION 文件里维护（单行，如 "2.3.1"）。
 # 代码、示例配置、compose、Dockerfile、部署脚本、文档里的版本号都是派生副本，
@@ -180,13 +196,19 @@ def get_display_urls(port: int, service_name: str = "服务") -> List[str]:
     return urls
 
 # 网络配置
-HOST = get_config_value('network', 'host', '0.0.0.0') 
+# 监听地址以 config.ini [network] host 为准；环境变量 NTRIP_HOST / WEB_HOST 可分别覆盖，
+# 容器部署或多网卡机器上不必再去改挂载进去的配置文件（.env.example 里承诺的就是这个行为）。
+_CFG_HOST = get_config_value('network', 'host', '0.0.0.0')
+_ENV_NTRIP_HOST = (os.environ.get('NTRIP_HOST') or '').strip()
+_ENV_WEB_HOST = (os.environ.get('WEB_HOST') or '').strip()
+
+HOST = _ENV_NTRIP_HOST or _CFG_HOST
 
 
-NTRIP_HOST = HOST  
+NTRIP_HOST = _ENV_NTRIP_HOST or _CFG_HOST
 NTRIP_PORT = get_config_value('ntrip', 'port', 2101, int)  # NTRIP服务端口
 
-WEB_HOST = HOST  # Web服务监听地址
+WEB_HOST = _ENV_WEB_HOST or _CFG_HOST  # Web服务监听地址
 WEB_PORT = get_config_value('web', 'port', 5757, int)      # Web服务端口
 
 # 最大连接数
@@ -212,7 +234,11 @@ LOG_FILES = {
     'errors': get_config_value('logging', 'error_log_file', 'errors.log')
 }
 
-LOG_LEVEL = get_config_value('logging', 'log_level', "WARNING")
+# 日志级别：环境变量 LOG_LEVEL 优先（容器 / systemd 里改级别不用动配置文件）
+LOG_LEVEL = (
+    (os.environ.get('LOG_LEVEL') or '').strip().upper()
+    or get_config_value('logging', 'log_level', "WARNING")
+)
 
 LOG_FORMAT = get_config_value('logging', 'log_format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -280,7 +306,7 @@ TRUST_PROXY_HEADERS = get_config_value('security', 'trust_proxy_headers', False,
 # 改、删、改管理员密码、重启服务等写操作一律 403（后端拦截，不依赖前端藏按钮）。
 # 环境变量 DEMO_MODE=1 可覆盖配置文件，方便 Docker 部署时不用改挂载的 config.ini。
 DEMO_MODE = (
-    os.environ.get('DEMO_MODE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+    _env_flag('DEMO_MODE')
     or get_config_value('security', 'demo_mode', False, bool)
 )
 
@@ -407,18 +433,40 @@ PAGE_REFRESH_INTERVAL = get_config_value('web', 'page_refresh_interval', 30, int
 # 走 /api/public/ 命名空间，敏感信息（用户明细、源站 IP、系统日志）仍然不下发。
 # 默认关闭 —— 不开时行为与旧版完全一致（未登录一律跳登录页），
 # 需要把数据页开放给所有人时再置 true。
-PUBLIC_ACCESS = get_config_value('web', 'public_access', False, bool)
+# 环境变量 PUBLIC_ACCESS=true 可覆盖（容器部署不必改挂载的配置文件）。
+PUBLIC_ACCESS = (
+    _env_flag('PUBLIC_ACCESS')
+    or get_config_value('web', 'public_access', False, bool)
+)
 
 # Web 端 RTCM 实时解析线程上限。
 # MSM 解析是 CPU 密集型，单线程大约吃 10%~15% 单核；公网演示站多人同时切站时，
 # 不做上限会直接把 CPU 打满。超限的新订阅返回 429。
-WEB_PARSER_LIMIT = get_config_value('web', 'max_web_parsers', 4, int)
+# 以下四项均可用环境变量覆盖：MAX_WEB_PARSERS / PARSER_CLIENT_TTL /
+# PARSER_GRACE_SECONDS / PARSER_IP_RATE。
+_env_max_parsers = _env_int('MAX_WEB_PARSERS')
+WEB_PARSER_LIMIT = (
+    _env_max_parsers if _env_max_parsers is not None
+    else get_config_value('web', 'max_web_parsers', 4, int)
+)
 # 客户端心跳超时（秒）：超过这个时间没收到 heartbeat 就视为访客已离开，自动退订
-WEB_PARSER_CLIENT_TTL = get_config_value('web', 'parser_client_ttl', 45, int)
+_env_parser_ttl = _env_int('PARSER_CLIENT_TTL')
+WEB_PARSER_CLIENT_TTL = (
+    _env_parser_ttl if _env_parser_ttl is not None
+    else get_config_value('web', 'parser_client_ttl', 45, int)
+)
 # 订阅数归零后的宽限期（秒）：避免用户来回切站时反复销毁/重建解析线程
-WEB_PARSER_GRACE_SECONDS = get_config_value('web', 'parser_grace_seconds', 5, int)
+_env_parser_grace = _env_int('PARSER_GRACE_SECONDS')
+WEB_PARSER_GRACE_SECONDS = (
+    _env_parser_grace if _env_parser_grace is not None
+    else get_config_value('web', 'parser_grace_seconds', 5, int)
+)
 # 单 IP 每分钟最多发起多少次解析启动（0 表示不限）
-WEB_PARSER_IP_RATE = get_config_value('web', 'parser_ip_rate_per_minute', 10, int)
+_env_parser_rate = _env_int('PARSER_IP_RATE')
+WEB_PARSER_IP_RATE = (
+    _env_parser_rate if _env_parser_rate is not None
+    else get_config_value('web', 'parser_ip_rate_per_minute', 10, int)
+)
 
 # ==================== 预留 ====================
 # 支付二维码URL

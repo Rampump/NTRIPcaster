@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         - BUILDKIT_INLINE_CACHE=1
-    image: ntripcaster:2.3.6
+    image: ntripcaster:2.3.7
     container_name: ntrip-caster
     hostname: ntrip-caster
     restart: unless-stopped
@@ -29,6 +29,12 @@ services:
       - DATA_DIR=/app/data
       # 演示模式：.env 里 DEMO_MODE=true 即可开启，无需改 config.ini
       - DEMO_MODE=${DEMO_MODE:-false}
+      # 数据页公开 / 解析并发：同样可用 .env 覆盖，不必进容器改卷里的 config.ini
+      - PUBLIC_ACCESS=${PUBLIC_ACCESS:-false}
+      - MAX_WEB_PARSERS=${MAX_WEB_PARSERS:-4}
+      - PARSER_CLIENT_TTL=${PARSER_CLIENT_TTL:-45}
+      - PARSER_GRACE_SECONDS=${PARSER_GRACE_SECONDS:-5}
+      - PARSER_IP_RATE=${PARSER_IP_RATE:-10}
     networks:
       ntrip-network:
         ipv4_address: 172.20.0.10

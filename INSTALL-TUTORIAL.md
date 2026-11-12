@@ -1,6 +1,6 @@
 # NTRIP Caster Linux 系统安装教程
 
-在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.6，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
+在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.7，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
 
 ## 目录
 - [系统要求](#系统要求)
@@ -287,7 +287,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.6
+version = 2.3.7
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -302,6 +302,10 @@ port = 2101
 
 [web]
 port = 5757
+# 未登录访客是否也能看数据页并自行发起解析（公开站 / 演示站才开，默认 false）
+public_access = false
+# 同时被解析的挂载点上限，超限的新订阅返回 429（按 CPU 核数调，2C2G 建议 3~4）
+max_web_parsers = 4
 
 [database]
 path = /opt/2rtk/data/2rtk.db
@@ -318,6 +322,9 @@ backup_count = 5
 secret_key = $(openssl rand -hex 32)
 password_hash_rounds = 3
 session_timeout = 3600
+# 演示模式：把站点开放给别人测试时设 true —— 只能新增用户/挂载点、启停解析，
+# 改、删、改管理员密码、重启服务一律 403
+demo_mode = false
 ```
 
 ### 5. 生成密钥和初始化数据库
@@ -441,7 +448,39 @@ Environment=WEB_PORT=5757
 Environment=DEBUG=false
 Environment=DATABASE_PATH=/opt/2rtk/data/2rtk.db
 Environment=LOG_DIR=/var/log/2rtk
+# 日志级别（INFO / WARNING / ERROR，会覆盖 config.ini 的 log_level）
+Environment=LOG_LEVEL=INFO
+# 演示模式 / 数据页公开：不改配置文件也能临时开关
+Environment=DEMO_MODE=false
+Environment=PUBLIC_ACCESS=false
+# 监听地址：NTRIP_HOST 只管 2101，WEB_HOST 只管 5757（不填跟随 [network] host）
+Environment=WEB_HOST=0.0.0.0
 ```
+
+### 升级后补齐新增配置项
+
+新版本会往 `config.ini` 里加新的段和键（例如 `demo_mode`、`public_access`、
+`max_web_parsers`）。升级时 `update.sh` 不会覆盖 `config.ini`（那里的值是你的部署配置），
+所以这些新键不会自己出现在老文件里 —— 结果是「代码有这功能，配置里查无此项」。
+`update.sh` 现在会自动补一次，也可以随时手动跑（幂等，只补缺的键，已有值一个都不动）：
+
+```bash
+# 1) 先预览要补哪些键（只读，不改文件）
+sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py \
+    --config /etc/2rtk/config.ini \
+    --example /opt/2rtk/config.ini.example
+
+# 2) 确认无误后写入（自动备份为 config.ini.bak.YYYYmmdd-HHMMSS）
+sudo /opt/2rtk/venv/bin/python /opt/2rtk/scripts/merge_config.py --apply \
+    --config /etc/2rtk/config.ini \
+    --example /opt/2rtk/config.ini.example
+
+# 3) 配置只在启动时读取，重启后生效
+sudo systemctl restart 2rtk
+```
+
+> 配置文件本身有重复键（同一段里两行 `demo_mode`）时，程序会直接启动失败。
+> 脚本遇到这种情况会报错退出并且**不改文件**，先按报错信息把重复的那行删掉再跑。
 
 ### 日志配置
 
@@ -952,6 +991,7 @@ sudo ufw delete allow 5757/tcp
 
 ## 更新日志
 
+- **v2.3.7**: 修复「代码加了新配置项、配置文件里却查无此项」——新增 `scripts/merge_config.py`，按 `config.ini.example` 把老配置缺的段和键补进去（只补缺的键、已有值一个不动、写前自动备份、重复执行幂等），`update.sh` 升级时自动执行，容器 entrypoint 每次启动也执行；`demo_mode` / `public_access` / 解析并发 / 日志级别均支持环境变量覆盖（`DEMO_MODE`、`PUBLIC_ACCESS`、`MAX_WEB_PARSERS`、`PARSER_*`、`LOG_LEVEL`），`NTRIP_HOST` 与 `WEB_HOST` 真正分别作用于 2101 与 5757
 - **v2.3.5**: STR 表支持点整行开始解析（不必再精确点按钮），拖选报文复制时不会误触发，重复点同一站点也不会重启解析器；地图基准站标记换成蓝底白环圆盘徽标；覆盖范围圈调整为 10km / 20km
 - **v2.3.6**: 实时解析改为「按挂载点复用线程 + 每个访客独立订阅」，A 访客切站不再打断 B，数据按房间下发不再串台；新增心跳与巡检，关浏览器自动退订，解析线程上限与单 IP 频率限制；新增演示模式（`demo_mode`，只能新增不能改删，改密码/重启被 403 拦死）；新增匿名公开接口 `/api/public/`，未登录也能看实时数据并自行发起解析；新增 `scripts/demo_reset.py` 按 60 天清理演示数据
 - **v2.3.4**: 修复地图基准站标记不显示——图标原先用 btoa 内联 SVG，SVG 里的中文注释触发 InvalidCharacterError，导致整个绘制中断（地图平移过去但没有图标、站名和覆盖圈）；图标改为同源静态文件并加圆点降级兜底；覆盖圈重排到图标下层、半径按纬度做投影修正、补虚线边界
@@ -964,7 +1004,7 @@ sudo ufw delete allow 5757/tcp
 
 ---
 
-**版本信息：** NTRIP Caster v2.3.6  
+**版本信息：** NTRIP Caster v2.3.7  
 **更新时间：** 2024年12月  
 **作者：** 2RTK Team  
 **许可证：** Apache 2.0
