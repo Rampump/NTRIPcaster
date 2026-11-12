@@ -303,7 +303,8 @@ password = admin123            # Administrator password (change in production)
 > [Running a Public Demo Site](DEMO-TUTORIAL-EN.md). The section below only describes the switch itself.
 
 When you expose the caster to the internet for people to try out, the risk is that a
-visitor edits or deletes somebody else's data. Add one line to `config.ini`:
+visitor edits or deletes somebody else's data. The switch ships as `false` (normal mode —
+the installer never turns it on); to run a demo site, flip it to `true` in `config.ini`:
 
 ```ini
 [security]

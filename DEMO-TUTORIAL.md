@@ -199,6 +199,8 @@ DEMO_MODE=1 python main.py
 
 ## 4. 打开演示模式
 
+**先说清楚默认值**：`config.ini.example` 里写的是 `demo_mode = false`，`install.sh` 只是把它原样复制成 `config.ini`，**不会替你打开**。所以新装、升级、Docker 首次启动出来的实例都是正常的完整管理员模式；要跑演示站，必须自己显式改这一行（或传环境变量）。
+
 一个开关，三种写法，效果完全一样：
 
 | 场景 | 写法 |
@@ -219,7 +221,7 @@ demo_mode = true
 
 ```bash
 curl -s http://127.0.0.1:5757/health
-# {"status":"ok","version":"2.3.6","uptime":12.3,"demo_mode":true}
+# {"status":"ok","version":"2.3.7","uptime":12.3,"demo_mode":true}
 ```
 
 如果还是 `false`：
@@ -597,6 +599,8 @@ curl -s http://127.0.0.1:5757/health | grep -o '"demo_mode":false'
 ---
 
 ## 附：一页速查
+
+> 下面是**开启演示模式之后**这几项应取的值，不是出厂默认。出厂默认：`demo_mode`、`public_access`、`trust_proxy_headers`、`session_cookie_secure` 全为 `false`，`max_web_parsers`、`parser_*` 为正常模式下的默认值。
 
 ```ini
 # /etc/2rtk/config.ini

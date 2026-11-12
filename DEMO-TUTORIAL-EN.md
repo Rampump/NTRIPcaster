@@ -207,6 +207,8 @@ Open `http://127.0.0.1:5757` and sign in with `admin / admin123`. No service, no
 
 ## 4. Enabling demo mode
 
+**Default first**: `config.ini.example` ships `demo_mode = false`, and `install.sh` only copies it to `config.ini` — it **never turns demo mode on for you**. A fresh install, an upgraded install, and a first Docker boot all come up in normal full-admin mode. To run a demo site you must change that line explicitly (or pass the env var).
+
 One switch, three equivalent ways to set it:
 
 | Situation | How |
@@ -227,7 +229,7 @@ The environment variable wins: if `DEMO_MODE` is one of `1/true/yes/on`, a confi
 
 ```bash
 curl -s http://127.0.0.1:5757/health
-# {"status":"ok","version":"2.3.6","uptime":12.3,"demo_mode":true}
+# {"status":"ok","version":"2.3.7","uptime":12.3,"demo_mode":true}
 ```
 
 Still `false`? Check in this order:
@@ -607,6 +609,8 @@ Before converting this machine into production, do three more things:
 ---
 
 ## Appendix: one-page cheat sheet
+
+> These are the values **after demo mode is switched on** — not the shipped defaults. Out of the box `demo_mode`, `public_access`, `trust_proxy_headers` and `session_cookie_secure` are all `false`; `max_web_parsers` and the `parser_*` keys carry their normal-mode defaults.
 
 ```ini
 # /etc/2rtk/config.ini
