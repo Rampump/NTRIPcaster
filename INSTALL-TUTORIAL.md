@@ -1,6 +1,6 @@
 # NTRIP Caster Linux 系统安装教程
 
-在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.7，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
+在 Linux 系统上直接安装和部署 NTRIP Caster v2.3.8，支持 Debian、Ubuntu、CentOS、RHEL 等主流发行版。
 
 ## 目录
 - [系统要求](#系统要求)
@@ -287,7 +287,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.7
+version = 2.3.8
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -991,6 +991,7 @@ sudo ufw delete allow 5757/tcp
 
 ## 更新日志
 
+- **v2.3.8**: 修复「幽灵连接」——客户端长连接被莫名断开、同一账号反复重连后「在线连接数」只升不降、最终新连接一律 401 且只有重启服务才能恢复。根因是断开记账漏删后不会自愈：`remove_user_connection` 在 connection_id 匹配不到时静默返回（漏删不可见），给了挂载点就整批删该用户所有连接并顺手 close 别人的 socket（会打死健康会话）；`last_activity` 全仓只写不读，`connection_timeout` 是死配置，幽灵记录永不过期。现在：移除记录严格按 connection_id 精确匹配、未命中必记 WARNING，兜底一次最多删最老的一条，记账层不再越界关 socket；新增 `prune_stale_connections()` + `reconcile()` 巡检（每 `connection_reconcile_interval` 秒一次，按 socket 失效 / 空闲超时 `connection_idle_prune` 两条判据自愈，并与转发器对账）；限流判定抽成 `connection.try_reserve_slot()`，检查与占位在同一把锁内完成，两处鉴权口径合一；NTRIP 1.0 的 401 现在把原因写进响应体和 `X-Reason` 头（超限与密码错不再无从区分），超限拒绝记 WARNING；一次断开只记一条日志，连接计数改为从记录派生并写后对账。新增 `/api/connections` 查看连接明细、`/api/connections/prune` 手动清理
 - **v2.3.7**: 修复「代码加了新配置项、配置文件里却查无此项」——新增 `scripts/merge_config.py`，按 `config.ini.example` 把老配置缺的段和键补进去（只补缺的键、已有值一个不动、写前自动备份、重复执行幂等），`update.sh` 升级时自动执行，容器 entrypoint 每次启动也执行；`demo_mode` / `public_access` / 解析并发 / 日志级别均支持环境变量覆盖（`DEMO_MODE`、`PUBLIC_ACCESS`、`MAX_WEB_PARSERS`、`PARSER_*`、`LOG_LEVEL`），`NTRIP_HOST` 与 `WEB_HOST` 真正分别作用于 2101 与 5757
 - **v2.3.5**: STR 表支持点整行开始解析（不必再精确点按钮），拖选报文复制时不会误触发，重复点同一站点也不会重启解析器；地图基准站标记换成蓝底白环圆盘徽标；覆盖范围圈调整为 10km / 20km
 - **v2.3.6**: 实时解析改为「按挂载点复用线程 + 每个访客独立订阅」，A 访客切站不再打断 B，数据按房间下发不再串台；新增心跳与巡检，关浏览器自动退订，解析线程上限与单 IP 频率限制；新增演示模式（`demo_mode`，只能新增不能改删，改密码/重启被 403 拦死）；新增匿名公开接口 `/api/public/`，未登录也能看实时数据并自行发起解析；新增 `scripts/demo_reset.py` 按 60 天清理演示数据
@@ -1004,7 +1005,7 @@ sudo ufw delete allow 5757/tcp
 
 ---
 
-**版本信息：** NTRIP Caster v2.3.7  
+**版本信息：** NTRIP Caster v2.3.8  
 **更新时间：** 2024年12月  
 **作者：** 2RTK Team  
 **许可证：** Apache 2.0

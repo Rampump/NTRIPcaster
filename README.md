@@ -1,4 +1,4 @@
-# 2RTK NTRIP Caster v2.3.7
+# 2RTK NTRIP Caster v2.3.8
 
 **Language / 语言选择:**
 - [English](#) (Current)

@@ -178,6 +178,7 @@ class SimpleDataForwarder:
         self.subscriber_lock = RLock()
         
         self.broadcast_thread = None
+        self.reconcile_thread = None
         self.sender_threads = []
         self.send_queue = queue.Queue()  # 待发送客户端通知队列（无界，客户端条目会被去重）
         self.sender_count = max(1, int(getattr(config, 'SENDER_THREADS', 8) or 8))
@@ -216,7 +217,28 @@ class SimpleDataForwarder:
             t.start()
             self.sender_threads.append(t)
 
+        # 记账巡检：清幽灵 + 与转发器对账。
+        # 这是兜底，不能代替"断开时正确移除"；但没有它，任何一次漏删都会
+        # 永久占名额，攒满就只剩重启服务一条路。
+        self.reconcile_thread = threading.Thread(target=self._reconcile_loop, daemon=True,
+                                                 name='forwarder-reconcile')
+        self.reconcile_thread.start()
+
         logger.log_system_event(f'数据转发器已启动（发送线程 {len(self.sender_threads)} 个）')
+
+    def _reconcile_loop(self):
+        """定期清理残留连接记录并记录对账结果"""
+        interval = max(10, getattr(config, 'CONNECTION_RECONCILE_INTERVAL', 60))
+        next_run = time.time() + interval
+        while self.running:
+            if time.time() >= next_run:
+                try:
+                    connection.reconcile()
+                except Exception as e:
+                    logger.log_error(f"连接巡检异常: {e}", exc_info=True)
+                next_run = time.time() + interval
+            # 用短睡眠轮询，停服务时最多等 1 秒
+            time.sleep(1)
     
     def stop(self):
         """停止广播线程与发送线程，并关闭所有客户端连接"""
@@ -356,10 +378,14 @@ class SimpleDataForwarder:
             logger.log_warning(f"设置TCP Keep-Alive失败: {e}", 'ntrip')
     
     def remove_client(self, client_info):
-        """移除客户端连接（幂等：多处清理路径可能重复调用）"""
+        """移除客户端连接
+
+        幂等：多处清理路径（保活线程 finally、发送失败、后台踢人）可能重复调用。
+        返回 True 表示本次真正移除了记账记录（调用方据此决定是否写 disconnect 日志）。
+        """
         try:
             if client_info.get('closed'):
-                return
+                return False
             client_info['closed'] = True
 
             # 丢弃待发数据，让发送线程立即放弃这个客户端
@@ -385,22 +411,31 @@ class SimpleDataForwarder:
                 self.stats['active_clients'] = sum(len(clients) for clients in self.clients.values())
                 self.stats['disconnected_clients'] += 1
             
-            # 用 connection_id 精确移除单条连接；传 IP 会导致按"用户+挂载点"整批删除
+            # 用 connection_id 精确移除单条连接。
+            # 注意：这里**不再**在 conn_id 为空时退化成按挂载点兜底
+            # （connection.remove_user_connection 的兜底现在只删最老的一条，
+            #  不会再把同用户的其他健康会话一起打死）。
             conn_id = client_info.get('connection_id')
-            connection.remove_user_connection(
+            removed = connection.remove_user_connection(
                 client_info['user'], 
                 conn_id,
                 None if conn_id else client_info['mount']
             )
             
-            logger.log_client_disconnect(
-                client_info['user'], 
-                client_info['mount'], 
-                client_info['addr'][0]
-            )
+            # 只让"真正移除了记账记录"的那一处写 disconnect 日志。
+            # 原来 remove_client 内一次、_keep_connection_alive 的 finally 再一次，
+            # 一次断开会产生两条日志，"已连接/已断开"计数对不上。
+            if removed:
+                logger.log_client_disconnect(
+                    client_info['user'], 
+                    client_info['mount'], 
+                    client_info['addr'][0]
+                )
+            return removed
             
         except Exception as e:
             logger.log_error(f"移除客户端失败: {e}", exc_info=True)
+            return False
     
     def _close_client(self, client_info):
         """关闭客户端连接"""
@@ -733,7 +768,12 @@ class SimpleDataForwarder:
 
     
     def force_disconnect_user(self, username):
-        """强制断开指定用户的所有连接"""
+        """强制断开指定用户的所有连接
+
+        先清理该用户的幽灵记录（记账里有、forwarder 里没有 live client 的那种），
+        再断开真实客户端。原来只遍历 self.clients，幽灵记录永远踢不掉，
+        后台"踢人"看起来成功、账号却依旧 401。
+        """
         disconnected_count = 0
         clients_to_remove = []
         
@@ -745,14 +785,30 @@ class SimpleDataForwarder:
         
         for client_info in clients_to_remove:
             try:
-                self.remove_client(client_info)
-                disconnected_count += 1
-                logger.log_info(f"强制断开用户 {username} 的连接: {client_info['mount']}")
+                if self.remove_client(client_info):
+                    disconnected_count += 1
+                    logger.log_info(f"强制断开用户 {username} 的连接: {client_info['mount']}")
             except Exception as e:
                 logger.log_error(f"强制断开用户 {username} 连接失败: {e}")
+
+        # 兜底：清掉没有 live client 对应的幽灵记录
+        ghost_cleared = 0
+        try:
+            cm = connection.get_connection_manager()
+            with cm.user_lock:
+                ghost_ids = [c['connection_id']
+                             for c in (cm.online_users.get(username) or [])]
+            for cid in ghost_ids:
+                if connection.remove_user_connection(username, cid):
+                    ghost_cleared += 1
+            if ghost_cleared:
+                logger.log_warning(f"强制断开用户 {username}: 额外清理 {ghost_cleared} 条幽灵记录")
+        except Exception as e:
+            logger.log_error(f"清理用户 {username} 幽灵记录失败: {e}")
         
-        logger.log_info(f"强制断开用户 {username} 完成，共断开 {disconnected_count} 个连接")
-        return disconnected_count > 0
+        logger.log_info(f"强制断开用户 {username} 完成，共断开 {disconnected_count} 个连接，"
+                        f"清理幽灵 {ghost_cleared} 条")
+        return disconnected_count > 0 or ghost_cleared > 0
     
     def force_disconnect_mount(self, mount_name):
         """强制断开指定挂载点的所有连接"""

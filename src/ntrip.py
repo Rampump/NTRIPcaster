@@ -732,11 +732,9 @@ class NTRIPHandler:
                  if not is_valid:
                      return False, error_msg
                  
-                 # 检查用户连接数限制
-                 current_connections = connection.get_user_connection_count(username)
-                 if current_connections >= MAX_CONNECTIONS_PER_USER:
-                     return False, f"User connection limit exceeded (max: {MAX_CONNECTIONS_PER_USER})"
-                 
+                 # 检查用户连接数限制放在 handle_http_get_download 里做（try_reserve_slot），
+                 # 这里只做鉴权。原来在这里"读计数"，与随后的 add_user_connection
+                 # 不在同一把锁里，并发重连可以同时通过检查，多挤进一条。
                  return True, "Authentication successful"
         
         except Exception as e:
@@ -778,12 +776,9 @@ class NTRIPHandler:
             
             if not is_valid:
                 return False, error_msg
-            
 
-            current_connections = connection.get_user_connection_count(username)
-            if current_connections >= MAX_CONNECTIONS_PER_USER:
-                return False, f"User connection limit exceeded (max: {MAX_CONNECTIONS_PER_USER})"
-            
+            # 限流判定统一走 handle_http_get_download 里的 try_reserve_slot
+            # （检查 + 占位原子完成），本函数只负责鉴权。
             return True, "Authentication successful"
         except Exception as e:
             logger.log_error(f"Basic认证异常: {e}", exc_info=True)
@@ -1126,8 +1121,27 @@ a=control:*
                 self.send_error_response(404, "Mount point is offline")
                 return
             
-            # 添加到连接管理器
-            connection_id = connection.add_user_connection(self.username, mount, self.client_address[0])
+            # 添加到连接管理器：限流判定 + 占位在同一把锁里完成。
+            # 原来先 verify_user 里读计数、再 add_user_connection 加计数，
+            # 两步之间没有锁保护，并发重连可以同时通过检查。
+            ok, reserve_error, connection_id = connection.try_reserve_slot(
+                self.username, mount, self.client_address[0],
+                user_agent=self.user_agent,
+                protocol_version=self.ntrip_version,
+                client_socket=None,
+                limit=MAX_CONNECTIONS_PER_USER
+            )
+            if not ok:
+                # 超限必须可见：原来只在 DEBUG 里，现场根本查不出"为什么 401"
+                log_warning(
+                    f"拒绝订阅: 用户 {self.username} 连接数超限 "
+                    f"(上限 {MAX_CONNECTIONS_PER_USER}), 挂载点 {mount}, "
+                    f"客户端 {self.client_address[0]}"
+                )
+                self.send_auth_challenge(reserve_error or
+                                         f"User connection limit exceeded (max: {MAX_CONNECTIONS_PER_USER})")
+                return
+
             self.connection_id = connection_id
             
             # 添加客户端到转发器
@@ -1285,8 +1299,14 @@ a=control:*
         finally:
             
             if hasattr(self, 'client_info') and self.client_info:
-                forwarder.remove_client(self.client_info)
-                logger.log_client_disconnect(self.username, self.mount, self.client_address[0])
+                # remove_client 是幂等的，会返回本次是否真的移除了客户端。
+                # forwarder.remove_client 内部也会写一条 disconnect 日志，
+                # 这里只在"确实还在、由本次移除"时再记一条协议层日志会重复，
+                # 所以只走 forwarder 那一条（规格书 §2.1：一次断开只记一条）。
+                removed = forwarder.remove_client(self.client_info)
+                if removed:
+                    log_debug(f"下载连接已结束: 用户 {self.username} "
+                              f"挂载点 {self.mount} 客户端 {self.client_address[0]}", 'ntrip')
     
     def _send_mount_list(self):
         """发送挂载点列表"""
@@ -1425,11 +1445,22 @@ a=control:*
             )
         else:
             # NTRIP 1.0格式
+            #
+            # 1.0 没有 header/body 的严格区分，客户端普遍只看首行 + 空行前的内容，
+            # 所以把 message 放在首行状态短语里（"SOURCETABLE 401 Unauthorized"）
+            # 之后、空行之前——RTKLIB / 大部分 CORS 客户端会把它当理由文本读出来。
+            # 原来 1.0 分支完全不用 message，客户端看到的字节和"密码错"一模一样，
+            # 现场无法区分"会话数占满"和"口令错误"。
             try:
+                reason = ' '.join((message or 'Authentication required').split())
                 response = "SOURCETABLE 401 Unauthorized\r\n"
+                if reason.lower() != 'authentication required':
+                    response += f"X-Reason: {reason}\r\n"
                 for header in auth_headers:
                     response += f"{header}\r\n"
+                response += "Content-Type: text/plain\r\n"
                 response += "\r\n"
+                response += reason + "\r\n"
                 self.client_socket.sendall(response.encode('utf-8'))
             except Exception as e:
                 logger.log_error(f"发送认证挑战失败: {e}", exc_info=True)

@@ -44,6 +44,7 @@ Thumbs.db
 
 # ===== 测试产物 =====
 tests/test_users.json
+test_users.json
 tests/*.out
 nginx/ssl/*.pem
 

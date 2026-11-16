@@ -1,6 +1,6 @@
 # NTRIP Caster Linux System Installation Tutorial
 
-This tutorial will guide you through installing and deploying NTRIP Caster v2.3.7 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
+This tutorial will guide you through installing and deploying NTRIP Caster v2.3.8 directly on Linux systems, supporting mainstream distributions like Debian, Ubuntu, CentOS, RHEL, and more.
 
 ## Table of Contents
 - [System Requirements](#system-requirements)
@@ -193,7 +193,7 @@ sudo nano /etc/2rtk/config.ini
 ```ini
 [app]
 name = 2RTK Ntrip Caster
-version = 2.3.7
+version = 2.3.8
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -899,6 +899,7 @@ If you encounter issues during installation or usage:
 
 ## Changelog
 
+- **v2.3.8**: Fixed "ghost connections" — long-lived client streams were dropped for no reason, the per-account online count only ever went up after repeated reconnects, and eventually every new connection got a 401 until the service was restarted. The root cause was that a missed removal never healed itself: `remove_user_connection` returned silently when the `connection_id` did not match (so leaks were invisible), and when given only a mount name it removed *every* connection of that user and closed their sockets (killing healthy sessions); `last_activity` was written but never read, so `connection_timeout` was dead config and ghost records never expired. Now removal matches strictly on `connection_id`, logs a WARNING when nothing matched, falls back to at most the single oldest record, and never closes another thread's socket; a new `prune_stale_connections()` plus `reconcile()` janitor runs every `connection_reconcile_interval` seconds (healing on dead sockets and on idle timeouts past `connection_idle_prune`, and reconciling against the forwarder); the limit check is consolidated into `connection.try_reserve_slot()`, which checks and reserves under the same lock, so both auth paths share one verdict; the NTRIP 1.0 401 now carries the reason in both the body and an `X-Reason` header (limit-exceeded and wrong-password are no longer indistinguishable) and logs a WARNING on rejection; a disconnect is logged exactly once and connection counts are derived from the record set with a post-write reconciliation. New `/api/connections` for live connection detail and `/api/connections/prune` for a manual sweep
 - **v2.3.7**: Fixed "the code grew a new option but the config file has no such key" — added `scripts/merge_config.py`, which merges the sections/keys an old `config.ini` is missing (missing keys only, existing values untouched, backup before writing, idempotent); `update.sh` runs it on upgrade and the container entrypoint runs it on every boot; `demo_mode` / `public_access` / parser concurrency / log level can now be set through `DEMO_MODE`, `PUBLIC_ACCESS`, `MAX_WEB_PARSERS`, `PARSER_*` and `LOG_LEVEL`, and `NTRIP_HOST` / `WEB_HOST` now really bind 2101 and 5757 separately
 - **v2.3.5**: Any click on an STR row now starts parsing (no need to hit the button precisely), drag-selecting the message to copy no longer triggers it, and re-clicking the same station does not restart the parser; base station marker redrawn as a blue circular badge with a white ring; coverage rings changed to 10 km / 20 km
 - **v2.3.6**: Live parsing is now "one thread per mount + one subscription per visitor", so one visitor switching stations no longer interrupts another and data no longer leaks across viewers; heartbeat and janitor keep zombie subscriptions in check (closing the tab unsubscribes automatically), with a thread cap and per-IP rate limit; new demo mode (`demo_mode`) allowing only additions, with password change / restart blocked by 403; new anonymous namespace `/api/public/` so signed-out visitors can browse live data and start their own parsing; new `scripts/demo_reset.py` to prune demo data after 60 days
@@ -912,7 +913,7 @@ If you encounter issues during installation or usage:
 
 ---
 
-**Version**: NTRIP Caster v2.3.7  
+**Version**: NTRIP Caster v2.3.8  
 **Updated**: December 2024  
 **Author**: 2RTK Team  
 **License**: Apache 2.0

@@ -13,7 +13,7 @@
 [app]
 # 应用基本信息
 name = 2RTK Ntrip Caster
-version = 2.3.7
+version = 2.3.8
 description = Ntrip Caster
 author = 2rtk
 contact = i@jia.im
@@ -49,6 +49,15 @@ download_enforce_user_binding = false
 mount_timeout = 1800
 client_timeout = 300
 connection_timeout = 1800
+# 残留连接记录（幽灵连接）老化清理阈值，单位秒
+# 连接记录若超过这么久没有任何数据往来，会被巡检判为失效并清理。
+# 设 0 表示用 connection_timeout 的值。
+connection_idle_prune = 600
+# 巡检线程的对账间隔，单位秒（最小 10）
+# 每隔这么久做一次：① socket 失效/空闲超时的记录清理 ② 与转发器对账
+# 用来兜住"断开路径漏删"——正常情况下日志里不会有 WARNING，出现 WARNING
+# 就说明有一条断开没被记账，值得查。
+connection_reconcile_interval = 60
 
 [web]
 port = 5757

@@ -3,6 +3,7 @@
 
 import time
 import json
+import socket
 import secrets
 import threading
 from threading import Lock, RLock, Thread
@@ -273,7 +274,8 @@ class ConnectionManager:
         源站下线时调用，让 user_connection_count / mount_connection_count 同步归零，
         避免"在线用户数"与"挂载点详情人头数"错位。
         只清理 connection 侧记录；socket 由 forwarder 侧的发送线程自行检测关闭，
-        这里同步关掉 conn['client_socket'] 让下游尽快感知断线。
+        这里只标记 closed 让下游尽快感知断线。socket 的实际 close 交给
+        持有它的线程（forwarder.remove_client），记账层不越界关别人的 socket。
         """
         with self.user_lock:
             usernames = list(self.online_users.keys())
@@ -281,25 +283,17 @@ class ConnectionManager:
                 conns = self.online_users.get(username)
                 if not conns:
                     continue
-                to_remove = [i for i, c in enumerate(conns) if c.get('mount_name') == mount_name]
-                if not to_remove:
+                victims = [c for c in conns if c.get('mount_name') == mount_name]
+                if not victims:
                     continue
-                for i in reversed(to_remove):
-                    conn = conns[i]
-                    try:
-                        if conn.get('client_socket'):
-                            conn['client_socket'].close()
-                    except Exception:
-                        pass
-                    self.mount_connection_count[mount_name] = max(
-                        0, self.mount_connection_count[mount_name] - 1)
-                    self.user_connection_count[username] = max(
-                        0, self.user_connection_count[username] - 1)
-                    del conns[i]
+                for conn in victims:
+                    conn['closed'] = True
+                    self._remove_one(username, conn['connection_id'],
+                                     reason=f'挂载点 {mount_name} 下线')
                     log_debug(f"挂载点 {mount_name} 下线，清理下游用户 {username} 的连接")
-                if not conns:
-                    del self.online_users[username]
-                    self.user_connection_count.pop(username, None)
+                if not self.online_users.get(username):
+                    self.online_users.pop(username, None)
+            self._verify_counts(where='drop_mount_subscribers')
     
     def _generate_initial_str(self, mount_name: str):
         """生成初始STR表"""
@@ -365,95 +359,332 @@ class ConnectionManager:
         return str_data
 
     
-    def add_user_connection(self, username, mount_name, ip_address, user_agent="", protocol_version="1.0", client_socket=None):
-        """添加用户连接"""
-        with self.user_lock:
+    # ------------------------------------------------------------------
+    # 连接记账：增删的唯一入口
+    #
+    # 契约（全部调用方都必须遵守）：
+    #   * 一条连接 = online_users[username] 里的一个 dict
+    #   * 所有计数（user_connection_count / mount_connection_count）都由
+    #     online_users **派生**，写操作后即时校验，不再"两份事实各自加减"
+    #   * 一次 remove 调用最多移除一条记录，避免"按挂载点整批兜底"打死
+    #     同用户的其他健康会话
+    #   * 这里不负责关 socket：socket 生命周期归持有它的线程
+    #     （ntrip._keep_connection_alive / forwarder 发送线程），
+    #     记账层 close 别人的 socket 会让"谁关了这条连接"不可追踪
+    # ------------------------------------------------------------------
+
+    def _new_connection_record(self, username, mount_name, ip_address, user_agent,
+                               protocol_version, client_socket, connection_id=None):
+        """构造一条连接记录（不落表）"""
+        now = time.time()
+        if not connection_id:
             # 连接 ID 必须唯一：原来只用秒级时间戳，同一秒内的多条连接会撞 ID，
             # 关闭其中一条时按 ID 匹配会误删同用户同挂载点的其他连接。
-            connection_id = f"{username}_{mount_name}_{int(time.time())}_{secrets.token_hex(3)}"
-            
-            socket_info = "无socket" if client_socket is None else f"端口:{getattr(client_socket, 'getpeername', lambda: ('未知', '未知'))()[1] if hasattr(client_socket, 'getpeername') else '未知'}"
-            log_debug(f"创建用户连接 - 用户: {username}, 挂载点: {mount_name}, IP: {ip_address}, {socket_info}, User-Agent: {user_agent}")
-            
-            connection_info = {
-                'connection_id': connection_id,
-                'username': username,
-                'mount_name': mount_name,
-                'ip_address': ip_address,
-                'user_agent': user_agent,
-                'protocol_version': protocol_version,
-                'connect_time': time.time(),
-                'connect_datetime': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'last_activity': time.time(),
-                'bytes_sent': 0,
-                'client_socket': client_socket
-            }
-            
-            if username not in self.online_users:
-                self.online_users[username] = []
-                log_debug(f"为新用户 {username} 创建连接列表")
-            if username not in self.user_connection_count:
-                self.user_connection_count[username] = 0
-            if mount_name not in self.mount_connection_count:
-                self.mount_connection_count[mount_name] = 0
-            
-            old_user_count = self.user_connection_count[username]
-            old_mount_count = self.mount_connection_count[mount_name]
-            
-            self.online_users[username].append(connection_info)
-            self.user_connection_count[username] += 1
-            self.mount_connection_count[mount_name] += 1
-            
-            log_info(f"用户 {username} IP: {ip_address} 已连接，从挂载点 {mount_name}开始订阅RTCM数据")
-            log_debug(f"用户连接统计更新 - 用户 {username}: {old_user_count} -> {self.user_connection_count[username]}, 挂载点 {mount_name}: {old_mount_count} -> {self.mount_connection_count[mount_name]}")
-            log_debug(f"连接ID生成: {connection_id}, 总在线用户数: {len(self.online_users)}")
-            return connection_id
-    
-    def remove_user_connection(self, username, connection_id=None, mount_name=None):
-        """移除用户连接"""
-        with self.user_lock:
-            if username not in self.online_users:
-                return False
-            
-            connections_to_remove = []
-            
-            for i, conn in enumerate(self.online_users[username]):
-                should_remove = False
-                
-                if connection_id and conn['connection_id'] == connection_id:
-                    should_remove = True
-                elif mount_name and conn['mount_name'] == mount_name:
-                    should_remove = True
-                elif not connection_id and not mount_name:
-                    should_remove = True
-                
-                if should_remove:
-                    connections_to_remove.append(i)
-                    # 计数器兜底不为负：重复清理（socket 已断 + 转发器再断一次）
-                    # 会把数字压到 -1，前端就一直显示错的在线数
-                    self.mount_connection_count[conn['mount_name']] = max(
-                        0, self.mount_connection_count[conn['mount_name']] - 1)
-                    
-                    
-                    if conn.get('client_socket'):
-                        try:
-                            conn['client_socket'].close()
-                        except:
-                            pass
-                    
-                    log_info(f"用户 {username} 已从挂载点 {conn['mount_name']} 断开")
-            
+            connection_id = f"{username}_{mount_name}_{int(now)}_{secrets.token_hex(3)}"
+        return {
+            'connection_id': connection_id,
+            'username': username,
+            'mount_name': mount_name,
+            'ip_address': ip_address,
+            'user_agent': user_agent,
+            'protocol_version': protocol_version,
+            'connect_time': now,
+            'connect_datetime': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S'),
+            'last_activity': now,
+            'bytes_sent': 0,
+            'closed': False,
+            'client_socket': client_socket,
+        }
 
-            for i in reversed(connections_to_remove):
-                del self.online_users[username][i]
-                self.user_connection_count[username] = max(
-                    0, self.user_connection_count[username] - 1)
-            
-            if not self.online_users[username]:
-                del self.online_users[username]
-                del self.user_connection_count[username]
-            
-            return len(connections_to_remove) > 0
+    @staticmethod
+    def _peek_socket_state(client_socket):
+        """socket 是否还活着
+
+        ★ 必须在未持有 user_lock 时调用：非阻塞 recv 可能阻塞（Windows 下
+        send 方向打满时），持锁调用会把所有鉴权线程一起堵住。
+
+        返回 'alive' / 'dead' / 'unknown'。与 ntrip._keep_connection_alive 同法：
+        先看 SO_ERROR，再用 MSG_PEEK 看对端是否已发 FIN（正常断开不触发 SO_ERROR）。
+        """
+        if client_socket is None:
+            return 'unknown'
+        try:
+            if client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) != 0:
+                return 'dead'
+        except (OSError, AttributeError, ValueError):
+            return 'dead'
+        try:
+            if client_socket.recv(1, socket.MSG_PEEK) == b'':
+                return 'dead'
+        except (BlockingIOError, InterruptedError):
+            pass
+        except (ConnectionResetError, ConnectionAbortedError):
+            return 'dead'
+        except (OSError, AttributeError, ValueError):
+            return 'dead'
+        return 'alive'
+
+    def _plan_prune(self, timeout, now, socket_states):
+        """纯函数：算出应该清理哪些记录
+
+        无副作用、不持锁、不碰 socket，便于单测。
+        返回 [(username, connection_id, reason), ...]
+        """
+        plan = []
+        for username, conns in self.online_users.items():
+            for conn in conns:
+                if conn.get('closed'):
+                    plan.append((username, conn['connection_id'], '已被标记关闭'))
+                    continue
+                if socket_states.get(conn['connection_id']) == 'dead':
+                    plan.append((username, conn['connection_id'], 'socket 已失效'))
+                    continue
+                last = conn.get('last_activity') or conn.get('connect_time') or now
+                if timeout and timeout > 0 and (now - last) > timeout:
+                    idle = now - last
+                    plan.append((username, conn['connection_id'], f'空闲 {idle:.0f}s 超过 {timeout}s'))
+        return plan
+
+    def prune_stale_connections(self, timeout=None, check_socket=True, reason_tag='prune'):
+        """清理幽灵连接（漏删的连接不会自愈，这里是唯一兜底）
+
+        判据两条，任一命中即按**自己的 connection_id** 走正常移除路径：
+          1. socket 已失效（SO_ERROR != 0 / MSG_PEEK 读到 EOF）
+          2. 空闲时间超过 CONNECTION_IDLE_PRUNE（未配置则用 connection_timeout）
+        """
+        try:
+            if timeout is None:
+                timeout = getattr(config, 'CONNECTION_IDLE_PRUNE', 0) \
+                    or getattr(config, 'CONNECTION_TIMEOUT', 1800)
+
+            # 第一段：缩小临界区——只抄一份快照出来，socket 探测在锁外做
+            with self.user_lock:
+                snapshot = [
+                    (username, conn['connection_id'], conn.get('client_socket'),
+                     conn.get('closed', False),
+                     conn.get('last_activity') or conn.get('connect_time') or time.time())
+                    for username, conns in self.online_users.items()
+                    for conn in conns
+                ]
+
+            now = time.time()
+            socket_states = {}
+            if check_socket and snapshot:
+                for _, cid, sock, closed, _ in snapshot:
+                    if closed:
+                        socket_states[cid] = 'dead'
+                        continue
+                    socket_states[cid] = self._peek_socket_state(sock)
+
+            with self.user_lock:
+                plan = self._plan_prune(timeout, now, socket_states)
+                for username, cid, reason in plan:
+                    self._remove_one(username, cid, reason=reason)
+                if plan:
+                    # 记 WARNING 而不是 DEBUG：漏删必须能在日志里数出来
+                    log_warning(
+                        f"清理 {len(plan)} 条残留连接记录 [{reason_tag}]: "
+                        + '; '.join(f"{u}#{c[-6:]}({r})" for u, c, r in plan)
+                    )
+            self._verify_counts(where=reason_tag)
+            return len(plan)
+        except Exception as e:
+            log_error(f"清理残留连接时发生异常: {e}", exc_info=True)
+            return 0
+
+    def _remove_one(self, username, connection_id, reason="断开"):
+        """按 connection_id 精确移除一条记录（必须已持有 user_lock）
+
+        返回 True/False。未命中时记 WARNING 并把当前记录数打出来——
+        原来这里是静默失败，才导致"日志里没有断开记录、连接数只升不降"。
+        """
+        conns = self.online_users.get(username)
+        if not conns:
+            log_warning(f"移除连接未命中: 用户 {username} 无在线记录 "
+                        f"(connection_id={connection_id}, 原因: {reason})")
+            return False
+
+        for i, conn in enumerate(conns):
+            if conn['connection_id'] == connection_id:
+                mount = conn['mount_name']
+                conn['closed'] = True
+                del conns[i]
+                # 写路径主动维护缓存：不更新的话 _verify_counts 每次都要"纠正"，
+                # 日志里会刷满假的漂移告警，真的漂移反而被淹没。
+                if conns:
+                    self.user_connection_count[username] = len(conns)
+                else:
+                    self.online_users.pop(username, None)
+                    self.user_connection_count[username] = 0
+                left = self.mount_connection_count.get(mount, 0) - 1
+                self.mount_connection_count[mount] = max(0, left)
+                log_info(f"用户 {username} 已从挂载点 {mount} 断开 ({reason})")
+                return True
+
+        log_warning(
+            f"移除连接未命中: 用户 {username} connection_id={connection_id} 不存在 "
+            f"(原因: {reason}, 该用户当前有 {len(conns)} 条记录: "
+            f"{[c['connection_id'][-6:] for c in conns]})"
+        )
+        return False
+
+    def _verify_counts(self, where=""):
+        """计数与 online_users 对账（必须已持有 user_lock）
+
+        两套事实长期必然漂移，所以每次写操作后校验一次，漂了就按派生值纠正并 WARNING。
+        """
+        users = {name: len(conns) for name, conns in self.online_users.items() if conns}
+        mounts = defaultdict(int)
+        for conns in self.online_users.values():
+            for conn in conns:
+                mounts[conn['mount_name']] += 1
+
+        for name, expect in users.items():
+            actual = self.user_connection_count.get(name, 0)
+            if actual != expect:
+                log_warning(f"连接计数漂移已纠正 [{where}] 用户 {name}: {actual} -> {expect}")
+                self.user_connection_count[name] = expect
+        for name in list(self.user_connection_count.keys()):
+            if name not in users:
+                if self.user_connection_count[name]:
+                    log_warning(f"连接计数漂移已纠正 [{where}] 用户 {name}: "
+                                f"{self.user_connection_count[name]} -> 0")
+                del self.user_connection_count[name]
+
+        for mount, expect in mounts.items():
+            actual = self.mount_connection_count.get(mount, 0)
+            if actual != expect:
+                log_warning(f"连接计数漂移已纠正 [{where}] 挂载点 {mount}: {actual} -> {expect}")
+                self.mount_connection_count[mount] = expect
+        for mount in list(self.mount_connection_count.keys()):
+            if mount not in mounts:
+                if self.mount_connection_count[mount]:
+                    log_warning(f"连接计数漂移已纠正 [{where}] 挂载点 {mount}: "
+                                f"{self.mount_connection_count[mount]} -> 0")
+                del self.mount_connection_count[mount]
+
+    def try_reserve_slot(self, username, mount_name=None, ip_address="", user_agent="",
+                         protocol_version="1.0", client_socket=None, limit=None,
+                         connection_id=None):
+        """限流判定 + 占位，同一把 user_lock 内完成。
+
+        ★ 这是唯一允许的"检查连接数"入口。原来两处鉴权各写一遍
+        "读计数 → 比较 → 返回"，读和加之间不在同一把锁里，并发重连可以
+        同时通过检查（现场两条并发探测就有一条挤进第 4 条）。
+
+        返回 (True, None, connection_id) 或 (False, reason, None)。
+        limit=0 或负数表示不限制。
+        """
+        try:
+            if limit is None:
+                limit = getattr(config, 'MAX_CONNECTIONS_PER_USER', 3)
+
+            with self.user_lock:
+                # 限流必须基于 prune 后的真实数；socket 探测在锁内做，
+                # 但只探测本用户，代价可接受（正常 0~3 条）
+                self._prune_locked_unsafe(username)
+                current = len(self.online_users.get(username) or [])
+
+                if limit and limit > 0 and current >= limit:
+                    log_warning(
+                        f"拒绝连接: 用户 {username} 已达上限 "
+                        f"({current}/{limit}), 挂载点 {mount_name}, IP {ip_address}"
+                    )
+                    return False, f"User connection limit exceeded (max: {limit})", None
+
+                record = self._new_connection_record(
+                    username, mount_name, ip_address, user_agent,
+                    protocol_version, client_socket, connection_id
+                )
+                self.online_users.setdefault(username, []).append(record)
+                # 写路径主动维护缓存，_verify_counts 只用来兜底抓真漂移
+                self.user_connection_count[username] = len(self.online_users[username])
+                self.mount_connection_count[mount_name] = \
+                    self.mount_connection_count.get(mount_name, 0) + 1
+                self._verify_counts(where='reserve')
+                log_info(f"用户 {username} IP: {ip_address} 已连接，从挂载点 {mount_name} 开始订阅RTCM数据")
+                log_debug(f"连接ID生成: {record['connection_id']}, "
+                          f"用户 {username} 当前连接数: {current + 1}/{limit or '∞'}")
+                return True, None, record['connection_id']
+        except Exception as e:
+            log_error(f"预留连接名额失败: {e}", exc_info=True)
+            return False, "Internal error while reserving connection slot", None
+
+    def _prune_locked_unsafe(self, username):
+        """只清理指定用户的失效记录（调用方已持有 user_lock，socket 可能阻塞）
+
+        仅供 try_reserve_slot 用：鉴权路径上不能放大到全表探测。
+        超时判据同样生效，但是用"最老的先清"，不按挂载点整批。
+        """
+        conns = self.online_users.get(username)
+        if not conns:
+            return
+        timeout = getattr(config, 'CONNECTION_IDLE_PRUNE', 0) \
+            or getattr(config, 'CONNECTION_TIMEOUT', 1800)
+        now = time.time()
+        for conn in list(conns):
+            cid = conn['connection_id']
+            reason = None
+            if conn.get('closed'):
+                reason = '已被标记关闭'
+            elif self._peek_socket_state(conn.get('client_socket')) == 'dead':
+                reason = 'socket 已失效'
+            elif timeout and timeout > 0 and (now - (conn.get('last_activity') or now)) > timeout:
+                reason = f"空闲超过 {timeout}s"
+            if reason:
+                self._remove_one(username, cid, reason=f'prune:{reason}')
+        self._verify_counts(where='reserve-prune')
+
+    def add_user_connection(self, username, mount_name, ip_address, user_agent="", protocol_version="1.0", client_socket=None):
+        """添加用户连接（不判限流；限流请用 try_reserve_slot）"""
+        ok, _, connection_id = self.try_reserve_slot(
+            username, mount_name, ip_address, user_agent,
+            protocol_version, client_socket, limit=0
+        )
+        return connection_id
+
+    def remove_user_connection(self, username, connection_id=None, mount_name=None):
+        """移除用户连接（一次调用最多移除一条）
+
+        语义：
+          * connection_id 非空 → **只按 id 严格匹配**；未命中记 WARNING，不再
+            退化成"按挂载点整批删"，避免一次陈旧 id 把同用户其他会话打死
+          * connection_id 为空 + mount_name → 兜底：只删该用户在该挂载点上
+            **最老的一条**（漏传 connection_id 的调用方不该一次杀掉全部会话）
+          * 两者都为空 → 删该用户最老的一条
+        不 close socket（由持有它的线程负责）；只把记录标记 closed=True 并移除。
+        """
+        with self.user_lock:
+            conns = self.online_users.get(username)
+            if not conns:
+                if connection_id or mount_name:
+                    log_debug(f"移除连接跳过: 用户 {username} 已无在线记录 "
+                              f"(connection_id={connection_id}, mount={mount_name})")
+                return False
+
+            if connection_id:
+                removed = self._remove_one(username, connection_id, reason='断开连接')
+                self._verify_counts(where='remove')
+                return removed
+
+            candidates = [c for c in conns if not mount_name or c['mount_name'] == mount_name]
+            if not candidates:
+                log_debug(f"移除连接跳过: 用户 {username} 在挂载点 {mount_name} 上无记录")
+                return False
+            oldest = min(candidates, key=lambda c: c.get('connect_time') or 0)
+            removed = self._remove_one(username, oldest['connection_id'],
+                                       reason=f'兜底移除(mount={mount_name})')
+            self._verify_counts(where='remove-fallback')
+            return removed
+
+    def mark_connection_closed(self, username, connection_id):
+        """只标记关闭，不移除（供析构/延迟清理用）"""
+        with self.user_lock:
+            for conn in self.online_users.get(username) or []:
+                if conn['connection_id'] == connection_id:
+                    conn['closed'] = True
+                    return True
+            return False
     
     def update_mount_data_stats(self, mount_name, data_size):
         """更新挂载点数据统计
@@ -500,11 +731,29 @@ class ConnectionManager:
         with self.mount_lock:
             return mount_name in self.online_mounts
     
-    def get_user_connection_count(self, username):
-        """获取用户连接数"""
+    def get_user_connection_count(self, username, prune=False):
+        """获取用户连接数
+
+        prune=True 时先清理该用户的失效记录再返回（前端展示用，保证数字可信）。
+        鉴权路径不要用这个再自己判上限——那条路必须走 try_reserve_slot，
+        否则"检查"和"占位"不是原子的。
+        """
+        if prune:
+            self.prune_stale_connections_for(username)
         with self.user_lock:
-            return self.user_connection_count.get(username, 0)
-    
+            conns = self.online_users.get(username)
+            if conns is not None:
+                # 以 online_users 为准（派生事实），字典仅作缓存
+                return len(conns)
+            return 0
+
+    def prune_stale_connections_for(self, username):
+        """单个用户的残留清理（前端/后台调用，不在鉴权热路径上）"""
+        with self.user_lock:
+            if username not in self.online_users:
+                return 0
+        return self.prune_stale_connections(reason_tag=f'user:{username}')
+
     def get_user_connect_time(self, username):
         """获取用户最新连接时间"""
         with self.user_lock:
@@ -514,10 +763,72 @@ class ConnectionManager:
                 return latest_connection['connect_datetime']
             return None
     
+    def list_user_connections(self, username):
+        """列出某用户的在线连接明细（不含 socket），供后台排查幽灵连接"""
+        with self.user_lock:
+            conns = self.online_users.get(username) or []
+            return [
+                {
+                    'connection_id': c['connection_id'],
+                    'short_id': c['connection_id'][-6:],
+                    'mount_name': c['mount_name'],
+                    'ip_address': c['ip_address'],
+                    'connect_time': c['connect_time'],
+                    'connect_datetime': c.get('connect_datetime'),
+                    'last_activity': c.get('last_activity'),
+                    'idle_seconds': round(time.time() - (c.get('last_activity') or time.time()), 1),
+                    'bytes_sent': c.get('bytes_sent', 0),
+                    'closed': bool(c.get('closed')),
+                }
+                for c in conns
+            ]
+
+    def reconcile(self):
+        """全局巡检：prune + 与转发器对账
+
+        返回 {'pruned': n, 'orphans': [...], 'dangling': [...]}
+          orphans  —— 记账里有、forwarder 里没有该 connection_id 的记录
+          dangling —— forwarder 里有、记账里没有的 connection_id
+        两者都记 WARNING，便于人工定位"谁漏了清理"。
+        """
+        pruned = self.prune_stale_connections(reason_tag='reconcile')
+        orphans, dangling = [], []
+        try:
+            from . import forwarder as forwarder_mod
+            fwd = forwarder_mod.get_forwarder()
+            with fwd.client_lock:
+                live_ids = {
+                    c.get('connection_id')
+                    for clients in fwd.clients.values() for c in clients
+                    if c.get('connection_id')
+                }
+            with self.user_lock:
+                known_ids = set()
+                for username, conns in self.online_users.items():
+                    for conn in conns:
+                        cid = conn['connection_id']
+                        known_ids.add(cid)
+                        # 刚建记录时 forwarder 还没注册，2 秒内不算孤儿
+                        if cid not in live_ids and (time.time() - conn['connect_time']) > 2.0:
+                            orphans.append(f"{username}#{cid[-6:]}")
+                dangling = [cid for cid in live_ids if cid not in known_ids]
+        except Exception as e:
+            log_warning(f"与转发器对账失败: {e}")
+
+        if orphans:
+            log_warning(f"发现 {len(orphans)} 条记账孤儿（forwarder 无对应客户端）: {orphans}")
+        if dangling:
+            log_warning(f"发现 {len(dangling)} 条转发器悬挂连接（记账无对应记录）: "
+                        f"{[c[-6:] for c in dangling]}")
+        return {'pruned': pruned, 'orphans': orphans, 'dangling': dangling}
+    
     def get_mount_connection_count(self, mount_name):
-        """获取挂载点连接数"""
-        with self.mount_lock:
-            return self.mount_connection_count.get(mount_name, 0)
+        """获取挂载点连接数（从 online_users 派生，避免缓存漂移）"""
+        with self.user_lock:
+            return sum(
+                1 for conns in self.online_users.values()
+                for conn in conns if conn['mount_name'] == mount_name
+            )
     
     def get_online_mounts(self):
         """获取在线挂载点列表"""
@@ -625,6 +936,12 @@ class ConnectionManager:
             total_mounts = len(self.online_mounts)
             total_users = len(self.online_users)
             total_connections = sum(len(connections) for connections in self.online_users.values())
+
+            # 挂载点用户数直接从 online_users 派生，不再读 mount_connection_count 缓存
+            users_per_mount = defaultdict(int)
+            for connections in self.online_users.values():
+                for conn in connections:
+                    users_per_mount[conn['mount_name']] += 1
             
             mount_stats = []
             for mount_name, mount_info in self.online_mounts.items():
@@ -636,7 +953,7 @@ class ConnectionManager:
                     'total_bytes': mount_info.total_bytes,
                     'total_messages': mount_info.total_messages,
                     'data_rate': mount_info.data_rate,
-                    'user_count': self.mount_connection_count.get(mount_name, 0),
+                    'user_count': users_per_mount.get(mount_name, 0),
                     'status': mount_info.status,
                     'str_generated': mount_info.final_str_generated
                 })
@@ -905,9 +1222,30 @@ def is_mount_online(mount_name):
     """检查挂载点是否在线"""
     return get_connection_manager().is_mount_online(mount_name)
 
-def get_user_connection_count(username):
+def get_user_connection_count(username, prune=False):
     """获取用户连接数"""
-    return get_connection_manager().get_user_connection_count(username)
+    return get_connection_manager().get_user_connection_count(username, prune=prune)
+
+def try_reserve_slot(username, mount_name=None, ip_address="", user_agent="",
+                     protocol_version="1.0", client_socket=None, limit=None,
+                     connection_id=None):
+    """限流判定 + 占位（原子）"""
+    return get_connection_manager().try_reserve_slot(
+        username, mount_name, ip_address, user_agent,
+        protocol_version, client_socket, limit, connection_id
+    )
+
+def prune_stale_connections(timeout=None, check_socket=True, reason_tag='prune'):
+    """清理残留（幽灵）连接记录"""
+    return get_connection_manager().prune_stale_connections(timeout, check_socket, reason_tag)
+
+def list_user_connections(username):
+    """列出某用户在线连接明细"""
+    return get_connection_manager().list_user_connections(username)
+
+def reconcile():
+    """全局巡检：prune + 与转发器对账"""
+    return get_connection_manager().reconcile()
 
 def update_mount_data(mount_name, data_size):
     """更新挂载点数据"""

@@ -62,7 +62,7 @@ class WebManager:
     """Web管理器"""
 
     #: 演示模式下仍允许的 POST 接口（新增用户 / 新增挂载点 / 登录）
-    DEMO_ALLOWED_POSTS = {'/api/login', '/api/users', '/api/mounts'}
+    DEMO_ALLOWED_POSTS = {'/api/login', '/api/users', '/api/mounts', '/api/connections/prune'}
     #: 演示模式下仍允许的 POST 后缀（RTCM 解析启停与心跳：只动内存里的查看线程，不动数据库）
     DEMO_ALLOWED_PARSE_SUFFIXES = (
         '/rtcm-parse/start',
@@ -1016,9 +1016,11 @@ class WebManager:
                 try:
                     users = self.db_manager.get_all_users()
                     
-                    # 获取在线用户信息
+                    # 获取在线用户信息（顺手清一次幽灵，页面数字才可信）
                     try:
-                        online_users = connection.get_connection_manager().get_online_users()
+                        cm = connection.get_connection_manager()
+                        cm.prune_stale_connections(reason_tag='api-users')
+                        online_users = cm.get_online_users()
                         online_usernames = list(online_users.keys())
                     except Exception as e:
                         log_error(f"获取在线用户失败: {e}")
@@ -1028,14 +1030,16 @@ class WebManager:
                     user_list = []
                     for user in users:
                         username = user[1]
-                        connection_count = connection.get_connection_manager().get_user_connection_count(username)
-                        connect_time = connection.get_connection_manager().get_user_connect_time(username)
+                        connection_count = cm.get_user_connection_count(username)
+                        connect_time = cm.get_user_connect_time(username)
                         user_dict = {
                             'id': user[0],
                             'username': username,
                             'online': username in online_usernames,
                             'connection_count': connection_count,
-                            'connect_time': connect_time or '-'  # 接入时间
+                            'connect_time': connect_time or '-',  # 接入时间
+                            # 逐连接明细：人工排查幽灵记录就靠这个（短 id + 空闲秒数）
+                            'connections': cm.list_user_connections(username),
                         }
                         user_list.append(user_dict)
                     
@@ -1094,6 +1098,47 @@ class WebManager:
                     log_error(f"添加用户失败: {e}")
                     return jsonify({'error': str(e)}), 500
         
+        @self.app.route('/api/connections', methods=['GET'])
+        @self.require_login
+        def api_connections():
+            """在线连接明细（含幽灵记录），?username= 可过滤
+
+            排查"连接数只升不降"时用：能看到每条记录的 connection_id 后 6 位、
+            接入时间、最后活动时间、已空闲秒数、来源 IP。
+            """
+            try:
+                cm = connection.get_connection_manager()
+                target = (request.args.get('username') or '').strip()
+                if target:
+                    return jsonify({
+                        'username': target,
+                        'count': cm.get_user_connection_count(target, prune=True),
+                        'connections': cm.list_user_connections(target),
+                        'max_per_user': config.MAX_CONNECTIONS_PER_USER,
+                    })
+                with cm.user_lock:
+                    names = list(cm.online_users.keys())
+                return jsonify({
+                    'count': sum(len(cm.online_users.get(n) or []) for n in names),
+                    'max_per_user': config.MAX_CONNECTIONS_PER_USER,
+                    'users': {n: cm.list_user_connections(n) for n in names},
+                })
+            except Exception as e:
+                log_error(f"获取连接明细失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/connections/prune', methods=['POST'])
+        @self.require_login
+        def api_connections_prune():
+            """手动清理幽灵连接记录（等价于巡检线程做的那一次）"""
+            try:
+                pruned = connection.get_connection_manager().prune_stale_connections(
+                    reason_tag='manual')
+                return jsonify({'message': f'已清理 {pruned} 条残留连接记录', 'pruned': pruned})
+            except Exception as e:
+                log_error(f"清理连接记录失败: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/users/<username>', methods=['PUT', 'DELETE'])
         @self.require_login
         def api_user_detail(username):
@@ -1172,7 +1217,10 @@ class WebManager:
                             if len(new_password) < 6 or len(new_password) > 100:
                                 return jsonify({'error': '新密码长度必须在6-100个字符之间'}), 400
 
-                        # 改名或改口令都必须让旧会话失效
+                        # 改名或改口令都必须让旧会话失效。
+                        # 先清一遍幽灵记录，否则没有 live client 的残留永远踢不掉。
+                        connection.get_connection_manager().prune_stale_connections(
+                            reason_tag='user-update')
                         forwarder.force_disconnect_user(username)
 
                         # password=None 表示保留原口令
@@ -1198,7 +1246,9 @@ class WebManager:
             elif request.method == 'DELETE':
                 # 删除用户
                 try:
-                    # 强制下线用户
+                    # 强制下线用户（先清幽灵记录，再踢真实连接）
+                    connection.get_connection_manager().prune_stale_connections(
+                        reason_tag='user-delete')
                     forwarder.force_disconnect_user(username)
                     success, result = self.db_manager.delete_user(username)
                     if success:

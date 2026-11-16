@@ -332,6 +332,12 @@ DOWNLOAD_ENFORCE_USER_BINDING = get_config_value('ntrip', 'download_enforce_user
 MOUNT_TIMEOUT = get_config_value('ntrip', 'mount_timeout', 1800, int)  # 30分钟
 CLIENT_TIMEOUT = get_config_value('ntrip', 'client_timeout', 300, int)  # 5分钟
 CONNECTION_TIMEOUT = get_config_value('ntrip', 'connection_timeout', 1800, int)  # 连接超时时间 (秒)
+# 比 CONNECTION_TIMEOUT 更早生效的"无数据"判据：差分数据站点正常情况下每 1~5 秒
+# 就有一包；超过这么久既没发出去也没有活动，基本可以判定为幽灵连接。
+# 置 0 表示只依赖 socket 探测 + CONNECTION_TIMEOUT。
+CONNECTION_IDLE_PRUNE = get_config_value('ntrip', 'connection_idle_prune', 600, int)
+# 连接记账巡检周期（秒）：清理幽灵 + 与转发器对账
+CONNECTION_RECONCILE_INTERVAL = get_config_value('ntrip', 'connection_reconcile_interval', 60, int)
 
 # ==================== TCP配置 ====================
 
