@@ -14,7 +14,9 @@ merge_config.py - 把 config.ini.example 里「新增的配置项」补进现有
     2. 缺失的段整段追加到文件尾部，缺失的键追加到所属段的末尾（连同样例里的注释）；
     3. 已存在的键（哪怕值和示例不同）一律跳过，绝不覆盖；
     4. 默认 dry-run 只打印将补哪些项，加 --apply 才写文件（写前自动备份）；
-    5. 幂等：重复执行不会产生重复键（configparser 遇到重复键会直接抛错）。
+    5. 幂等：重复执行不会产生重复键（configparser 遇到重复键会直接抛错）；
+    6. 目标是软链接时（如 /opt/2rtk/config.ini -> /etc/2rtk/config.ini），
+       写入落到链接终点，链接本身原样保留；悬空链接明确报错。
 
 用法：
     python3 scripts/merge_config.py                       # 预览（默认 config.ini vs config.ini.example）
@@ -206,6 +208,51 @@ def rebuild(text, sections, new_sections, key_inserts, newline):
     return newline.join(out)
 
 
+def resolve_target(path):
+    """把可能存在的软链接解析成真实文件路径。
+
+    生产上常见 /opt/2rtk/config.ini -> /etc/2rtk/config.ini 这种软链布局。
+    写入必须落到链接终点，否则 os.replace 会把链接本身替换成普通文件：
+    真文件一个字节没变（程序读的仍是旧配置），脚本却报「已写入」。
+
+    悬空链接（指向的文件不存在）单独报错，而不是顺手新建一个把链接顶掉。
+    """
+    if not os.path.islink(path):
+        return path
+    target = os.path.realpath(path)
+    if not os.path.exists(target):
+        raise FileNotFoundError(
+            '软链接 %s 指向的 %s 不存在（悬空链接），请先修复链接' % (path, target))
+    return target
+
+
+def write_in_place(text, target):
+    """写入文本到 target（已解析软链接的真实路径）。
+
+    直接截断重写而不是「写临时文件再 os.replace」：
+    - 临时文件方案会把文件换掉，硬链接会断、inode 会变，软链接也会被顶掉；
+    - 配置文件不是数据库，没有并发写事务需求，就地重写更安全。
+    写失败时把原内容回滚回去，避免留下半截文件。
+    """
+    original = read_text(target)
+    try:
+        with open(target, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+    except OSError:
+        # 回滚：尽量恢复原内容，别让配置文件变成半截
+        try:
+            with open(target, 'w', encoding='utf-8', newline='') as f:
+                f.write(original)
+        except OSError:
+            pass
+        raise
+    # 保留原权限（/etc/2rtk/config.ini 可能是 640）
+    try:
+        shutil.copymode(target, target)
+    except OSError:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser(description='把 config.ini.example 的新增配置项补进 config.ini')
     ap.add_argument('--config', default=DEFAULT_CONFIG, help='目标配置文件（默认 config.ini）')
@@ -222,11 +269,21 @@ def main():
         print('示例配置不存在：%s' % args.example, file=sys.stderr)
         return 2
 
+    # 目标可能是软链接（/opt/2rtk/config.ini -> /etc/2rtk/config.ini），
+    # 之后所有读写都走 resolve 出来的真实路径，链接本身原样保留
+    try:
+        target = resolve_target(args.config)
+    except FileNotFoundError as exc:
+        print('目标配置无法写入：%s' % exc, file=sys.stderr)
+        return 2
+    if target != args.config and not args.quiet:
+        print('目标文件：%s -> %s（软链接，写入终点）' % (args.config, target))
+
     example_text = read_text(args.example)
     try:
-        text = read_text(args.config)
+        text = read_text(target)
         newline = '\r\n' if '\r\n' in text else '\n'
-        existing = load_existing(args.config)
+        existing = load_existing(target)
     except configparser.Error as exc:
         print('配置文件无法解析（可能有重复键），已放弃修改：%s' % exc, file=sys.stderr)
         print('提示：常见原因是同一段里出现了两个同名键（例如两行 demo_mode）。', file=sys.stderr)
@@ -258,46 +315,33 @@ def main():
 
     backup = None
     if not args.no_backup:
-        backup = '%s.bak.%s' % (args.config, time.strftime('%Y%m%d-%H%M%S'))
+        backup = '%s.bak.%s' % (target, time.strftime('%Y%m%d-%H%M%S'))
         try:
-            shutil.copy2(args.config, backup)
+            shutil.copy2(target, backup)
         except OSError as exc:
             print('备份失败，已放弃修改：%s' % exc, file=sys.stderr)
             return 2
 
-    tmp = args.config + '.tmp'
     try:
-        with open(tmp, 'w', encoding='utf-8', newline='') as f:
-            f.write(merged)
-        # 保留原文件权限（/etc/2rtk/config.ini 可能是 640）
-        try:
-            shutil.copymode(args.config, tmp)
-        except OSError:
-            pass
-        os.replace(tmp, args.config)
+        write_in_place(merged, target)
     except OSError as exc:
         print('写入失败：%s' % exc, file=sys.stderr)
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
         return 2
 
     # 写完立刻回读校验：能被 configparser 解析、且新增键确实在文件里
     try:
-        after = load_existing(args.config)
+        after = load_existing(target)
     except configparser.Error as exc:
         print('写入后校验失败，正在还原备份：%s' % exc, file=sys.stderr)
         if backup:
-            shutil.copy2(backup, args.config)
+            shutil.copy2(backup, target)
         return 2
 
     for name, key, _value in added:
         if key not in after.get(name, set()):
             print('写入后校验失败：[%s] %s 不在文件中，已还原备份' % (name, key), file=sys.stderr)
             if backup:
-                shutil.copy2(backup, args.config)
+                shutil.copy2(backup, target)
             return 2
 
     if args.quiet:

@@ -257,6 +257,89 @@ def case_real_example(tmp):
     check_true('脚本模块可导入', hasattr(mod, 'build_inserts'))
 
 
+def case_symlink(tmp):
+    """目标配置文件是软链接时，必须写到链接终点，不能把链接换成普通文件。
+
+    生产上 /opt/2rtk/config.ini -> /etc/2rtk/config.ini 就是这种布局。
+    老实现用 os.replace(tmp, config) 落盘，会把软链接本身替换成普通文件：
+    链接断了，真正被程序读取的 /etc/2rtk/config.ini 一个字节都没变，
+    而脚本却打印「已写入 N 项」，用户以为生效了，重启后配置依旧是旧的。
+    """
+    print("[8] 目标是软链接 → 写到链接终点，链接本身保留")
+    if not hasattr(os, 'symlink'):
+        check_true('平台支持软链接', False, '当前平台无 os.symlink')
+        return
+    if sys.platform == 'win32':
+        print("  SKIP  Windows 下创建软链接需要管理员权限")
+        return
+
+    real = os.path.join(tmp, 'c8.real.ini')
+    link = os.path.join(tmp, 'c8.link.ini')
+    ex = os.path.join(tmp, 'c8.example')
+    write(real, OLD_CONFIG)
+    write(ex, EXAMPLE)
+    try:
+        os.symlink(real, link)
+    except OSError as exc:
+        print(f"  SKIP  无法创建软链接：{exc}")
+        return
+
+    r = run_cli('--config', link, '--example', ex, '--apply')
+    check('退出码', r.returncode, 0)
+
+    check_true('链接仍然是链接', os.path.islink(link), 'os.path.islink(link) = False')
+    check('链接指向未变', os.path.realpath(link), os.path.realpath(real))
+
+    # 关键：真正被程序读取的那个文件必须被改到
+    target_text = read(real)
+    check_true('链接终点已写入新键', 'demo_mode' in target_text,
+               '真文件里没有 demo_mode —— 配置根本没生效')
+    check_true('用户原值未丢', '用户改过的名字' in target_text)
+
+    # 回读校验也必须走链接终点
+    import configparser
+    cp = configparser.ConfigParser()
+    cp.read(link, encoding='utf-8-sig')
+    check_true('通过链接能读到新键', cp.has_option('security', 'demo_mode'))
+    check('原有值经链接未变', cp.get('app', 'name'), '用户改过的名字')
+
+    # 不留下 .tmp 垃圾
+    leftovers = [f for f in os.listdir(tmp) if f.endswith('.tmp')]
+    check('未残留 .tmp 文件', leftovers, [])
+
+    # 幂等：再跑一次不应新增
+    before = read(real)
+    r2 = run_cli('--config', link, '--example', ex, '--apply')
+    check('二次执行退出码', r2.returncode, 0)
+    check('二次执行链接仍在', os.path.islink(link), True)
+    check('二次执行文件不变', read(real), before)
+
+
+def case_symlink_dangling(tmp):
+    """软链接指向的文件不存在时，要明确报错，而不是悄悄建一个普通文件把链接顶掉。"""
+    print("[9] 软链接悬空 → 明确报错，不顶掉链接")
+    if sys.platform == 'win32' or not hasattr(os, 'symlink'):
+        print("  SKIP  平台不支持")
+        return
+
+    link = os.path.join(tmp, 'c9.link.ini')
+    missing = os.path.join(tmp, 'c9.missing.ini')
+    ex = os.path.join(tmp, 'c9.example')
+    write(ex, EXAMPLE)
+    try:
+        os.symlink(missing, link)
+    except OSError as exc:
+        print(f"  SKIP  无法创建软链接：{exc}")
+        return
+
+    r = run_cli('--config', link, '--example', ex, '--apply')
+    check('退出码非零', r.returncode, 2)
+    check_true('提示链接目标不存在',
+               '不存在' in (r.stderr or '') or 'not exist' in (r.stderr or '').lower())
+    check_true('链接未被顶成普通文件', os.path.islink(link),
+               '软链接被替换成普通文件了')
+
+
 def main():
     global VERBOSE
     ap = argparse.ArgumentParser()
@@ -277,6 +360,8 @@ def main():
         case_duplicate_key(tmp)
         case_missing_file(tmp)
         case_real_example(tmp)
+        case_symlink(tmp)
+        case_symlink_dangling(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
