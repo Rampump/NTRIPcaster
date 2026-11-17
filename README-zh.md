@@ -1,6 +1,6 @@
 # 2RTK NTRIP Caster
 
-**语言 / Language:** [English](README.md) · [中文版](#) (当前)
+**语言 / Language:** [English](README.md) · **简体中文**
 
 一个使用 Python 编写的简易 NTRIP Caster，支持 NTRIP v1.0 和 v2.0 协议，通过 Web 管理页面进行管理。
 
@@ -18,7 +18,7 @@
 
 - 官网：**https://2rtk.com**
 - 公开测试服务器：**http://2rtk.net:5757** —— 默认账号 `admin` / `admin123`，可直接登录试用。
-  （演示实例开启了只读演示模式，写操作仅限新增记录。）
+  （演示实例开启了演示模式，写操作仅限新增记录。）
 
 ## 一键安装（Debian 11+ / Ubuntu 22.04+）
 
@@ -30,34 +30,34 @@
 
 普通用户用 `sudo bash install.sh`；已是 root 登录的直接用 `bash install.sh`（无需 sudo）。
 
-**中国区服务器**（从 GitCode 拉取）：
-
-```bash
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
-```
-
 **国际服务器**（从 GitHub 拉取）：
 
 ```bash
 git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
-脚本会自动检测本地源码、跳过重复下载；如遇网络问题，可加 `REPO_SOURCE=gitcode` 或 `REPO_SOURCE=github` 强制指定源。
+**中国区服务器**（从 GitCode 拉取）：
+
+```bash
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
+```
+
+脚本会自动检测本地源码、跳过重复下载；如遇网络问题，可加 `REPO_SOURCE=github` 或 `REPO_SOURCE=gitcode` 强制指定源。
 
 ## Docker 部署（推荐）
 
 一键部署，无需手动配置。
 
-**中国区服务器**（腾讯云镜像，无需登录、直连快）：
-
-```bash
-docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
-```
-
 **国际服务器**（Docker Hub 官方镜像）：
 
 ```bash
 docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:latest
+```
+
+**中国区服务器**（腾讯云镜像，无需登录、直连快）：
+
+```bash
+docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 ## 访问地址

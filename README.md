@@ -1,24 +1,24 @@
 # 2RTK NTRIP Caster
 
-**Language:** [English](#) (current) · [中文版](README-zh.md)
+**Language:** **English** · [简体中文](README-zh.md)
 
 A lightweight NTRIP caster written in Python, supporting NTRIP v1.0 and v2.0, administered through a web interface.
 
-Add users and mount points from your browser, and monitor live caster connection info — no config file editing, no CLI.
+Add users and mount points in your browser, and watch live caster connection info — no config file editing, no CLI.
 
 - Web-based administration — deploy on any cloud host
 - SQLite storage for users and mount points
-- Upload RTCM data to a mount point and the STR table entry is generated and corrected automatically (RTCM messages parsed via `pyrtcm`)
+- Upload RTCM data to a mount point and the STR table entry is generated and corrected automatically (RTCM parsed via `pyrtcm`)
 - High concurrency (tested with 2 RTCM sources and 2000 concurrent downloaders)
 - Runs on Debian / Ubuntu / CentOS / Armbian and any system with Python 3.9+
 - Docker support
-- Bilingual web UI: 中文 / English (`?lang=zh|en` also works)
+- Bilingual web UI: English / 中文 (`?lang=en|zh` also works)
 
 ## Official Site & Demo Server
 
 - Website: **https://2rtk.com**
 - Public test server: **http://2rtk.net:5757** — log in with `admin` / `admin123` and try it out.
-  (The demo instance runs in read-only demo mode, so writes are restricted to creating new records.)
+  (The demo instance runs in demo mode, where writes are limited to creating new records.)
 
 ## One-click Install (Debian 11+ / Ubuntu 22.04+)
 
@@ -30,34 +30,34 @@ The script downloads the source, installs dependencies, and creates the service.
 
 Run with `sudo bash install.sh` as a normal user; if you are already logged in as **root**, use `bash install.sh` (no sudo).
 
-**Mainland China** (GitCode):
-
-```bash
-git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
-```
-
 **International** (GitHub):
 
 ```bash
 git clone https://github.com/Rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
 ```
 
-The script reuses a local source directory and skips duplicate downloads. On network trouble, force a source: `REPO_SOURCE=gitcode` or `REPO_SOURCE=github`.
+**Mainland China** (GitCode):
+
+```bash
+git clone https://gitcode.com/rampump/NTRIPcaster.git && cd NTRIPcaster && sudo bash install.sh
+```
+
+The script reuses a local source directory and skips duplicate downloads. On network trouble, force a source: `REPO_SOURCE=github` or `REPO_SOURCE=gitcode`.
 
 ## Docker Deployment (Recommended)
 
 One command, no manual configuration.
 
-**Mainland China** (Tencent Cloud mirror — no login, fast direct connection):
-
-```bash
-docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
-```
-
 **International** (Docker Hub):
 
 ```bash
 docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 2rtk/ntripcaster:latest
+```
+
+**Mainland China** (Tencent Cloud mirror — no login, fast direct connection):
+
+```bash
+docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.com/2rtk/ntripcaster:latest
 ```
 
 ## Access
