@@ -77,7 +77,17 @@ Off by default. Set `EXTERNAL_CASTER_ENABLED=true` and add upstream casters in *
 - Supports an account pool, randomized User-Agents and optional GGA forwarding. Relay/parser limits and switch throttling protect upstreams from aggressive polling.
 - Demo mode friendly: writes return `403 demo_readonly` while read APIs and relay keep working.
 
-Upstream SOURCETABLEs refresh every 6 hours with exponential backoff on failure to avoid upstream IP bans. Detailed design: `docs/external-caster-relay-design.md`.
+**Connection limits (anti-ban protection)**
+
+Many upstream casters enforce their own per-user connection cap — some even advertise it in the SOURCETABLE (for example, "max 3 connections per user"). Exceeding that cap is the most common cause of upstream bans, so the relay deliberately stays below it:
+
+- One upstream connection per mount: multiple subscribers share a single relay and data is fanned out locally (up to 200 subscribers per mount).
+- At most **4 relays per upstream source** and **8 relays globally**. Once a limit is reached, new subscriptions are rejected instead of opening more upstream connections — requesting many different mounts will not create a corresponding number of connections.
+- A failed connection (401 / 403 / 404 / timeout) is closed and rolled back immediately, with no retry storm. A User-Agent rejected with 403 / 406 is cooled down and replaced.
+- Relays close after a 5-second grace with no subscribers, or 60 seconds idle. SOURCETABLEs refresh every 6 hours with exponential backoff (up to 24 hours); on-demand refreshes are single-flight, capped at 2 per hour with a 15-minute cooldown and a 10-minute negative cache.
+- Tunable in `[external_caster]`: `max_relays_per_source`, `max_relays`, `max_subscribers_per_mount`, `relay_grace`, `relay_idle`, `str_refresh`, `str_demand_cooldown`, `str_negative_ttl`. The default of 4 relays per source suits casters with no advertised cap. For a caster that advertises a per-user cap (e.g. 3 connections), set `max_relays_per_source` to that value or lower (e.g. 2) to leave headroom.
+
+Detailed design: `docs/external-caster-relay-design.md`.
 
 ## Acknowledgments
 

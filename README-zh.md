@@ -77,7 +77,17 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.c
 - 支持账号池、随机 User-Agent 与可选的 GGA 转发；中继/解析限额与切换节流防止对上游频繁请求。
 - 兼容演示模式：写操作返回 `403 demo_readonly`，读接口与中继不受影响。
 
-上游 STR 表默认每 6 小时刷新一次（失败指数退避），避免频繁请求导致 IP 被封。详细设计见 `docs/external-caster-relay-design.md`。
+**连接数限制（防止上游风控）**
+
+很多上游 Caster 自身会限制每个用户的连接数，有的甚至直接在 SOURCETABLE 里标明（例如「单用户最大连接数 3」）。超过该限制是触发上游封禁的最常见原因，因此程序会主动把并发量压在上限以内：
+
+- 每个挂载点只保持 1 条上游连接：多用户共享同一条中继并在本地扇出（单挂载最多 200 个订阅者）。
+- 单个源最多 **4 条**中继，全局最多 **8 条**。达到上限后新订阅会被直接拒绝，不会继续向上游建连——订阅再多不同挂载点，也不会产生对应数量的连接。
+- 建连失败（401 / 403 / 404 / 超时）立即关闭并回滚，不做重试风暴；被上游以 403 / 406 拒绝的 User-Agent 会进入冷却并自动更换。
+- 无人订阅 5 秒（宽限期）或空闲 60 秒后自动关闭中继。SOURCETABLE 每 6 小时刷新一次，失败指数退避（最长 24 小时）；按需刷新单飞、每小时最多 2 次，带 15 分钟冷却与 10 分钟负缓存。
+- 可在 `[external_caster]` 调整：`max_relays_per_source`、`max_relays`、`max_subscribers_per_mount`、`relay_grace`、`relay_idle`、`str_refresh`、`str_demand_cooldown`、`str_negative_ttl`。默认的单源 4 条适用于未声明上限的宽松源；对声明了单用户连接数的 Caster（例如 3 条），应将 `max_relays_per_source` 设为该值或更低（如 2），留出余量。
+
+详细设计见 `docs/external-caster-relay-design.md`。
 
 ## 致谢
 
