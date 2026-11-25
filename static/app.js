@@ -16,6 +16,8 @@ let connectionStatus = 'connecting';
 //   API_BASE   : 匿名访客只能走 /api/public/，登录后走完整接口
 const IS_AUTHED = !!window.__LOGGED_IN__;
 const IS_DEMO = !!window.__DEMO_MODE__;
+// 外部 Caster 配置入口（测试服 false：后端照常拉取/中继，前端完全不显示）
+const EXTERNAL_UI_ENABLED = !!window.__EXTERNAL_CASTER_UI__;
 const API_BASE = IS_AUTHED ? '/api' : '/api/public';
 function apiUrl(path) { return API_BASE + path; }
 
@@ -168,11 +170,11 @@ function performNavigation(page) {
         mainContent.classList.remove('dashboard-layout');
     }
     
-    // 每次切换页面重置分页/搜索状态与绑定标记，确保列表从第一页、无过滤重新渲染
+    // 每次切换页面重置分页/搜索状态，确保列表从第一页、无过滤重新渲染。
+    // 分页事件已委托到 document（只绑一次），不再需要按容器清理绑定标记。
     if (page === 'users' || page === 'mounts') {
         delete paginationState[page];
         delete searchState[page];
-        delete paginationBound[page === 'users' ? '#users-pagination' : '#mounts-pagination'];
     }
 
     loadPageContent(page);
@@ -288,6 +290,11 @@ async function loadPageContent(page) {
                 // Ensure content panel is displayed on non-dashboard pages
                 contentDiv.parentElement.style.display = 'block';
                 contentDiv.innerHTML = getSettingsContent();
+                if (EXTERNAL_UI_ENABLED) {
+                    loadExternalCasters();
+                    loadExternalAccounts();
+                    loadExternalRelayStatus();
+                }
                 break;
         }
     } catch (error) {
@@ -306,6 +313,10 @@ let activeParsingMount = null;     // 后端确实在推送数据的挂载点（
 let parsingSyncTimer = null;       // 周期校验定时器
 let parsingSyncInFlight = false;   // 防止请求堆积
 let parsingSubscribeGuardUntil = 0; // 订阅请求发出后的保护窗口（毫秒时间戳）
+// 外部源首次 relay 需要建连，切换过快的点击会让后端反复建连/断开。
+// 单点防抖：按钮、整行、自动选站三条路径都汇聚到 activateMountParsing。
+let lastParseSwitchAt = 0;
+let parseSwitchInFlight = false;
 
 function addInfoButtonsToSTRItems() {
     const infoButtons = document.querySelectorAll('.str-info-btn');
@@ -345,6 +356,16 @@ function activateMountParsing(mountName) {
     if (!mountName) return;
     // 同一个挂载点已经在解析：不重复调 start，避免解析器被反复销毁重建
     if (activeParsingMount === mountName) return;
+    // 外部源首次拉流要建上游连接，频繁切换会被上游限流。
+    // 前端只做 UX 节流；正确性靠后端 cid 幂等 + IP 限流 + relay 限额。
+    const now = Date.now();
+    if (parseSwitchInFlight || now - lastParseSwitchAt < 1500) {
+        showAlert(t('external.switchTooFast'), 'warning');
+        return;
+    }
+    parseSwitchInFlight = true;
+    lastParseSwitchAt = now;
+    setTimeout(() => { parseSwitchInFlight = false; }, 1500);
 
     currentSelectedMount = mountName;
     // 乐观高亮：点击立刻给反馈，随后由后端状态校正（启动失败会自动撤销）。
@@ -1535,6 +1556,8 @@ function getDashboardContent() {
                 <dd class="kv-value" id="rejected-connections">–</dd>
                 <dt>${L('dash.onlineMountPoints')}</dt>
                 <dd class="kv-value" id="total-mounts">–</dd>
+                <dt>${L('dash.externalAvailable')}</dt>
+                <dd class="kv-value" id="external-available-mounts">–</dd>
                 <dt>${L('dash.userConnections')}</dt>
                 <dd class="kv-value" id="total-users">–</dd>
             </dl>
@@ -1601,43 +1624,53 @@ function renderPaginationBar(listKey, page, pageSize, total) {
     `;
 }
 
-// 已绑定的分页容器选择器集合，避免重复绑定
-const paginationBound = {};
+// 分页事件委托到 document：分页条会随每次翻页重建，分页容器
+// (#users-pagination / #mounts-pagination) 还会在 loadPageContent 整页刷新
+// （增删改用户/挂载点、切换语言）时被整个替换。
+// 之前把监听器绑在容器上、并用 paginationBound 标记去重，容器一换标记却还在，
+// 新容器就没了监听器，表现为「下一页/页码点了没反应」。
+// 改成 document 级委托后，任意容器重建都不影响，且全程只绑一次。
+let paginationDelegated = false;
+function bindPaginationEvents() {
+    if (paginationDelegated) return;
+    paginationDelegated = true;
 
-// 绑定分页条事件：委托到分页容器上（翻页后内部分页条重建，委托不失效）
-function bindPaginationEvents(listKey, renderFn) {
-    const containerSel = listKey === 'users' ? '#users-pagination' : '#mounts-pagination';
-    if (paginationBound[containerSel]) return;
-    const container = document.querySelector(containerSel);
-    if (!container) return;
-    paginationBound[containerSel] = true;
+    document.addEventListener('click', function (e) {
+        let btn = null;
+        let action = null;
+        if ((btn = e.target.closest('.pagination-prev'))) action = 'prev';
+        else if ((btn = e.target.closest('.pagination-next'))) action = 'next';
+        else if ((btn = e.target.closest('.pagination-num'))) action = 'num';
+        if (!btn || !action || btn.disabled) return;
 
-    container.addEventListener('click', function (e) {
-        const prevBtn = e.target.closest('.pagination-prev');
-        const nextBtn = e.target.closest('.pagination-next');
-        const numBtn = e.target.closest('.pagination-num');
-        if (prevBtn) {
-            if (prevBtn.disabled) return;
-            paginationState[listKey].page -= 1;
-            renderFn();
-        } else if (nextBtn) {
-            if (nextBtn.disabled) return;
-            paginationState[listKey].page += 1;
-            renderFn();
-        } else if (numBtn) {
-            paginationState[listKey].page = parseInt(numBtn.getAttribute('data-goto'), 10);
-            renderFn();
-        }
+        const listKey = btn.getAttribute('data-list');
+        const state = paginationState[listKey];
+        if (!state) return;
+
+        const oldPage = state.page;
+        if (action === 'prev') state.page = Math.max(1, oldPage - 1);
+        else if (action === 'next') state.page = oldPage + 1;
+        else state.page = parseInt(btn.getAttribute('data-goto'), 10) || 1;
+
+        if (state.page === oldPage) return;
+        rerenderPaginatedList(listKey);
     });
 
-    container.addEventListener('change', function (e) {
+    document.addEventListener('change', function (e) {
         const sel = e.target.closest('.pagination-size-select');
-        if (sel) {
-            paginationState[listKey].pageSize = parseInt(sel.value, 10);
-            paginationState[listKey].page = 1;
-            renderFn();
-        }
+        if (!sel) return;
+        const listKey = sel.getAttribute('data-list');
+        const state = paginationState[listKey];
+        if (!state) return;
+        state.pageSize = parseInt(sel.value, 10) || 20;
+        state.page = 1;
+        rerenderPaginatedList(listKey);
     });
+}
+
+function rerenderPaginatedList(listKey) {
+    if (listKey === 'users') renderUsersPage();
+    else if (listKey === 'mounts') renderMountsPage();
 }
 
 // 通用分页渲染：slice 当前页数据后交给 rowRenderer 生成 <tr>，替换 tbody 并刷新分页条
@@ -1720,14 +1753,14 @@ function bindSearchEvents(listKey, renderFn) {
 function renderUsersPage() {
     const filtered = filterByKeyword(window._usersCache || [], searchState['users'], u => u.username);
     renderPaginatedRows('users', filtered, userRowRenderer, '#users-tbody', '#users-pagination', t('monitor.noData'));
-    bindPaginationEvents('users', renderUsersPage);
+    bindPaginationEvents();
 }
 
 // 渲染挂载点列表当前页（首屏及翻页复用）
 function renderMountsPage() {
     const filtered = filterByKeyword(window._mountsCache || [], searchState['mounts'], m => m.mount);
     renderPaginatedRows('mounts', filtered, mountRowRenderer, '#mounts-tbody', '#mounts-pagination', t('monitor.noData'));
-    bindPaginationEvents('mounts', renderMountsPage);
+    bindPaginationEvents();
 }
 
 // user
@@ -2061,9 +2094,268 @@ function getSettingsContent() {
                 </div>
                 <button onclick="restartProgram()" class="btn btn-warning">${L('settings.restart')}</button>
             </section>
+
+            ${EXTERNAL_UI_ENABLED ? `
+            <section class="settings-section" id="external-caster-section">
+                <h4><i class="fas fa-satellite"></i> ${L('external.title')}</h4>
+                <div class="field-hint" style="margin-bottom: 12px;">
+                    ${L('external.hint')}
+                </div>
+                <div class="form-actions" style="justify-content: flex-start; margin-bottom: 12px;">
+                    <button onclick="openExternalCasterModal()" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> ${L('external.addSource')}
+                    </button>
+                    <button onclick="loadExternalCasters(); loadExternalRelayStatus();" class="btn btn-secondary">
+                        <i class="fas fa-sync"></i> ${L('common.refresh')}
+                    </button>
+                </div>
+                <table class="data-table external-table">
+                    <thead><tr>
+                        <th>${L('external.name')}</th><th>${L('external.address')}</th>
+                        <th>${L('external.status')}</th><th>${L('external.accounts')}</th>
+                        <th>${L('external.actions')}</th>
+                    </tr></thead>
+                    <tbody id="external-casters-body"><tr><td colspan="5">${L('common.loading')}</td></tr></tbody>
+                </table>
+                <h5 style="margin:16px 0 8px;">${L('external.accountsTitle')}</h5>
+                <div class="form-actions" style="justify-content: flex-start; margin-bottom: 8px;">
+                    <button onclick="openExternalAccountModal()" class="btn btn-secondary btn-sm">
+                        <i class="fas fa-plus"></i> ${L('external.addAccount')}
+                    </button>
+                </div>
+                <table class="data-table external-table">
+                    <thead><tr>
+                        <th>${L('external.source')}</th><th>${L('external.username')}</th>
+                        <th>${L('external.priority')}</th><th>${L('external.actions')}</th>
+                    </tr></thead>
+                    <tbody id="external-accounts-body"><tr><td colspan="4">${L('common.loading')}</td></tr></tbody>
+                </table>
+                <div id="external-relay-status" class="external-relay-status"></div>
+            </section>` : ''}
         </div>
     `;
 }
+
+// ==================== 外部 Caster 配置（仅 EXTERNAL_UI_ENABLED 时渲染） ====================
+let externalCastersCache = [];
+
+async function externalApi(path, options) {
+    const resp = await fetch(apiUrl(path), options);
+    let body = {};
+    try { body = await resp.json(); } catch (e) { /* 空响应 */ }
+    if (!resp.ok) throw new Error(body.error || ('HTTP ' + resp.status));
+    return body;
+}
+
+async function loadExternalCasters() {
+    const tbody = document.getElementById('external-casters-body');
+    if (!tbody) return;
+    try {
+        const data = await externalApi('/external-casters');
+        externalCastersCache = data.sources || [];
+        if (!externalCastersCache.length) {
+            tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(t('external.empty'))}</td></tr>`;
+            return;
+        }
+        tbody.innerHTML = externalCastersCache.map(s => `
+            <tr>
+                <td>${escapeHtml(s.name)}</td>
+                <td>${escapeHtml(s.host)}:${escapeHtml(s.port)}${s.tls ? ' (TLS)' : ''}</td>
+                <td><span class="ext-badge ${escapeHtml(s.status || 'idle')}">${escapeHtml(s.status || 'idle')}</span></td>
+                <td>${escapeHtml(s.account_count || 0)}</td>
+                <td>
+                    <button class="btn btn-sm btn-secondary" onclick="externalRefresh(${s.id})">${escapeHtml(t('external.refresh'))}</button>
+                    <button class="btn btn-sm btn-danger" onclick="externalDelete(${s.id})">${escapeHtml(t('common.delete'))}</button>
+                </td>
+            </tr>`).join('');
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="5">${escapeHtml(String(e.message || e))}</td></tr>`;
+    }
+}
+
+async function loadExternalAccounts() {
+    const tbody = document.getElementById('external-accounts-body');
+    if (!tbody || !externalCastersCache.length) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="4">${escapeHtml(t('external.empty'))}</td></tr>`;
+        return;
+    }
+    try {
+        const lists = await Promise.all(externalCastersCache.map(
+            s => externalApi(`/external-casters/${s.id}/accounts`).catch(() => null)));
+        const accounts = lists.flatMap((r, i) => r ? (r.accounts || []).map(a => ({
+            ...a, source_name: externalCastersCache[i].name })) : []);
+        tbody.innerHTML = accounts.length ? accounts.map(a => `
+            <tr>
+                <td>${escapeHtml(a.source_name)}</td>
+                <td>${escapeHtml(a.username)}</td>
+                <td>${escapeHtml(a.priority)}</td>
+                <td><button class="btn btn-sm btn-danger" onclick="externalDeleteAccount(${a.source_id}, ${a.id})">${escapeHtml(t('common.delete'))}</button></td>
+            </tr>`).join('') : `<tr><td colspan="4">${escapeHtml(t('external.empty'))}</td></tr>`;
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="4">${escapeHtml(String(e.message || e))}</td></tr>`;
+    }
+}
+
+async function loadExternalRelayStatus() {
+    const box = document.getElementById('external-relay-status');
+    if (!box) return;
+    try {
+        const data = await externalApi('/external-casters/relay-status');
+        const relays = data.relays || {};
+        const entries = Object.entries(relays);
+        box.innerHTML = `<div class="field-hint" style="margin-top:12px;">${escapeHtml(t('external.relayTitle'))}</div>` +
+            (entries.length ? entries.map(([mount, st]) => `
+                <div class="ext-relay-row">
+                    <strong>${escapeHtml(mount)}</strong>
+                    <span class="ext-badge ${escapeHtml(st.state)}">${escapeHtml(st.state)}</span>
+                    <span>${escapeHtml(t('external.refs'))}: ${st.refs}</span>
+                    <span>${escapeHtml(t('external.agent'))}: ${escapeHtml(st.agent_profile || '-')}</span>
+                </div>`).join('') : `<div class="field-hint">${escapeHtml(t('external.empty'))}</div>`);
+    } catch (e) { /* 状态不可用时静默，不影响配置 */ }
+}
+
+// 现有 showConfirmDialog 会 escapeHtml(message)，表单不能复用；
+// 这里用同样的全局 callback 机制，但 body 直接作为 HTML 插入。
+function showExternalModal(title, bodyHtml, onConfirm) {
+    const old = document.getElementById('externalFormDialog');
+    if (old) old.remove();
+    const html = `
+        <div class="modal-overlay" id="externalFormDialog">
+            <div class="modal-content" style="max-width: 480px;">
+                <h4>${escapeHtml(title)}</h4>
+                <div style="margin-bottom: 1rem;">${bodyHtml}</div>
+                <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                    <button class="btn btn-secondary" onclick="cancelExternalModal()">${escapeHtml(t('common.cancel'))}</button>
+                    <button class="btn btn-primary" onclick="confirmExternalModal()">${escapeHtml(t('common.confirm'))}</button>
+                </div>
+            </div>
+        </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+    window.tempConfirmCallback = onConfirm;
+}
+
+function confirmExternalModal() {
+    const cb = window.tempConfirmCallback;
+    window.tempConfirmCallback = null;
+    try {
+        // 必须先执行回调：回调的同步部分会读取弹窗里的表单值，
+        // 若先 remove DOM 会拿到 null 并抛 "reading 'value'"。
+        if (cb) cb();
+    } finally {
+        const d = document.getElementById('externalFormDialog');
+        if (d) d.remove();
+    }
+}
+
+function cancelExternalModal() {
+    const d = document.getElementById('externalFormDialog');
+    if (d) d.remove();
+    window.tempConfirmCallback = null;
+}
+
+function openExternalCasterModal() {
+    const body = `
+        <div class="form-group"><label>${escapeHtml(t('external.name'))}</label>
+            <input id="ext-name" class="form-control" maxlength="64"></div>
+        <div class="form-group"><label>${escapeHtml(t('external.host'))}</label>
+            <input id="ext-host" class="form-control" maxlength="255"></div>
+        <div class="form-group"><label>${escapeHtml(t('external.port'))}</label>
+            <input id="ext-port" class="form-control" type="number" value="2101" min="1" max="65535"></div>
+        <div class="form-group"><label>${escapeHtml(t('external.username'))}</label>
+            <input id="ext-user" class="form-control" autocomplete="off"></div>
+        <div class="form-group"><label>${escapeHtml(t('external.password'))}</label>
+            <input id="ext-pass" class="form-control" type="password" autocomplete="new-password"></div>
+        <label class="ext-switch"><input id="ext-tls" type="checkbox"> ${escapeHtml(t('external.tls'))}</label>
+        <label class="ext-switch"><input id="ext-enabled" type="checkbox" checked> ${escapeHtml(t('external.enabled'))}</label>
+        <div class="form-group"><label>${escapeHtml(t('external.priority'))}</label>
+            <input id="ext-priority" class="form-control" type="number" value="20"></div>`;
+    showExternalModal(t('external.addSource'), body, async () => {
+        try {
+            await externalApi('/external-casters', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name: document.getElementById('ext-name').value.trim(),
+                    host: document.getElementById('ext-host').value.trim(),
+                    port: Number(document.getElementById('ext-port').value),
+                    username: document.getElementById('ext-user').value.trim(),
+                    password: document.getElementById('ext-pass').value,
+                    tls: document.getElementById('ext-tls').checked,
+                    enabled: document.getElementById('ext-enabled').checked,
+                    priority: Number(document.getElementById('ext-priority').value),
+                })
+            });
+            showAlert(t('external.saved'), 'success');
+            loadExternalCasters(); loadExternalAccounts();
+        } catch (e) { showAlert(String(e.message || e), 'error'); }
+    });
+}
+
+function openExternalAccountModal() {
+    if (!externalCastersCache.length) {
+        showAlert(t('external.needSource'), 'warning'); return;
+    }
+    const options = externalCastersCache.map(s =>
+        `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+    const body = `
+        <div class="form-group"><label>${escapeHtml(t('external.source'))}</label>
+            <select id="ext-account-source" class="form-control">${options}</select></div>
+        <div class="form-group"><label>${escapeHtml(t('external.username'))}</label>
+            <input id="ext-account-user" class="form-control" autocomplete="off"></div>
+        <div class="form-group"><label>${escapeHtml(t('external.password'))}</label>
+            <input id="ext-account-pass" class="form-control" type="password" autocomplete="new-password"></div>
+        <div class="form-group"><label>${escapeHtml(t('external.priority'))}</label>
+            <input id="ext-account-priority" class="form-control" type="number" value="0"></div>`;
+    showExternalModal(t('external.addAccount'), body, async () => {
+        const sourceId = Number(document.getElementById('ext-account-source').value);
+        try {
+            await externalApi(`/external-casters/${sourceId}/accounts`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username: document.getElementById('ext-account-user').value.trim(),
+                    password: document.getElementById('ext-account-pass').value,
+                    priority: Number(document.getElementById('ext-account-priority').value),
+                })
+            });
+            showAlert(t('external.saved'), 'success');
+            loadExternalCasters(); loadExternalAccounts();
+        } catch (e) { showAlert(String(e.message || e), 'error'); }
+    });
+}
+
+async function externalRefresh(id) {
+    // 只刷新本地列表与 relay 状态；不调用 POST /refresh，
+    // 避免误触导致向上游强制拉 STR（可能触发风控）。
+    // 需强制刷新时用 API: POST /api/external-casters/<id>/refresh
+    try {
+        await Promise.all([loadExternalCasters(), loadExternalRelayStatus()]);
+    } catch (e) { showAlert(String(e.message || e), 'error'); }
+}
+
+async function externalDelete(id) {
+    showConfirmDialog(t('common.delete'), t('external.confirmDelete'), async () => {
+        try {
+            await externalApi(`/external-casters/${id}`, {method: 'DELETE'});
+            // 必须先刷新源缓存，再加载账号池；否则账号池会拿着已删除的旧 id
+            // 去请求 /accounts，得到「外部源不存在」并误显示为错误行。
+            await loadExternalCasters();
+            loadExternalAccounts();
+        } catch (e) { showAlert(String(e.message || e), 'error'); }
+    });
+}
+
+async function externalDeleteAccount(sourceId, accountId) {
+    showConfirmDialog(t('common.delete'), t('external.confirmDelete'), async () => {
+        try {
+            await externalApi(`/external-casters/${sourceId}/accounts/${accountId}`,
+                              {method: 'DELETE'});
+            loadExternalCasters(); loadExternalAccounts();
+        } catch (e) { showAlert(String(e.message || e), 'error'); }
+    });
+}
+
+socket.on('external_relay_status', function(data) {
+    if (currentPage === 'settings') loadExternalRelayStatus();
+});
 
 // Socket.IO
 
@@ -2085,9 +2377,11 @@ socket.on('online_mounts_update', function(data) {
     updateOnlineStatus();
 });
 
-// STR
+// STR（保留合并表 str_data 兼容旧调用，同时接收按来源拆分的本地/外部表）
 socket.on('str_data_update', function(data) {
-    window.strData = data.str_data;
+    window.strData = data.str_data || {};
+    window.strDataLocal = data.local_str_data || {};
+    window.strDataExternal = data.external_str_data || {};
     updateMonitorData();
 });
 
@@ -2432,9 +2726,11 @@ function updateSystemStats(stats) {
         updateElement('rejected-connections', conn.rejected || 0);
     }
 
-    // 计数口径以后端 counts 为准：mounts=在线挂载点，users=在线账号，
-    // connections=在线连接。老版本没有 counts，才退回自己数数组长度。
+    // 计数口径以后端 counts 为准：mounts=本机在线 + 外部活跃 relay，
+    // external_available=外部 STR 缓存可用数（不算在线），users=在线账号，
+    // connections=在线连接。缓存结果供 socket 上下线推送时复用，避免数字回跳。
     const counts = stats.counts || {};
+    window._lastCounts = counts;
     const mountList = stats.mounts || [];
     const userList = stats.users || [];
     const mountCount = counts.mounts !== undefined
@@ -2450,6 +2746,9 @@ function updateSystemStats(stats) {
 
     updateElement('total-mounts', mountCount);
     updateElement('dashboard-active-mounts', mountCount);
+    if (counts.external_available !== undefined) {
+        updateElement('external-available-mounts', counts.external_available);
+    }
     updateElement('total-users', connCount);
     updateElement('dashboard-online-users', userCount);
     updateElement('dashboard-user-connections',
@@ -2519,8 +2818,14 @@ function updateMountDetails(mounts, users) {
     }
 
     const sep = (typeof getLang === 'function' && getLang() === 'zh') ? '、' : ', ';
+    const groups = { local: [], external: [] };
+    list.forEach(mount => {
+        // 新后端显式给 source_type；老后端用 status=external 兜底判定
+        const source = mount.source_type || (mount.status === 'external' ? 'external' : 'local');
+        groups[source === 'external' ? 'external' : 'local'].push(mount);
+    });
 
-    const mountsHtml = list.map(mount => {
+    const mountRow = mount => {
         const mountName = mount.mount_name || mount.mount || t('common.unknown');
         const userCount = mount.user_count || 0;
         const dataCount = mount.data_count || 0;
@@ -2528,32 +2833,46 @@ function updateMountDetails(mounts, users) {
         const rate = mount.data_rate || 0;
         const uptimeStr = formatUptime(mount.uptime || 0);
         const status = mount.status || 'unknown';
-        // 有用户在线时，人形图标高亮为绿色
         const hasUsers = userCount > 0;
-        // 悬停提示：列出连接到该基准站的用户名（已去重）
         const usernames = Array.from(usersByMount[mountName] || []);
-        // 用户名/挂载点已由后端白名单校验（仅字母数字下划线中横线），直接原字符展示；
-        // title 属性仍做一次转义，作为未来放宽校验时的安全兜底（不影响当前显示）
         const titleAttr = usernames.length > 0
             ? ` title="${escapeHtml((sep === '、' ? '已连接用户：' : 'Connected users: ') + usernames.join(sep))}"`
             : '';
-
         return `
             <div class="mount-item">
-                <div class="mount-name">${mountName}</div>
+                <div class="mount-name">${escapeHtml(mountName)}</div>
                 <div class="mount-stats">
                     <span class="mount-user-count${hasUsers ? ' has-users' : ''}"${titleAttr}><i class="fas fa-user"></i> ${userCount}</span>
                     <span><i class="fas fa-box"></i> ${dataCount}</span>
                     <span><i class="fas fa-database"></i> ${formatBytes(bytes)}</span>
                     <span><i class="fas fa-tachometer-alt"></i> ${formatBytes(rate)}/s</span>
                     <span><i class="fas fa-clock"></i> ${uptimeStr}</span>
-                    <span class="mount-status">${status}</span>
+                    <span class="mount-status">${escapeHtml(status)}</span>
                 </div>
             </div>
         `;
-    }).join('');
+    };
 
-    container.innerHTML = mountsHtml;
+    const groupHtml = (type, titleKey, emptyKey) => {
+        const items = groups[type];
+        const body = items.length
+            ? items.map(mountRow).join('')
+            : `<div class="mount-empty">${escapeHtml(t(emptyKey))}</div>`;
+        return `
+            <section class="mount-group mount-group-${type}">
+                <h5 class="mount-group-title">
+                    <i class="fas ${type === 'external' ? 'fa-cloud' : 'fa-server'}"></i>
+                    ${escapeHtml(t(titleKey))}
+                    <span class="mount-group-count">${items.length}</span>
+                </h5>
+                <div class="mount-group-body">${body}</div>
+            </section>
+        `;
+    };
+
+    container.innerHTML =
+        groupHtml('local', 'dash.localStations', 'dash.localMountsEmpty') +
+        groupHtml('external', 'dash.externalStations', 'dash.externalMountsEmpty');
 }
 
 
@@ -2600,11 +2919,13 @@ function updateDashboardCounts() {
         dashboardOnlineUsersElement.textContent = onlineUsersCount;
     }
     
-    // mounts
-    const activeMountsCount = window.onlineMounts ? Object.keys(window.onlineMounts).length : 0;
+    // mounts：只信任后端 counts（本机在线 + 外部活跃 relay）。
+    // 不能再拿 window.onlineMounts 的长度覆盖：它只有本机挂载点，
+    // 外部挂载点走 external_mounts/relay-status，覆盖后数字会在 0 和缓存总数之间跳。
+    const counts = window._lastCounts || {};
     const dashboardActiveMountsElement = document.getElementById('dashboard-active-mounts');
-    if (dashboardActiveMountsElement) {
-        dashboardActiveMountsElement.textContent = activeMountsCount;
+    if (dashboardActiveMountsElement && counts.mounts !== undefined) {
+        dashboardActiveMountsElement.textContent = counts.mounts;
     }
 }
 
@@ -2617,27 +2938,51 @@ function updateDashboardCounts() {
 function updateMonitorData() {
     if (currentPage === 'monitor' && window.strData) {
         const strDataElement = document.getElementById('str-data');
-        if (strDataElement) {
-            if (Object.keys(window.strData).length === 0) {
-                strDataElement.innerHTML = `<div class="empty-state"><i class="fas fa-table"></i><p>${escapeHtml(t('monitor.strEmpty'))}</p></div>`;
-            } else {
-                let strHtml = '';
-                Object.entries(window.strData).forEach(([mountName, strContent]) => {
-                    strHtml += `
-                        <div class="str-row" data-mount="${escapeHtml(mountName)}" title="${escapeHtml(t('monitor.rowClickHint', { name: mountName }))}">
-                            <button class="str-info-btn" data-mount="${escapeHtml(mountName)}">${escapeHtml(mountName)}</button>
-                            <div class="str-content-wrapper">
-                                <div class="str-content-inline">${escapeHtml(strContent) || escapeHtml(t('monitor.noData'))}</div>
-                            </div>
-                        </div>
-                    `;
+        if (!strDataElement) return;
 
-                });
-                strDataElement.innerHTML = strHtml;
-                
-                addInfoButtonsToSTRItems();
-            }
+        if (Object.keys(window.strData).length === 0) {
+            strDataElement.innerHTML = `<div class="empty-state"><i class="fas fa-table"></i><p>${escapeHtml(t('monitor.strEmpty'))}</p></div>`;
+            return;
         }
+
+        const localData = window.strDataLocal || {};
+        const externalData = window.strDataExternal || {};
+        const hasSplit = Object.keys(localData).length > 0 || Object.keys(externalData).length > 0;
+        const grouped = hasSplit
+            ? { local: localData, external: externalData }
+            : { local: window.strData, external: {} };
+
+        const strRow = ([mountName, strContent]) => `
+            <div class="str-row" data-mount="${escapeHtml(mountName)}" title="${escapeHtml(t('monitor.rowClickHint', { name: mountName }))}">
+                <button class="str-info-btn" data-mount="${escapeHtml(mountName)}">${escapeHtml(mountName)}</button>
+                <div class="str-content-wrapper">
+                    <div class="str-content-inline">${escapeHtml(strContent || t('monitor.noData'))}</div>
+                </div>
+            </div>
+        `;
+
+        const strGroup = (type, titleKey, emptyKey) => {
+            const rows = Object.entries(grouped[type] || {});
+            const body = rows.length
+                ? rows.map(strRow).join('')
+                : `<div class="str-empty">${escapeHtml(t(emptyKey))}</div>`;
+            return `
+                <section class="str-group str-group-${type}">
+                    <h5 class="str-group-title">
+                        <i class="fas ${type === 'external' ? 'fa-cloud' : 'fa-server'}"></i>
+                        ${escapeHtml(t(titleKey))}
+                        <span class="str-group-count">${rows.length}</span>
+                    </h5>
+                    <div class="str-group-body">${body}</div>
+                </section>
+            `;
+        };
+
+        strDataElement.innerHTML =
+            strGroup('local', 'monitor.strLocal', 'monitor.strLocalEmpty') +
+            strGroup('external', 'monitor.strExternal', 'monitor.strExternalEmpty');
+
+        addInfoButtonsToSTRItems();
     }
 }
 

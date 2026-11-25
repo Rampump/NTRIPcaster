@@ -9,6 +9,9 @@ python-socketio==5.8.0 # 当前版本无已知漏洞
 werkzeug>=3.0.6        # 修复 CVE-2024-34069, CVE-2024-49767, CVE-2024-49766, CVE-2023-46136
 psutil==5.9.5          # 系统性能监控，当前版本无已知漏洞
 
+# 外部 Caster 账号/上游密码加密（Fernet）；密钥取自持久化 SECRET_KEY
+cryptography>=42.0.0
+
 # 构建和包管理工具
 setuptools>=78.1.1     # 修复 CVE-2025-47273, CVE-2024-6345
 

@@ -52,6 +52,37 @@ def _env_flag(name):
     return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _env_flag_or_none(name):
+    """三态环境变量开关：未设置返回 None，显式 true/false 返回 bool。
+
+    现有 DEMO_MODE/PUBLIC_ACCESS 用 `_env_flag() or ini值`，环境变量设为 false
+    时无法关闭 ini 里的 true —— 测试服务器「后端开启、前端隐藏」的场景做不到，
+    所以外部 caster 开关必须用这个三态版本。
+    """
+    raw = os.environ.get(name, '').strip().lower()
+    return None if not raw else (raw in ('1', 'true', 'yes', 'on'))
+
+
+def _bool_setting(env_name, section, key, default):
+    v = _env_flag_or_none(env_name)
+    return v if v is not None else get_config_value(section, key, default, bool)
+
+
+def _env_float(name):
+    raw = os.environ.get(name, '').strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _env_str(name):
+    raw = os.environ.get(name, '').strip()
+    return raw or None
+
+
 def _env_int(name):
     """环境变量整数；未设置或非法值返回 None，由调用方回退到配置文件/默认值。"""
     raw = os.environ.get(name, '').strip()
@@ -257,9 +288,15 @@ _INSECURE_SECRET_KEYS = {
     '8f4a9c2e7d1b6f3a5e8d7c9b2a4f6e3d5c8b7a9f2e4d6c8b3a5f7e9d1c2b4a6',
 }
 
+# 密钥是否可跨重启保持稳定。外部 caster 的账号/上游密码用 Fernet 加密，
+# 密钥若因 DATA_DIR 不可写而每次启动随机生成，存库密文将永远解不开 ——
+# 外部功能启用时会在 external_caster 初始化阶段 fail-fast。
+SECRET_KEY_PERSISTENT = True
+
 
 def _load_or_create_secret_key(configured_key):
     """载入持久化的随机会话密钥；不存在则生成"""
+    global SECRET_KEY_PERSISTENT
     if configured_key and configured_key not in _INSECURE_SECRET_KEYS:
         return configured_key
 
@@ -280,7 +317,9 @@ def _load_or_create_secret_key(configured_key):
         print(f"已自动生成会话密钥并保存到 {key_file}（建议在 config.ini 中显式配置 secret_key）")
         return new_key
     except Exception as exc:
-        # 落盘失败时退化为进程内随机密钥：重启后会话失效，但不会使用弱密钥
+        # 落盘失败时退化为进程内随机密钥：重启后会话失效，但不会使用弱密钥。
+        # 标记不稳定，供外部 caster 的密文存储做 fail-fast。
+        SECRET_KEY_PERSISTENT = False
         print(f"警告: 无法保存会话密钥({exc})，将使用进程内随机密钥，重启后需重新登录")
         return secrets.token_hex(32)
 
@@ -444,6 +483,81 @@ PUBLIC_ACCESS = (
     _env_flag('PUBLIC_ACCESS')
     or get_config_value('web', 'public_access', False, bool)
 )
+
+# ==================== 外部 Caster 拉取与中继 ====================
+# 所有开关默认保守值：总开关关闭时行为与旧版完全一致。
+# 布尔项统一走 _bool_setting（环境变量三态覆盖 ini），数字项走 _env_int/_env_float。
+
+def _ext_int(env_name, key, default):
+    v = _env_int(env_name)
+    return v if v is not None else get_config_value(
+        'external_caster', key, default, int)
+
+
+def _ext_bool(env_name, key, default):
+    return _bool_setting(env_name, 'external_caster', key, default)
+
+
+def _ext_float(env_name, key, default):
+    v = _env_float(env_name)
+    return v if v is not None else get_config_value(
+        'external_caster', key, default, float)
+
+
+# 总闸：后端功能开关；UI 开关独立控制前端入口（测试服 true/false）
+EXTERNAL_CASTER_ENABLED = _ext_bool('EXTERNAL_CASTER_ENABLED', 'enabled', False)
+EXTERNAL_CASTER_UI_ENABLED = _ext_bool('EXTERNAL_CASTER_UI_ENABLED', 'ui_enabled', False)
+
+# STR 拉取：6h 常规周期 + 失败指数退避 + 按需刷新护栏（防上游按 IP 封禁）
+EXTERNAL_STR_REFRESH = _ext_int('EXTERNAL_STR_REFRESH', 'str_refresh', 21600)
+EXTERNAL_STR_BACKOFF_MAX = _ext_int('EXTERNAL_STR_BACKOFF_MAX', 'str_backoff_max', 86400)
+EXTERNAL_STR_JITTER = _ext_float('EXTERNAL_STR_JITTER', 'str_jitter', 0.10)
+EXTERNAL_STR_DEMAND_COOLDOWN = _ext_int(
+    'EXTERNAL_STR_DEMAND_COOLDOWN', 'str_demand_cooldown', 900)
+EXTERNAL_STR_NEGATIVE_TTL = _ext_int(
+    'EXTERNAL_STR_NEGATIVE_TTL', 'str_negative_ttl', 600)
+
+# 连接与 relay 资源
+EXTERNAL_CONNECT_TIMEOUT = _ext_int('EXTERNAL_CONNECT_TIMEOUT', 'connect_timeout', 5)
+EXTERNAL_READ_TIMEOUT = _ext_int('EXTERNAL_READ_TIMEOUT', 'read_timeout', 20)
+EXTERNAL_MAX_RELAYS = _ext_int('EXTERNAL_MAX_RELAYS', 'max_relays', 8)
+EXTERNAL_MAX_RELAYS_PER_SOURCE = _ext_int(
+    'EXTERNAL_MAX_RELAYS_PER_SOURCE', 'max_relays_per_source', 4)
+EXTERNAL_MAX_SUBSCRIBERS_PER_MOUNT = _ext_int(
+    'EXTERNAL_MAX_SUBSCRIBERS_PER_MOUNT', 'max_subscribers_per_mount', 200)
+EXTERNAL_RELAY_GRACE = _ext_int('EXTERNAL_RELAY_GRACE', 'relay_grace', 5)
+EXTERNAL_RELAY_IDLE = _ext_int('EXTERNAL_RELAY_IDLE', 'relay_idle', 60)
+EXTERNAL_MAX_STR_BYTES = _ext_int('EXTERNAL_MAX_STR_BYTES', 'max_str_bytes', 4 * 1024 * 1024)
+
+# 账号池（每条外部源可配多个账号）
+EXTERNAL_ACCOUNT_POOL = _ext_bool('EXTERNAL_ACCOUNT_POOL', 'account_pool', True)
+EXTERNAL_ACCOUNT_LEASE_TTL = _ext_int(
+    'EXTERNAL_ACCOUNT_LEASE_TTL', 'account_lease_ttl', 60)
+
+# GGA 转发（默认关；开启后也不能用 MSG_PEEK 采样）
+EXTERNAL_GGA_FORWARD = _ext_bool('EXTERNAL_GGA_FORWARD', 'gga_forward', False)
+EXTERNAL_GGA_INTERVAL = _ext_int('EXTERNAL_GGA_INTERVAL', 'gga_interval', 1)
+EXTERNAL_GGA_MAX_LINE = _ext_int('EXTERNAL_GGA_MAX_LINE', 'gga_max_line', 256)
+EXTERNAL_GGA_RATE_LIMIT = _ext_int('EXTERNAL_GGA_RATE_LIMIT', 'gga_rate_limit', 10)
+EXTERNAL_LOCATION_SHARE = _ext_bool('EXTERNAL_LOCATION_SHARE', 'location_share', False)
+EXTERNAL_LOCATION_RADIUS_M = _ext_int(
+    'EXTERNAL_LOCATION_RADIUS_M', 'location_radius_m', 30000)
+
+# 出站 agent 标识池（与账号绑定，减少固定指纹被上游策略识别）
+EXTERNAL_UA_POOL_ENABLED = _ext_bool('EXTERNAL_UA_POOL_ENABLED', 'ua_pool_enabled', True)
+EXTERNAL_UA_PROFILE_FILE = (
+    _env_str('EXTERNAL_UA_PROFILE_FILE')
+    or get_config_value('external_caster', 'ua_profile_file',
+                        os.path.join(_PROJECT_ROOT, 'src', 'data', 'ntrip_agent_profiles.json'))
+)
+EXTERNAL_UA_ROTATION = (
+    _env_str('EXTERNAL_UA_ROTATION')
+    or get_config_value('external_caster', 'ua_rotation', 'per_account')
+)
+EXTERNAL_UA_BLOCK_COOLDOWN = _ext_int(
+    'EXTERNAL_UA_BLOCK_COOLDOWN', 'ua_block_cooldown', 3600)
+EXTERNAL_UA_ALLOW_BROWSER = _ext_bool(
+    'EXTERNAL_UA_ALLOW_BROWSER', 'ua_allow_browser', False)
 
 # Web 端 RTCM 实时解析线程上限。
 # MSM 解析是 CPU 密集型，单线程大约吃 10%~15% 单核；公网演示站多人同时切站时，

@@ -210,6 +210,32 @@ def main():
         stopped = reg.stop_all()
         check('停掉的挂载点', sorted(stopped), ['A', 'D'])
         check('全部线程已停', alive(), 0)
+
+        print("[13] 切站不被宽限期空闲线程阻挡（BUG 回归）")
+        config.WEB_PARSER_LIMIT = 2
+        clock2 = FakeClock()
+        reg4, _ = make_registry(clock2)
+        base = len(STARTED)
+
+        def alive4(mount=None):
+            return len([t for t in STARTED[base:]
+                        if t.is_alive() and (mount is None or t.mount == mount)])
+
+        reg4.subscribe('s1', 'A', '1.1.1.1')
+        check('切换前 A 在跑', alive4('A'), 1)
+        reg4.subscribe('s1', 'B', '1.1.1.1')   # A 进宽限期，B 启动
+        check('切换后 B 在跑', alive4('B'), 1)
+        check('A 仍在宽限期存活', alive4('A'), 1)
+        check('有订阅者的线程仅 1 个', reg4._active_count_locked(), 1)
+        # 存活线程总数已达 limit=2，但 A 是空闲宽限期线程，不应阻挡新订阅
+        try:
+            reg4.subscribe('s2', 'C', '2.2.2.2')
+            ok = True
+        except regmod.SubscribeBusy:
+            ok = False
+        check('切站后可订阅新挂载点(不报任务已满)', ok, True)
+        check('C 已启动', alive4('C'), 1)
+        reg4.stop_all()
     finally:
         (config.WEB_PARSER_LIMIT, config.WEB_PARSER_CLIENT_TTL,
          config.WEB_PARSER_GRACE_SECONDS, config.WEB_PARSER_IP_RATE) = saved

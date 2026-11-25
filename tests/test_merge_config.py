@@ -239,7 +239,17 @@ def case_real_example(tmp):
     text = read(cfg)
     for key in ('demo_mode', 'public_access', 'max_web_parsers', 'parser_client_ttl',
                 'parser_ip_rate_per_minute', 'login_lockout_seconds',
-                'shutdown_timeout', 'download_enforce_user_binding'):
+                'shutdown_timeout', 'download_enforce_user_binding',
+                # 外部 Caster 段（28 项）
+                'enabled', 'ui_enabled', 'str_refresh', 'str_backoff_max',
+                'str_jitter', 'str_demand_cooldown', 'str_negative_ttl',
+                'connect_timeout', 'read_timeout', 'max_relays',
+                'max_relays_per_source', 'max_subscribers_per_mount',
+                'relay_grace', 'relay_idle', 'max_str_bytes', 'account_pool',
+                'account_lease_ttl', 'gga_forward', 'gga_interval', 'gga_max_line',
+                'gga_rate_limit', 'location_share', 'location_radius_m',
+                'ua_pool_enabled', 'ua_profile_file', 'ua_rotation',
+                'ua_block_cooldown', 'ua_allow_browser'):
         check_true(f'真实示例里的 {key} 已补上', key in text)
 
     import configparser

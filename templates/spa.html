@@ -19,6 +19,8 @@
     <script>
         window.__LOGGED_IN__ = {{ 'true' if logged_in else 'false' }};
         window.__DEMO_MODE__ = {{ 'true' if demo_mode else 'false' }};
+        // 外部 Caster 配置入口：测试服设 false 时整个 section 不渲染
+        window.__EXTERNAL_CASTER_UI__ = {{ 'true' if external_caster_ui else 'false' }};
     </script>
     <!-- i18n 必须在 app.js 之前加载：app.js 里的模板字符串直接调用全局 t() -->
     <script src="/static/i18n.js?v={{ app_version }}"></script>

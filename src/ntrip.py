@@ -1115,8 +1115,15 @@ a=control:*
                 self.send_error_response(404, "Mount point not found")
                 return
             
-            # 挂载点离线时直接返回 404，避免客户端连上后无限干等（NTRIP 规范行为）
-            if not connection.is_mount_online(mount):
+            # 消费侧可用判定：本地源在线 OR 外部 caster 缓存可用。
+            # 不能用 is_mount_online —— 外部挂载点按设计不进 online_mounts，
+            # 否则会与源站上传占用判定冲突（本地同名源站上线被 409 拒绝）。
+            ext = None
+            from . import external_caster
+            if config.EXTERNAL_CASTER_ENABLED:
+                ext = external_caster.get_manager()
+            is_external = not connection.is_mount_online(mount)
+            if is_external and not (ext and ext.is_mount_available(mount)):
                 logger.log_info(f"拒绝订阅离线挂载点 {mount} (客户端 {self.client_address[0]})")
                 self.send_error_response(404, "Mount point is offline")
                 return
@@ -1159,7 +1166,21 @@ a=control:*
                 connection.remove_user_connection(self.username, connection_id)
                 self.send_error_response(500, "Failed to add client")
                 return
-            
+
+            # 外部挂载点：在 add_client 成功后才占 relay（订阅即占号，不等 GGA），
+            # 限额失败要回滚已登记的客户端与连接槽位，避免泄漏。
+            self._ext_acquired = False
+            if is_external and ext:
+                holder = f'ntrip:{connection_id}'
+                if not ext.acquire(mount, holder):
+                    forwarder.remove_client(self.client_info)
+                    connection.remove_user_connection(self.username, connection_id)
+                    self.send_error_response(503, "External relay busy or unavailable")
+                    return
+                self._ext_acquired = True
+                if config.EXTERNAL_GGA_FORWARD:
+                    self._start_gga_reader(holder)
+
             self.send_download_success_response()
             
             logger.log_client_connect(self.username, mount, self.client_address[0], self.user_agent)
@@ -1168,6 +1189,7 @@ a=control:*
         
         except Exception as e:
             logger.log_error(f"处理下载请求异常: {e}", exc_info=True)
+            self._release_external()
             self.send_error_response(500, "Internal Server Error")
     
     def handle_http_get(self, path, headers):
@@ -1262,6 +1284,49 @@ a=control:*
 
             self._cleanup()
     
+    def _start_gga_reader(self, holder):
+        """GGA 采集：独立读线程 + select，真 recv 消费字节。
+
+        不能复用 _keep_connection_alive() 里的 MSG_PEEK —— 它只 peek 不消费，
+        同一条 GGA 会被反复解析；也不能消费后不交给解析器。
+        非 GGA 数据立即丢弃，不滞留缓冲、不影响连接存活。
+        """
+        import select
+        from . import external_caster
+
+        mgr = external_caster.get_manager()
+        sock = self.client_socket
+        mount = self.mount
+
+        def reader():
+            while not SHUTDOWN_EVENT.is_set():
+                try:
+                    readable, _, _ = select.select([sock], [], [], 1.0)
+                    if not readable:
+                        continue
+                    data = sock.recv(4096)
+                except (OSError, ValueError):
+                    break
+                if not data:
+                    break
+                mgr.feed_gga(mount, holder, data)
+
+        t = threading.Thread(target=reader, name=f'ntrip-gga-{holder}', daemon=True)
+        t.start()
+        self._gga_reader = t
+
+    def _release_external(self):
+        """幂等释放外部 relay 引用（正常断开、异常早退都要调用）"""
+        if not getattr(self, '_ext_acquired', False):
+            return
+        self._ext_acquired = False
+        try:
+            from . import external_caster
+            external_caster.get_manager().release(
+                self.mount, f'ntrip:{self.connection_id}')
+        except Exception as e:
+            log_warning(f'释放外部 relay 失败: {e}', 'ntrip')
+
     def _keep_connection_alive(self):
         """保持下载连接活跃
 
@@ -1297,7 +1362,7 @@ a=control:*
             
             pass
         finally:
-            
+            self._release_external()
             if hasattr(self, 'client_info') and self.client_info:
                 # remove_client 是幂等的，会返回本次是否真的移除了客户端。
                 # forwarder.remove_client 内部也会写一条 disconnect 日志，

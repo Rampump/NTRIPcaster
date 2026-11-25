@@ -52,11 +52,15 @@ class WebParserRegistry:
     #: 限流窗口（秒）
     RATE_WINDOW = 60.0
 
-    def __init__(self, push_callback_provider=None, event_sink=None, clock=None):
+    def __init__(self, push_callback_provider=None, event_sink=None, clock=None,
+                 on_entry_stopped=None):
         # push_callback_provider(mount) -> callback，由 web 层注入（回调里往房间 emit）
         self._push_provider: Optional[Callable[[str], Callable]] = push_callback_provider
         # event_sink(event, payload, mount)，用于把「源站离线」「线程被停」推给订阅者
         self._event_sink: Optional[Callable[[str, Dict, str], None]] = event_sink
+        # 外部 relay 引用释放回调 (mount, cid)：必须按 cid 粒度，
+        # 因为同一 mount 可能有多个订阅者，且 TTL 超时也走这里。
+        self._on_entry_stopped = on_entry_stopped
         self._clock = clock or time.time
 
         self._lock = threading.RLock()
@@ -98,7 +102,39 @@ class WebParserRegistry:
             return False
 
     def _active_count_locked(self) -> int:
+        """统计「有订阅者」的活跃线程数。
+
+        切换挂载点时，旧订阅归零后线程会进入 GRACE 宽限期（仍存活但已无人看），
+        这段线程即将被 sweep 回收，不应占用订阅名额——否则用户从 A 切到 B
+        时，A 还在宽限期内就会被误判为「任务已满」。
+        """
+        return sum(1 for e in self._mounts.values()
+                   if e['cids'] and self._is_alive(e))
+
+    def _total_threads_locked(self) -> int:
+        """存活线程总数（含宽限期空闲线程），用于硬上限保护。"""
         return sum(1 for e in self._mounts.values() if self._is_alive(e))
+
+    def _reclaim_for_capacity(self) -> None:
+        """锁外调用：存活线程逼近硬上限时，回收空闲（无订阅者）的宽限期线程。
+
+        停线程会 join，必须在锁外做；因此这里先短暂持锁摘出目标，再锁外停止。
+        这样反复切站时宽限期线程不会无限堆积，同时也不会误伤仍在被观看的线程。
+        """
+        with self._lock:
+            hard_cap = self._limit() + 2
+            if self._total_threads_locked() < hard_cap:
+                return
+            idle = [(m, e) for m, e in list(self._mounts.items())
+                    if not e['cids'] and e.get('stop_at')]
+            # 先回收最接近宽限期到点的
+            idle.sort(key=lambda me: me[1].get('stop_at') or 0)
+            need = self._total_threads_locked() - hard_cap + 1
+            targets = idle[:max(need, 0)]
+            for m, _ in targets:
+                self._mounts.pop(m, None)
+        for m, e in targets:
+            self._stop_entry(m, e)
 
     def _check_rate_locked(self, ip: str) -> bool:
         try:
@@ -130,6 +166,9 @@ class WebParserRegistry:
             raise SubscribeRejected('缺少客户端标识', 'bad_request')
         if not mount:
             raise SubscribeRejected('缺少挂载点名称', 'bad_request')
+
+        # 先回收逼近硬上限的空闲宽限期线程（锁外做，内部会 join 线程）
+        self._reclaim_for_capacity()
 
         with self._lock:
             now = self._clock()
@@ -214,7 +253,17 @@ class WebParserRegistry:
             if not entry['cids']:
                 entry['stop_at'] = self._clock() + self._grace()
         client['mount'] = None
+        self._notify_stopped(mount, cid)
         return mount
+
+    def _notify_stopped(self, mount: str, cid: str) -> None:
+        """通知 web 层释放该客户端持有的外部 relay 引用（幂等）"""
+        if not self._on_entry_stopped:
+            return
+        try:
+            self._on_entry_stopped(mount, cid)
+        except Exception as e:
+            log_debug(f"释放外部 relay 引用失败 [mount={mount}]: {e}")
 
     def _start_thread_locked(self, mount: str) -> None:
         """启动挂载点的解析线程（调用方必须持锁）"""
@@ -243,7 +292,7 @@ class WebParserRegistry:
             'started_at': self._clock(),
             'stop_at': None,
         }
-        log_info(f"Web 解析线程已启动 [挂载点: {mount}]，当前线程数 {self._active_count_locked()}")
+        log_info(f"Web 解析线程已启动 [挂载点: {mount}]，存活线程数 {self._total_threads_locked()}")
 
     def _stop_entry(self, mount: str, entry: Dict[str, Any]) -> None:
         """停线程（不要在持锁状态下调用，stop() 会 join 解析线程）"""
@@ -255,6 +304,8 @@ class WebParserRegistry:
                 log_warning(f"停止 Web 解析线程失败 [挂载点: {mount}]: {e}")
         # 如果还有订阅者，说明是源站离线被动停的，必须通知前端复原界面
         cids = entry.get('cids') or set()
+        for cid in list(cids):
+            self._notify_stopped(mount, cid)   # 兜底释放；external 侧幂等
         if cids and self._event_sink:
             try:
                 self._event_sink('rtcm_parse_stopped', {
@@ -270,8 +321,14 @@ class WebParserRegistry:
         with self._lock:
             entries = list(self._mounts.items())
             self._mounts.clear()
-            for client in self._clients.values():
+            notified = []
+            for cid, client in self._clients.items():
+                mount = client.get('mount')
                 client['mount'] = None
+                if mount:
+                    notified.append((mount, cid))
+        for mount, cid in notified:
+            self._notify_stopped(mount, cid)
         for mount, entry in entries:
             self._stop_entry(mount, entry)
         return [m for m, _ in entries]
@@ -337,7 +394,7 @@ class WebParserRegistry:
     def _mount_online(mount: str) -> bool:
         try:
             from . import connection
-            return bool(connection.get_connection_manager().is_mount_online(mount))
+            return bool(connection.get_connection_manager().is_mount_available(mount))
         except Exception:
             # 查询失败时按“在线”处理，避免误杀正在用的解析线程
             return True

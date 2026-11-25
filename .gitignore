@@ -4,6 +4,8 @@
 *.db-wal
 *.db-shm
 data/
+!src/data/
+!src/data/ntrip_agent_profiles.json
 logs/
 *.log
 
@@ -53,3 +55,6 @@ nginx/ssl/*.pem
 
 # ===== 部署辅助（本机专用，含服务器地址/凭据与打包产物，禁止入库）=====
 .deploy/
+
+# ===== 内部设计/流程方案（含内网 IP、账号、上游服务器与凭据线索，禁止入库）=====
+docs/

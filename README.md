@@ -68,6 +68,17 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.c
 | NTRIP service: | `ntrip://yourserverip:2101` |
 | Default account: | `admin` / `admin123` — **change this password immediately** |
 
+## External Caster Relay (optional)
+
+Off by default. Set `EXTERNAL_CASTER_ENABLED=true` and add upstream casters in **Settings → External casters** (host, port, credentials, account pool). `EXTERNAL_CASTER_UI_ENABLED=false` keeps the backend relay running while hiding the configuration page — useful for test servers.
+
+- Pulls each upstream SOURCETABLE and caches its mount points locally; external mounts are merged into the STR table with local-first de-duplication, and local / external stations are listed separately in the web UI.
+- Subscribing to an external mount opens an upstream relay on demand — the first subscriber starts it and the last one leaving closes it after a grace period. Web-based RTCM parsing reuses the same relay.
+- Supports an account pool, randomized User-Agents and optional GGA forwarding. Relay/parser limits and switch throttling protect upstreams from aggressive polling.
+- Demo mode friendly: writes return `403 demo_readonly` while read APIs and relay keep working.
+
+Upstream SOURCETABLEs refresh every 6 hours with exponential backoff on failure to avoid upstream IP bans. Detailed design: `docs/external-caster-relay-design.md`.
+
 ## Acknowledgments
 
 Built on these excellent open source projects:

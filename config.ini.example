@@ -77,6 +77,52 @@ parser_ip_rate_per_minute = 10
 # 关闭时未登录访问一律跳登录页，与旧版行为一致。
 public_access = false
 
+[external_caster]
+# 外部 Caster 拉取与中继（默认全关，关闭时行为与旧版完全一致）
+# enabled: 后端总闸；ui_enabled: 前端设置页入口。
+# 测试服务器建议 enabled=true / ui_enabled=false（后端可 curl 配置，前端不显示）；
+# 正式服务器 enabled=true / ui_enabled=true（管理员登录后可见可配）。
+enabled = false
+ui_enabled = false
+# STR 表刷新周期（秒）：默认 6 小时。频繁拉取容易被上游按 IP 封禁。
+# 失败时按 str_refresh → 2 倍 → 4 倍退避，上限 str_backoff_max，并带 ±str_jitter 抖动。
+str_refresh = 21600
+str_backoff_max = 86400
+str_jitter = 0.10
+# 按需刷新护栏：relay 确认上游挂载点不存在时才触发；单飞 + 冷却 + 负缓存
+str_demand_cooldown = 900
+str_negative_ttl = 600
+# 上游连接超时与读取超时（秒）
+connect_timeout = 5
+read_timeout = 20
+# 三级 relay 限额：全进程 / 单外部源 / 单外部挂载点订阅者
+max_relays = 8
+max_relays_per_source = 4
+max_subscribers_per_mount = 200
+# 最后一个订阅者离开后的宽限秒数；空闲多少秒无数据自动断开上游
+relay_grace = 5
+relay_idle = 60
+# 单次 STR 响应体大小上限（字节）
+max_str_bytes = 4194304
+# 账号池：每条外部源可配多个账号，租约 TTL 到期自动回收
+account_pool = true
+account_lease_ttl = 60
+# GGA 上行：默认关；开启后按 gga_interval 周期重发缓存的最后一条有效 GGA
+gga_forward = false
+gga_interval = 1
+gga_max_line = 256
+gga_rate_limit = 10
+location_share = false
+location_radius_m = 30000
+# 出站 agent 标识池：随机使用常见厂商/软件标识，与账号绑定；关闭则回退固定串
+ua_pool_enabled = true
+ua_profile_file = src/data/ntrip_agent_profiles.json
+# per_account（默认）/ per_connection / sticky_source
+ua_rotation = per_account
+# 上游 403/406 后该标识的冷却秒数；浏览器/爬虫类标识默认不进池
+ua_block_cooldown = 3600
+ua_allow_browser = false
+
 [database]
 # SQLite 数据库路径；容器内建议用绝对路径（如 /app/data/2rtk.db）并挂卷
 path = 2rtk.db

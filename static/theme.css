@@ -1026,6 +1026,54 @@ textarea.form-control {
   overflow-y: auto;
 }
 
+.mount-group {
+  display: grid;
+  gap: 8px;
+}
+
+.mount-group-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 4px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.mount-group-count,
+.str-group-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mount-group-body,
+.str-group-body {
+  display: grid;
+  gap: 8px;
+}
+
+.mount-empty,
+.str-empty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .mount-item {
   display: flex;
   align-items: center;
@@ -1120,6 +1168,23 @@ textarea.form-control {
   gap: 8px;
   max-height: 360px;
   overflow-y: auto;
+}
+
+.str-group {
+  display: grid;
+  gap: 8px;
+}
+
+.str-group-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 4px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .str-row {
@@ -1920,4 +1985,68 @@ input.field-error {
   color: var(--faint);
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* ---------- 外部 Caster 配置 ---------- */
+.external-table {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.external-table th,
+.external-table td {
+  padding: 8px 10px;
+  font-size: 13px;
+  text-align: left;
+}
+
+.ext-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.ext-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ext-badge.ok,
+.ext-badge.running {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.ext-badge.error,
+.ext-badge.auth_failed,
+.ext-badge.mount_missing {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ext-badge.fetching,
+.ext-badge.connecting {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.ext-relay-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--ink-2);
 }

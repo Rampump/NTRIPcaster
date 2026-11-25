@@ -344,19 +344,55 @@ class ConnectionManager:
         return self._update_message_statistics(mount_name, None, data_size)
     
     def get_mount_str_data(self, mount_name: str) -> Optional[str]:
-        """获取挂载点的STR表数据"""
+        """获取挂载点的STR表数据（本地优先，外部缓存兜底）"""
         with self.mount_lock:
             mount_info = self.online_mounts.get(mount_name)
-            return mount_info.str_data if mount_info is not None else None
-    
+            if mount_info is not None and mount_info.str_data:
+                return mount_info.str_data
+        ext = _external_manager()
+        if ext:
+            for row in ext.get_fused_rows():
+                if row['mount'] == mount_name:
+                    return row['str_line']
+        return None
+
     def get_all_str_data(self) -> Dict[str, str]:
-        """获取所有挂载点的STR表数据"""
+        """获取所有挂载点的STR表数据（本地 + 外部融合，本地优先）"""
         str_data = {}
         with self.mount_lock:
             for mount_name, mount_info in self.online_mounts.items():
                 if mount_info.str_data:
                     str_data[mount_name] = mount_info.str_data
+        ext = _external_manager()
+        if ext:
+            for row in ext.get_fused_rows():
+                str_data.setdefault(row['mount'], row['str_line'])
         return str_data
+
+    def get_all_str_data_split(self) -> Dict[str, Dict[str, str]]:
+        """按来源分组的 STR 表数据：本机 + 外部（外部不覆盖同名本机）"""
+        local: Dict[str, str] = {}
+        with self.mount_lock:
+            for mount_name, mount_info in self.online_mounts.items():
+                if mount_info.str_data:
+                    local[mount_name] = mount_info.str_data
+
+        external: Dict[str, str] = {}
+        ext = _external_manager()
+        if ext:
+            for row in ext.get_fused_rows():
+                mount_name = row['mount']
+                if mount_name in local or mount_name in external:
+                    continue
+                line = row['str_line']
+                if line.split(';')[0].strip() != 'STR':
+                    line = ';'.join([
+                        'STR', mount_name, 'external', 'RTCM 3', '1', '0',
+                        'GPS', '2RTK', 'CHN', str(row['lat'] or 0),
+                        str(row['lon'] or 0), '0', '0', 'external', 'N', 'B',
+                        'N', '9600', 'external'])
+                external[mount_name] = line
+        return {'local': local, 'external': external}
 
     
     # ------------------------------------------------------------------
@@ -696,6 +732,12 @@ class ConnectionManager:
         with self.mount_lock:
             mount_info = self.online_mounts.get(mount_name)
             if mount_info is None:
+                # 外部挂载点不进 online_mounts（避免占用判定冲突），
+                # 统计走 external_caster 的独立同结构字典。
+                ext = _external_manager()
+                if ext and ext.is_mount_available(mount_name):
+                    ext.record_data(mount_name, data_size)
+                    return True
                 return False
             self._apply_data_stats(mount_info, data_size, now)
             return True
@@ -727,10 +769,18 @@ class ConnectionManager:
             return True
     
     def is_mount_online(self, mount_name):
-        """检查挂载点是否在线"""
+        """检查本地源站是否在线（上传侧占用判定专用，不要改成 available）"""
         with self.mount_lock:
             return mount_name in self.online_mounts
-    
+
+    def is_mount_available(self, mount_name):
+        """消费侧可用判定：本地源在线 OR 外部缓存存在"""
+        with self.mount_lock:
+            if mount_name in self.online_mounts:
+                return True
+        ext = _external_manager()
+        return bool(ext and ext.is_mount_available(mount_name))
+
     def get_user_connection_count(self, username, prune=False):
         """获取用户连接数
 
@@ -870,15 +920,31 @@ class ConnectionManager:
         return self.online_users.get(username, [])
     
     def get_mount_statistics(self, mount_name: str) -> Optional[Dict[str, Any]]:
-        """获取挂载点统计信息"""
+        """获取挂载点统计信息（外部源字段对齐）"""
         with self.mount_lock:
             mount_info = self.online_mounts.get(mount_name)
             if mount_info is None:
-                return None
+                ext = _external_manager()
+                stats = ext.get_stats(mount_name) if ext else None
+                if not stats:
+                    return None
+                return {
+                    'mount_name': mount_name,
+                    'status': 'external',
+                    'source_type': 'external',
+                    'uptime': 0,
+                    'data_count': stats['data_count'],
+                    'total_bytes': stats['total_bytes'],
+                    'total_messages': 0,
+                    'data_rate': stats['data_rate'],
+                    'user_count': 0,
+                    'str_generated': True,
+                }
             
             return {
                 'mount_name': mount_name,
                 'status': mount_info.status,
+                'source_type': 'local',
                 'uptime': mount_info.uptime,
                 'total_bytes': mount_info.total_bytes,
                 'data_rate': mount_info.data_rate,
@@ -886,9 +952,11 @@ class ConnectionManager:
             }
     
     def generate_mount_list(self):
-        """生成挂载点列表数据"""
+        """生成挂载点列表数据（本地 + 外部，本地优先）"""
         mount_list = []
-        
+        ext = _external_manager()
+        external_rows = ext.get_fused_rows() if ext else []
+
         with self.mount_lock:
             for mount_name, mount_info in self.online_mounts.items():
                
@@ -921,7 +989,24 @@ class ConnectionManager:
                     mount_info_str = ';'.join(mount_data)
                     mount_list.append(mount_info_str)
                     log_info(f"已为挂载点 {mount_name} 创建STR: {mount_info_str}", 'connection_manager')
-        
+
+        # 外部挂载点按缓存原样补齐；同名已被本地占用的跳过（本地永远优先）
+        local_names = set()
+        for line in mount_list:
+            parts = line.split(';')
+            if len(parts) > 1:
+                local_names.add(parts[1].strip())
+        for row in external_rows:
+            if row['mount'] in local_names:
+                continue
+            line = row['str_line']
+            mount_list.append(line if line.split(';')[0].strip() == 'STR'
+                               else ';'.join(['STR', row['mount'], 'external', 'RTCM 3',
+                                              '1', '0', 'GPS', '2RTK', 'CHN',
+                                              str(row['lat'] or 0), str(row['lon'] or 0),
+                                              '0', '0', 'external', 'N', 'B', 'N',
+                                              '9600', 'external']))
+            local_names.add(row['mount'])
         return mount_list
     
     def get_statistics(self):
@@ -933,7 +1018,29 @@ class ConnectionManager:
         - users             逐连接的明细，长度等于 total_connections
         """
         with self.mount_lock, self.user_lock:
-            total_mounts = len(self.online_mounts)
+            ext = _external_manager()
+            fused_rows = ext.get_fused_rows() if ext else []
+            # 「在线」只算本机在线挂载点 + 外部正在出数据的 relay。
+            # 外部 STR 缓存是「可用」列表，不能当成在线，否则刷新瞬间会掉到 0。
+            active_external = 0
+            if ext:
+                now = time.time()
+                fresh_seconds = max(30, int(getattr(
+                    config, 'EXTERNAL_READ_TIMEOUT', 20) or 20))
+                for state in ext.get_relay_status().values():
+                    last_data = state.get('last_data_at') or 0
+                    if (state.get('state') == 'running'
+                            and now - last_data <= fresh_seconds):
+                        active_external += 1
+            local_online = len(self.online_mounts)
+            total_mounts = local_online + active_external
+            # 本机已占用的同名挂载点，外部缓存里不再计入「可用」与 mounts 列表，
+            # 否则首页 external_available 会比外部分组多出一条 2RTK（本地优先口径
+            # 与 generate_mount_list / get_all_str_data_split 保持一致）。
+            local_names = set(self.online_mounts.keys())
+            external_fused = [row for row in fused_rows
+                              if row['mount'] not in local_names]
+            external_available = len(external_fused)
             total_users = len(self.online_users)
             total_connections = sum(len(connections) for connections in self.online_users.values())
 
@@ -955,8 +1062,31 @@ class ConnectionManager:
                     'data_rate': mount_info.data_rate,
                     'user_count': users_per_mount.get(mount_name, 0),
                     'status': mount_info.status,
+                    'source_type': 'local',
                     'str_generated': mount_info.final_str_generated
                 })
+
+            # 外部挂载点单独存、字段对齐；不进 online_mounts。
+            # 同名本机挂载点已在上面加入 local 行，这里跳过，避免首页分组重复。
+            if ext and external_fused:
+                for row in external_fused:
+                    mount_name = row['mount']
+                    stats = ext.get_stats(mount_name) or {}
+                    users_here = users_per_mount.get(mount_name, 0)
+                    mount_stats.append({
+                        'mount_name': mount_name,
+                        'ip_address': f'external:{row["source_name"]}',
+                        'uptime': 0,
+                        'data_count': stats.get('data_count', 0),
+                        'total_bytes': stats.get('total_bytes', 0),
+                        'total_messages': 0,
+                        'data_rate': stats.get('data_rate', 0.0),
+                        'user_count': users_here,
+                        'status': 'external',
+                        'source_type': 'external',
+                        'source_name': row['source_name'],
+                        'str_generated': True,
+                    })
             
             user_stats = []
             for username, connections in self.online_users.items():
@@ -971,6 +1101,9 @@ class ConnectionManager:
             
             return {
                 'total_mounts': total_mounts,
+                'local_online_mounts': local_online,
+                'external_relay_mounts': active_external,
+                'external_available_mounts': external_available,
                 'total_users': total_users,
                 'total_connections': total_connections,
                 'mounts': mount_stats,
@@ -1189,6 +1322,14 @@ _manager_lock = Lock()
 # 连接管理 后期扩展使用 API管理 连接状态
 #*****************************
 
+def _external_manager():
+    """延迟导入外部 caster 管理器，避免模块间循环导入"""
+    if not config.EXTERNAL_CASTER_ENABLED:
+        return None
+    from . import external_caster
+    return external_caster.get_manager()
+
+
 def get_connection_manager():
     """获取全局连接管理器实例"""
     global _connection_manager
@@ -1219,8 +1360,12 @@ def update_user_activity(username, connection_id, bytes_sent=0):
     return get_connection_manager().update_user_activity(username, connection_id, bytes_sent)
 
 def is_mount_online(mount_name):
-    """检查挂载点是否在线"""
+    """检查本地源站是否在线（上传侧）"""
     return get_connection_manager().is_mount_online(mount_name)
+
+def is_mount_available(mount_name):
+    """消费侧可用判定：本地在线 OR 外部缓存可用"""
+    return get_connection_manager().is_mount_available(mount_name)
 
 def get_user_connection_count(username, prune=False):
     """获取用户连接数"""
@@ -1254,6 +1399,18 @@ def update_mount_data(mount_name, data_size):
 def update_mount_data_stats(mount_name, data_size):
     """更新挂载点数据统计"""
     return get_connection_manager().update_mount_data_stats(mount_name, data_size)
+
+def get_mount_str_data(mount_name):
+    """获取挂载点 STR（本地优先，外部缓存兜底）"""
+    return get_connection_manager().get_mount_str_data(mount_name)
+
+def get_all_str_data():
+    """获取全部 STR（本地 + 外部融合）"""
+    return get_connection_manager().get_all_str_data()
+
+def get_all_str_data_split():
+    """获取按来源分组的 STR（本机 / 外部）"""
+    return get_connection_manager().get_all_str_data_split()
 
 def get_statistics():
     """获取统计信息"""

@@ -63,6 +63,9 @@ class _ConnectionPool:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute(f"PRAGMA busy_timeout={int(getattr(config, 'DB_TIMEOUT', 30)) * 1000}")
+            # 必须显式开启：SQLite 默认 foreign_keys=OFF，否则 external_mounts /
+            # external_accounts 上的 ON DELETE CASCADE 形同虚设，删源会留下孤儿行。
+            conn.execute("PRAGMA foreign_keys=ON")
         except sqlite3.DatabaseError as e:
             log_warning(f"设置连接 PRAGMA 失败（可能是不支持 WAL 的文件系统）: {e}")
         return conn
@@ -231,8 +234,9 @@ def verify_password(stored_password, provided_password):
 
 def init_db():
     """初始化SQLite数据库表结构"""
-    with db_lock:
-        conn = _acquire()
+    # 用 _connect() 而非手工 _acquire()：异常时自动 rollback 并归还连接，
+    # 避免迁移失败（例如 schema 版本过高）导致连接泄漏、进程无法继续启动。
+    with db_lock, _connect() as conn:
         c = conn.cursor()
 
         # 开启 WAL：读不阻塞写，显著缓解"每连接一次建连 + 全局串行锁"下的延迟尖刺
@@ -273,7 +277,93 @@ def init_db():
                 ON UPDATE CASCADE
         )
         ''')
-        
+
+        # ==================== 外部 Caster 拉取与中继 ====================
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS external_casters (
+            id               INTEGER PRIMARY KEY,
+            name             TEXT NOT NULL UNIQUE,
+            host             TEXT NOT NULL,
+            port             INTEGER NOT NULL,
+            username         TEXT NOT NULL DEFAULT '',
+            password_enc     TEXT NOT NULL DEFAULT '',
+            tls              INTEGER NOT NULL DEFAULT 0,
+            enabled          INTEGER NOT NULL DEFAULT 1,
+            priority         INTEGER NOT NULL DEFAULT 20,
+            refresh_interval INTEGER NOT NULL DEFAULT 21600,
+            fetch_fail_count INTEGER NOT NULL DEFAULT 0,
+            next_fetch_at    REAL,
+            status           TEXT NOT NULL DEFAULT 'idle',
+            last_error       TEXT NOT NULL DEFAULT '',
+            last_fetch_at    REAL,
+            last_demand_refresh_at REAL,
+            created_at       REAL NOT NULL,
+            updated_at       REAL NOT NULL
+        )
+        ''')
+
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS external_mounts (
+            id         INTEGER PRIMARY KEY,
+            source_id  INTEGER NOT NULL,
+            mount      TEXT NOT NULL,
+            str_line   TEXT NOT NULL,
+            lat        REAL,
+            lon        REAL,
+            first_seen REAL NOT NULL,
+            last_seen  REAL NOT NULL,
+            UNIQUE(source_id, mount),
+            FOREIGN KEY (source_id) REFERENCES external_casters(id) ON DELETE CASCADE
+        )
+        ''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_external_mounts_mount ON external_mounts(mount)")
+
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS external_accounts (
+            id            INTEGER PRIMARY KEY,
+            source_id     INTEGER NOT NULL,
+            label         TEXT NOT NULL DEFAULT '',
+            username      TEXT NOT NULL DEFAULT '',
+            password_enc  TEXT NOT NULL DEFAULT '',
+            priority      INTEGER NOT NULL DEFAULT 0,
+            enabled       INTEGER NOT NULL DEFAULT 1,
+            expire_at     REAL,
+            agent_profile_id INTEGER,
+            created_at    REAL NOT NULL,
+            UNIQUE(source_id, username),
+            FOREIGN KEY (source_id) REFERENCES external_casters(id) ON DELETE CASCADE
+        )
+        ''')
+
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS external_account_leases (
+            account_id   INTEGER PRIMARY KEY,
+            holder       TEXT NOT NULL,
+            lease_until  REAL NOT NULL,
+            FOREIGN KEY (account_id) REFERENCES external_accounts(id) ON DELETE CASCADE
+        )
+        ''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_lease_until ON external_account_leases(lease_until)")
+
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS external_agent_profiles (
+            id             INTEGER PRIMARY KEY,
+            agent_string   TEXT NOT NULL UNIQUE,
+            vendor         TEXT NOT NULL DEFAULT '',
+            device_class   TEXT NOT NULL DEFAULT '',
+            ntrip_version  INTEGER NOT NULL DEFAULT 2,
+            weight         INTEGER NOT NULL DEFAULT 10,
+            enabled        INTEGER NOT NULL DEFAULT 1,
+            is_browser     INTEGER NOT NULL DEFAULT 0,
+            block_count    INTEGER NOT NULL DEFAULT 0,
+            blocked_until  REAL,
+            last_used_at   REAL,
+            created_at     REAL NOT NULL
+        )
+        ''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_agent_available "
+                  "ON external_agent_profiles(enabled, blocked_until)")
+
         c.execute("SELECT * FROM admins")
         if not c.fetchone():
             # 使用哈希密码存储默认管理员密码
@@ -296,10 +386,440 @@ def init_db():
                     log_info(f"{table} 表已补充 created_at 列")
             except sqlite3.DatabaseError as e:
                 log_warning(f"为 {table} 表补充 created_at 失败: {e}")
-        
-        conn.commit()
-        _release(conn)
+
+        # 外部源相关列的守卫式迁移（新库 CREATE 已含这些列，老库才需要补）
+        for table, col, ddl in (
+            ('mounts', 'source_type',
+             "ALTER TABLE mounts ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local'"),
+            ('external_accounts', 'agent_profile_id',
+             "ALTER TABLE external_accounts ADD COLUMN agent_profile_id INTEGER"),
+        ):
+            try:
+                c.execute(f"PRAGMA table_info({table})")
+                columns = {row[1] for row in c.fetchall()}
+                if col not in columns:
+                    c.execute(ddl)
+                    log_info(f"{table} 表已补充 {col} 列")
+            except sqlite3.DatabaseError as e:
+                log_warning(f"为 {table} 表补充 {col} 失败: {e}")
+
+        # schema 版本：0→1 加列；1→2 清理历史遗留的 mounts.external 虚拟行。
+        # 外部挂载点改为只存 external_mounts，本地 mounts 表不得再有外部行，
+        # 否则管理页会显示几千条外部挂载点且可编辑删除。
+        try:
+            c.execute("PRAGMA user_version")
+            schema_version = c.fetchone()[0] or 0
+            if schema_version == 0:
+                c.execute("PRAGMA user_version = 1")
+                schema_version = 1
+                log_info("数据库 schema 版本已升级到 1")
+            if schema_version == 1:
+                cols = {row[1] for row in c.execute("PRAGMA table_info(mounts)").fetchall()}
+                if 'source_type' in cols:
+                    cur = c.execute("DELETE FROM mounts WHERE source_type = 'external'")
+                    if cur.rowcount:
+                        log_info(f"清理历史外部挂载点虚拟行 {cur.rowcount} 条")
+                c.execute("PRAGMA user_version = 2")
+                schema_version = 2
+                log_info("数据库 schema 版本已升级到 2（外部挂载点不再写入本地 mounts）")
+            elif schema_version > 2:
+                raise RuntimeError(
+                    f"数据库 schema 版本 {schema_version} 高于程序支持的 2，请先升级程序")
+        except RuntimeError:
+            raise
+        except sqlite3.DatabaseError as e:
+            log_warning(f"读写 schema 版本失败: {e}")
+
         log_info('数据库初始化完成')
+
+# ==================== 外部 Caster 拉取与中继 —  CRUD ====================
+#
+# 这些函数只负责持久化，不处理加密/解密与业务状态机（那部分在 external_caster.py）。
+# 统一用 db_lock + _connect()：失败自动回滚并归还连接，避免连接泄漏。
+
+EXTERNAL_SOURCE_FIELDS = (
+    'name', 'host', 'port', 'username', 'password_enc', 'tls', 'enabled',
+    'priority', 'refresh_interval', 'status', 'last_error',
+)
+
+
+def _row_to_dict(row, fields):
+    return {k: row[i] for i, k in enumerate(fields)} if row is not None else None
+
+
+def list_external_casters(enabled_only=False):
+    """列出外部源（不含密码密文，避免误泄露到 API）"""
+    fields = ('id',) + EXTERNAL_SOURCE_FIELDS + (
+        'fetch_fail_count', 'next_fetch_at', 'last_fetch_at',
+        'last_demand_refresh_at', 'created_at', 'updated_at')
+    sql = "SELECT " + ", ".join(fields) + " FROM external_casters"
+    if enabled_only:
+        sql += " WHERE enabled = 1"
+    sql += " ORDER BY priority DESC, id ASC"
+    with db_lock, _connect() as conn:
+        return [_row_to_dict(r, fields) for r in conn.execute(sql).fetchall()]
+
+
+def get_external_caster(source_id):
+    fields = ('id',) + EXTERNAL_SOURCE_FIELDS + (
+        'fetch_fail_count', 'next_fetch_at', 'last_fetch_at',
+        'last_demand_refresh_at', 'created_at', 'updated_at')
+    with db_lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT " + ", ".join(fields) + " FROM external_casters WHERE id = ?",
+            (source_id,)).fetchone()
+    return _row_to_dict(row, fields)
+
+
+def get_external_caster_by_name(name):
+    with db_lock, _connect() as conn:
+        row = conn.execute("SELECT id FROM external_casters WHERE name = ?", (name,)).fetchone()
+    return row[0] if row else None
+
+
+def create_external_caster(data):
+    """新增外部源；data 至少含 name/host/port。返回 (True, id) 或 (False, errmsg)"""
+    now = time.time()
+    allowed = set(EXTERNAL_SOURCE_FIELDS) | {'fetch_fail_count', 'next_fetch_at',
+                                              'last_demand_refresh_at'}
+    payload = {k: v for k, v in data.items() if k in allowed}
+    payload.setdefault('name', '')
+    payload.setdefault('host', '')
+    payload.setdefault('port', 2101)
+    payload.setdefault('created_at', now)
+    payload.setdefault('updated_at', now)
+    if not payload['name'] or not payload['host']:
+        return False, "名称和地址不能为空"
+    try:
+        with db_lock, _connect() as conn:
+            cols = ", ".join(payload.keys())
+            marks = ", ".join("?" for _ in payload)
+            cur = conn.execute(
+                f"INSERT INTO external_casters ({cols}) VALUES ({marks})",
+                tuple(payload.values()))
+            return True, cur.lastrowid
+    except sqlite3.IntegrityError as e:
+        return False, f"外部源名称已存在或数据冲突: {e}"
+    except Exception as e:
+        return False, f"新增外部源失败: {e}"
+
+
+def update_external_caster(source_id, patch):
+    """局部更新外部源；只接受白名单字段。返回 (bool, msg)"""
+    allowed = set(EXTERNAL_SOURCE_FIELDS) | {'fetch_fail_count', 'next_fetch_at',
+                                              'last_demand_refresh_at'}
+    fields = {k: v for k, v in patch.items() if k in allowed}
+    if not fields:
+        return True, "无更新"
+    fields['updated_at'] = time.time()
+    try:
+        with db_lock, _connect() as conn:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            cur = conn.execute(
+                f"UPDATE external_casters SET {sets} WHERE id = ?",
+                tuple(fields.values()) + (source_id,))
+            if cur.rowcount == 0:
+                return False, "外部源不存在"
+            return True, "更新成功"
+    except sqlite3.IntegrityError:
+        return False, "外部源名称已存在"
+    except Exception as e:
+        return False, f"更新外部源失败: {e}"
+
+
+def delete_external_caster(source_id):
+    """删除外部源；级联删除其挂载点缓存、账号与租约
+
+    外部挂载点只存在于 external_mounts（ON DELETE CASCADE 自动清理），
+    本地 mounts 注册表从未写入外部挂载点，无需额外清理。
+    """
+    try:
+        with db_lock, _connect() as conn:
+            # 显式清理子表作为双保险：外键级联依赖 PRAGMA foreign_keys=ON，
+            # 老连接或某些环境可能未开启；显式删除确保不留孤儿行。
+            conn.execute("DELETE FROM external_mounts WHERE source_id = ?", (source_id,))
+            conn.execute("DELETE FROM external_accounts WHERE source_id = ?", (source_id,))
+            conn.execute("DELETE FROM external_casters WHERE id = ?", (source_id,))
+        # 关键：关闭该源所有仍在进行的 relay，否则内存里的 relay 引用
+        # 已删除的源会继续向上游拉流。
+        try:
+            from . import external_caster
+            external_caster.get_manager().on_source_deleted(source_id)
+        except Exception:
+            pass
+        return True, "删除成功"
+    except Exception as e:
+        return False, f"删除外部源失败: {e}"
+
+
+def update_external_status(source_id, status, error='', fetch_at=None):
+    with db_lock, _connect() as conn:
+        conn.execute(
+            "UPDATE external_casters SET status = ?, last_error = ?, "
+            "last_fetch_at = COALESCE(?, last_fetch_at), updated_at = ? WHERE id = ?",
+            (status, error or '', fetch_at, time.time(), source_id))
+
+
+def update_external_fetch_state(source_id, fail_count, next_fetch_at,
+                                demand_refresh_at=None):
+    """保存退避状态；demand_refresh_at 不为 None 时一并更新按需刷新时间"""
+    with db_lock, _connect() as conn:
+        if demand_refresh_at is None:
+            conn.execute(
+                "UPDATE external_casters SET fetch_fail_count = ?, next_fetch_at = ?, "
+                "updated_at = ? WHERE id = ?",
+                (fail_count, next_fetch_at, time.time(), source_id))
+        else:
+            conn.execute(
+                "UPDATE external_casters SET fetch_fail_count = ?, next_fetch_at = ?, "
+                "last_demand_refresh_at = ?, updated_at = ? WHERE id = ?",
+                (fail_count, next_fetch_at, demand_refresh_at, time.time(), source_id))
+
+
+def replace_external_mounts(source_id, rows, source_priority=20):
+    """整表替换某源的 STR 缓存。
+
+    rows: [(mount, str_line, lat, lon), ...]
+    外部挂载点只存 external_mounts，绝不写入本地 mounts 注册表：
+    管理页/本地基站列表必须完全看不到外部挂载点，也不能对它们编辑删除。
+    鉴权与存在性判定在 mounts 查不到时回退查 external_mounts。
+    """
+    now = time.time()
+    with db_lock, _connect() as conn:
+        # 只删该源的旧缓存，不动其他源
+        conn.execute("DELETE FROM external_mounts WHERE source_id = ?", (source_id,))
+        conn.executemany(
+            "INSERT INTO external_mounts "
+            "(source_id, mount, str_line, lat, lon, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(source_id, m, line, lat, lon, now, now) for m, line, lat, lon in rows])
+
+
+def get_external_mounts(source_id=None):
+    fields = ('id', 'source_id', 'mount', 'str_line', 'lat', 'lon',
+              'first_seen', 'last_seen')
+    sql = ("SELECT " + ", ".join(fields) + " FROM external_mounts")
+    args = ()
+    if source_id is not None:
+        sql += " WHERE source_id = ?"
+        args = (source_id,)
+    sql += " ORDER BY mount"
+    with db_lock, _connect() as conn:
+        return [_row_to_dict(r, fields) for r in conn.execute(sql, args).fetchall()]
+
+
+def get_external_mount(mount):
+    """按外部源优先级取一条该 mount 的缓存行（供 relay 选源）"""
+    fields = ('id', 'source_id', 'mount', 'str_line', 'lat', 'lon',
+              'first_seen', 'last_seen')
+    sql = ("SELECT " + ", ".join('em.' + f for f in fields) + " FROM external_mounts em "
+           "JOIN external_casters ec ON ec.id = em.source_id "
+           "WHERE em.mount = ? AND ec.enabled = 1 "
+           "ORDER BY ec.priority DESC, em.id ASC LIMIT 1")
+    with db_lock, _connect() as conn:
+        row = conn.execute(sql, (mount,)).fetchone()
+    return _row_to_dict(row, fields)
+
+
+def delete_external_mount(mount):
+    """按需刷新确认上游已删除该挂载点：删掉所有源的该行"""
+    with db_lock, _connect() as conn:
+        conn.execute("DELETE FROM external_mounts WHERE mount = ?", (mount,))
+
+
+def is_external_mount(mount):
+    """判定挂载点是否来自外部源（查 external_mounts，不依赖 mounts 虚拟行）"""
+    with db_lock, _connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM external_mounts WHERE mount = ? LIMIT 1",
+            (mount,)).fetchone() is not None
+
+
+# ==================== 账号池与 agent 标识池 CRUD ====================
+
+ACCOUNT_FIELDS = ('id', 'source_id', 'label', 'username', 'password_enc',
+                  'priority', 'enabled', 'expire_at', 'agent_profile_id', 'created_at')
+
+
+def list_external_accounts(source_id=None):
+    sql = "SELECT " + ", ".join(ACCOUNT_FIELDS) + " FROM external_accounts"
+    args = ()
+    if source_id is not None:
+        sql += " WHERE source_id = ?"
+        args = (source_id,)
+    sql += " ORDER BY priority DESC, id ASC"
+    with db_lock, _connect() as conn:
+        return [_row_to_dict(r, ACCOUNT_FIELDS)
+                for r in conn.execute(sql, args).fetchall()]
+
+
+def create_external_account(data):
+    now = time.time()
+    allowed = set(ACCOUNT_FIELDS) - {'id', 'created_at'}
+    payload = {k: v for k, v in data.items() if k in allowed}
+    payload.setdefault('source_id', 0)
+    payload['created_at'] = now
+    if not payload.get('username'):
+        return False, "账号用户名不能为空"
+    try:
+        with db_lock, _connect() as conn:
+            cur = conn.execute(
+                f"INSERT INTO external_accounts ({', '.join(payload)}) "
+                f"VALUES ({', '.join('?' for _ in payload)})",
+                tuple(payload.values()))
+            return True, cur.lastrowid
+    except sqlite3.IntegrityError:
+        return False, "同一外部源下该用户名已存在"
+    except Exception as e:
+        return False, f"新增账号失败: {e}"
+
+
+def update_external_account(account_id, patch):
+    allowed = set(ACCOUNT_FIELDS) - {'id', 'created_at'}
+    fields = {k: v for k, v in patch.items() if k in allowed}
+    if not fields:
+        return True, "无更新"
+    try:
+        with db_lock, _connect() as conn:
+            cur = conn.execute(
+                f"UPDATE external_accounts SET {', '.join(k + ' = ?' for k in fields)} "
+                "WHERE id = ?", tuple(fields.values()) + (account_id,))
+            return (True, "更新成功") if cur.rowcount else (False, "账号不存在")
+    except sqlite3.IntegrityError:
+        return False, "同一外部源下该用户名已存在"
+    except Exception as e:
+        return False, f"更新账号失败: {e}"
+
+
+def delete_external_account(account_id):
+    try:
+        with db_lock, _connect() as conn:
+            leased = conn.execute(
+                "SELECT holder FROM external_account_leases WHERE account_id = ? "
+                "AND lease_until > ?", (account_id, time.time())).fetchone()
+            if leased:
+                return False, f"账号正在被 {leased[0]} 使用，请先断开"
+            conn.execute("DELETE FROM external_accounts WHERE id = ?", (account_id,))
+            return True, "删除成功"
+    except Exception as e:
+        return False, f"删除账号失败: {e}"
+
+
+def take_account(source_id, holder, ttl=60):
+    """在 db_lock 下单事务完成选号 + 写租约。
+
+    选号条件：启用、未过期、未被租约占用；按 priority DESC, id ASC。
+    INSERT 冲突（并发被别人抢走）则继续试下一个候选，不直接失败。
+    """
+    now = time.time()
+    with db_lock, _connect() as conn:
+        candidates = conn.execute(
+            "SELECT id FROM external_accounts a WHERE a.source_id = ? "
+            "AND a.enabled = 1 AND (a.expire_at IS NULL OR a.expire_at > ?) "
+            "AND NOT EXISTS (SELECT 1 FROM external_account_leases l "
+            "                WHERE l.account_id = a.id AND l.lease_until > ?) "
+            "ORDER BY a.priority DESC, a.id ASC",
+            (source_id, now, now)).fetchall()
+        for (account_id,) in candidates:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO external_account_leases (account_id, holder, lease_until) "
+                "VALUES (?, ?, ?)", (account_id, holder, now + ttl))
+            if cur.rowcount:
+                row = conn.execute(
+                    "SELECT " + ", ".join(ACCOUNT_FIELDS) +
+                    " FROM external_accounts WHERE id = ?", (account_id,)).fetchone()
+                return _row_to_dict(row, ACCOUNT_FIELDS)
+    return None
+
+
+def renew_account(account_id, holder, ttl=60):
+    with db_lock, _connect() as conn:
+        cur = conn.execute(
+            "UPDATE external_account_leases SET lease_until = ? "
+            "WHERE account_id = ? AND holder = ?",
+            (time.time() + ttl, account_id, holder))
+        return cur.rowcount > 0
+
+
+def release_account(account_id, holder):
+    """带 holder 校验释放，防止误释放别人的租约"""
+    with db_lock, _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM external_account_leases WHERE account_id = ? AND holder = ?",
+            (account_id, holder))
+        return cur.rowcount > 0
+
+
+def gc_expired_leases():
+    with db_lock, _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM external_account_leases WHERE lease_until <= ?", (time.time(),))
+        return cur.rowcount
+
+
+AGENT_FIELDS = ('id', 'agent_string', 'vendor', 'device_class', 'ntrip_version',
+                'weight', 'enabled', 'is_browser', 'block_count', 'blocked_until',
+                'last_used_at', 'created_at')
+
+
+def seed_agent_profiles(profiles):
+    """从 JSON 名录初始化 profile；已存在的原串不动（保留管理员调整过的权重/冷却）"""
+    now = time.time()
+    inserted = 0
+    with db_lock, _connect() as conn:
+        for p in profiles:
+            agent = p.get('agent_string', '').strip()
+            if not agent:
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO external_agent_profiles "
+                "(agent_string, vendor, device_class, ntrip_version, weight, enabled, "
+                " is_browser, block_count, blocked_until, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)",
+                (agent, p.get('vendor', ''), p.get('device_class', ''),
+                 int(p.get('ntrip_version', 2)), int(p.get('weight', 10)),
+                 int(p.get('enabled', 1)), int(p.get('is_browser', 0)), now))
+            inserted += cur.rowcount
+    return inserted
+
+
+def list_agent_profiles(available_only=False):
+    sql = "SELECT " + ", ".join(AGENT_FIELDS) + " FROM external_agent_profiles"
+    if available_only:
+        sql += (" WHERE enabled = 1 AND is_browser = 0 "
+                "AND (blocked_until IS NULL OR blocked_until <= ?)")
+    sql += " ORDER BY weight DESC, id ASC"
+    args = (time.time(),) if available_only else ()
+    with db_lock, _connect() as conn:
+        return [_row_to_dict(r, AGENT_FIELDS)
+                for r in conn.execute(sql, args).fetchall()]
+
+
+def update_agent_profile(profile_id, patch):
+    allowed = {'vendor', 'device_class', 'ntrip_version', 'weight', 'enabled',
+               'is_browser', 'blocked_until', 'block_count'}
+    fields = {k: v for k, v in patch.items() if k in allowed}
+    if not fields:
+        return True, "无更新"
+    with db_lock, _connect() as conn:
+        cur = conn.execute(
+            f"UPDATE external_agent_profiles SET {', '.join(k + ' = ?' for k in fields)} "
+            "WHERE id = ?", tuple(fields.values()) + (profile_id,))
+        return (True, "更新成功") if cur.rowcount else (False, "profile 不存在")
+
+
+def block_agent_profile(profile_id, until):
+    with db_lock, _connect() as conn:
+        conn.execute(
+            "UPDATE external_agent_profiles SET block_count = block_count + 1, "
+            "blocked_until = ? WHERE id = ?", (until, profile_id))
+
+
+def mark_agent_profile_used(profile_id):
+    with db_lock, _connect() as conn:
+        conn.execute("UPDATE external_agent_profiles SET last_used_at = ? WHERE id = ?",
+                     (time.time(), profile_id))
+
 
 def verify_mount_and_user(mount, username=None, password=None, mount_password=None, protocol_version="1.0"):
     """验证挂载点和用户信息是否合法
@@ -717,10 +1237,17 @@ class DatabaseManager:
             return result[0] if result else None
     
     def check_mount_exists_in_db(self, mount):
-        """检查挂载点是否在数据库中存在"""
+        """检查挂载点是否存在（本地 mounts 或外部 external_mounts）
+
+        外部挂载点按用户要求不写入本地 mounts 表，故需回退查 external_mounts，
+        否则订阅外部挂载点时会被这里的 404 判定拦掉。
+        """
         with _connect() as conn:
             c = conn.cursor()
-            c.execute("SELECT id FROM mounts WHERE mount = ?", (mount,))
+            c.execute("SELECT 1 FROM mounts WHERE mount = ?", (mount,))
+            if c.fetchone() is not None:
+                return True
+            c.execute("SELECT 1 FROM external_mounts WHERE mount = ? LIMIT 1", (mount,))
             return c.fetchone() is not None
     
     def verify_download_user(self, mount, username, password):
@@ -735,11 +1262,17 @@ class DatabaseManager:
             
             c.execute("SELECT id, user_id FROM mounts WHERE mount = ?", (mount,))
             mount_result = c.fetchone()
+            is_external = False
             if not mount_result:
-                logger.log_authentication(username, mount, False, 'database', '挂载点不存在')
-                return False, "挂载点不存在"
+                # 外部挂载点只存 external_mounts，不写本地 mounts 表。
+                # 回退查外部缓存：外部挂载点无本地用户绑定，只校验用户密码。
+                c.execute("SELECT 1 FROM external_mounts WHERE mount = ? LIMIT 1", (mount,))
+                if c.fetchone() is None:
+                    logger.log_authentication(username, mount, False, 'database', '挂载点不存在')
+                    return False, "挂载点不存在"
+                is_external = True
             
-            bound_user_id = mount_result[1]
+            bound_user_id = None if is_external else mount_result[1]
             
             c.execute("SELECT id, password FROM users WHERE username = ?", (username,))
             user_result = c.fetchone()
@@ -753,7 +1286,8 @@ class DatabaseManager:
                 logger.log_authentication(username, mount, False, 'database', '用户密码错误')
                 return False, "用户密码错误"
             
-            if getattr(config, 'DOWNLOAD_ENFORCE_USER_BINDING', False) \
+            # 外部挂载点 bound_user_id 恒为 None，跳过绑定约束（外部无本地绑定关系）
+            if not is_external and getattr(config, 'DOWNLOAD_ENFORCE_USER_BINDING', False) \
                     and bound_user_id is not None and bound_user_id != user_id:
                 logger.log_authentication(username, mount, False, 'database', '用户无权限访问该挂载点')
                 return False, "用户无权限访问该挂载点"

@@ -182,6 +182,10 @@ class ServiceManager:
             forwarder.initialize()
             forwarder.start_forwarder()
             logger.log_system_event('数据转发器初始化完成')
+
+            # 2.5 外部 Caster（总开关关闭时是 no-op）
+            from src import external_caster
+            external_caster.get_manager().start()
             
             # 3. RTCM解析现在集成在connection_manager中，无需单独启动
             logger.log_system_event('RTCM解析器集成完成')
@@ -346,7 +350,11 @@ class ServiceManager:
                 conn_stats = {}
 
             counts = {
+                # 统一口径：本机在线 + 外部正在出数据的 relay（不含 STR 缓存）
                 'mounts': conn_stats.get('total_mounts', 0),
+                'local_mounts': conn_stats.get('local_online_mounts', 0),
+                'external_relays': conn_stats.get('external_relay_mounts', 0),
+                'external_available': conn_stats.get('external_available_mounts', 0),
                 'users': conn_stats.get('total_users', 0),
                 'connections': conn_stats.get('total_connections', 0),
             }
@@ -515,8 +523,15 @@ class ServiceManager:
                 logger.log_system_event('正在停止统计监控线程')
                 self.stats_thread.join(timeout=2)
             
-            # 关闭顺序很重要：先停转发器（关掉所有客户端/源站 socket），
+            # 关闭顺序很重要：先停外部 relay（避免上游线程往已关闭通道写数据），
+            # 再停转发器（关掉所有客户端/源站 socket），
             # 再停 NTRIP（此时 worker 的 recv/send 才会立即返回），最后停 Web。
+            try:
+                from src import external_caster
+                external_caster.get_manager().stop()
+            except Exception as e:
+                logger.log_error(f'停止外部 Caster 时出错: {e}')
+
             try:
                 forwarder.stop_forwarder()
             except Exception as e:

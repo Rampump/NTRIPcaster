@@ -68,6 +68,17 @@ docker run -d --name ntrip-caster -p 2101:2101 -p 5757:5757 ccr.ccs.tencentyun.c
 | NTRIP 服务： | `ntrip://yourserverip:2101` |
 | 默认账号： | `admin` / `admin123` —— **请立即修改默认密码** |
 
+## 外部 Caster 中继（可选）
+
+默认关闭。设置 `EXTERNAL_CASTER_ENABLED=true` 后，管理员可在「设置 → 外部 Caster」配置上游地址、端口、账号与账号池。`EXTERNAL_CASTER_UI_ENABLED=false` 可在测试服务器上只开后端中继、隐藏前端配置入口。
+
+- 拉取各上游 SOURCETABLE 并缓存挂载点，融合进对外 STR 表（同名以本地优先去重）；Web 页面将本地与外部基准站分开列出。
+- 按需中继：第一个订阅者建立上游连接，最后一个离开后在宽限期内自动关闭；Web 端 RTCM 解析复用同一条中继。
+- 支持账号池、随机 User-Agent 与可选的 GGA 转发；中继/解析限额与切换节流防止对上游频繁请求。
+- 兼容演示模式：写操作返回 `403 demo_readonly`，读接口与中继不受影响。
+
+上游 STR 表默认每 6 小时刷新一次（失败指数退避），避免频繁请求导致 IP 被封。详细设计见 `docs/external-caster-relay-design.md`。
+
 ## 致谢
 
 本项目基于以下优秀的开源项目构建：

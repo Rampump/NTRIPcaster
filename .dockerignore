@@ -148,6 +148,8 @@ monitoring/
 nginx/
 redis/
 data/
+!src/data/
+!src/data/ntrip_agent_profiles.json
 config/
 
 # 备份文件

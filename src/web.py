@@ -119,6 +119,7 @@ class WebManager:
         self.parser_registry = WebParserRegistry(
             push_callback_provider=self._make_push_callback,
             event_sink=self._emit_parse_event,
+            on_entry_stopped=self._on_parse_entry_stopped,
         )
         self.parser_registry.start()
 
@@ -299,6 +300,7 @@ class WebManager:
                     'data_rate': m.get('data_rate'),
                     'user_count': m.get('user_count'),
                     'status': m.get('status'),
+                    'source_type': m.get('source_type', 'local'),
                 })
             out['mounts'] = safe
         return out
@@ -360,7 +362,7 @@ class WebManager:
             return jsonify({'error': err, 'code': 'bad_request'}), 400
 
         cm = connection.get_connection_manager()
-        if not cm.is_mount_online(mount_name):
+        if not cm.is_mount_available(mount_name):
             return jsonify({'error': f'挂载点 {mount_name} 当前离线，无法解析', 'code': 'mount_offline'}), 400
 
         cid = self._client_id()
@@ -370,6 +372,20 @@ class WebManager:
             return jsonify({'error': e.message, 'code': e.code}), 429
         except SubscribeRejected as e:
             return jsonify({'error': e.message, 'code': e.code}), 400
+
+        # 外部挂载点：订阅成功后再占 relay；限额失败要回滚 registry 订阅，
+        # 否则 TTL 回收时会出现「已退订但引用没释放」的泄漏。
+        from . import external_caster
+        if config.EXTERNAL_CASTER_ENABLED:
+            ext = external_caster.get_manager()
+            if ext.is_mount_available(mount_name):
+                if not ext.acquire(mount_name, f'web:{cid}'):
+                    try:
+                        self.parser_registry.unsubscribe(cid)
+                    except Exception:
+                        pass
+                    return jsonify({'error': '外部中继限额已满，请稍后重试',
+                                    'code': 'relay_busy'}), 429
 
         log_system_event(f"挂载点 {mount_name} 实时RTCM解析已订阅（订阅者 {snapshot.get('subscribers', 1)}）")
         return jsonify({
@@ -384,9 +400,20 @@ class WebManager:
         cid = self._client_id()
         released = self.parser_registry.unsubscribe(cid)
         if released:
+            self._on_parse_entry_stopped(released, cid)
             log_system_event(f"已退订挂载点 {released} 的实时RTCM解析")
             return jsonify({'success': True, 'released': released})
         return jsonify({'success': True, 'released': None})
+
+    def _on_parse_entry_stopped(self, mount_name, cid):
+        """registry 回收（退订/切站/TTL/源站离线/服务停止）时释放 relay 引用"""
+        if not config.EXTERNAL_CASTER_ENABLED:
+            return
+        try:
+            from . import external_caster
+            external_caster.get_manager().release(mount_name, f'web:{cid}')
+        except Exception as e:
+            log_warning(f'释放外部 relay 引用失败: {e}')
 
     def _parse_status(self):
         cid = self._client_id()
@@ -462,6 +489,8 @@ class WebManager:
         kwargs.setdefault('demo_mode', bool(config.DEMO_MODE))
         kwargs.setdefault('logged_in', bool(session.get('admin_logged_in')))
         kwargs.setdefault('public_access', bool(config.PUBLIC_ACCESS))
+        kwargs.setdefault('external_caster_ui', bool(
+            config.EXTERNAL_CASTER_ENABLED and config.EXTERNAL_CASTER_UI_ENABLED))
         template_path = os.path.join(self.template_dir, template_name)
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
@@ -491,6 +520,11 @@ class WebManager:
             path = request.path
             if not path.startswith('/api/'):
                 return None
+
+            # 外部 caster 总闸关闭时连接口存在性都不暴露（404 而非 403）
+            if path.startswith('/api/external-casters') and \
+                    not config.EXTERNAL_CASTER_ENABLED:
+                return jsonify({'error': 'Not found'}), 404
 
             # 所有 /api 请求统一分配（或读取）客户端标识，供解析订阅使用
             g.client_id = self._ensure_client_id()
@@ -1267,13 +1301,16 @@ class WebManager:
             if request.method == 'GET':
                 # 获取挂载点列表
                 try:
+                    # 挂载点管理页只展示本地挂载点：外部挂载点只存 external_mounts，
+                    # 从不写入本地 mounts 表，也不在此页编辑/删除。
                     mounts = self.db_manager.get_all_mounts()
                     online_mounts = connection.get_connection_manager().get_online_mounts()
-                    
+
                     # 将tuple转换为字典格式并添加运行状态和连接信息
                     mount_list = []
                     for mount in mounts:
                         mount_name = mount[1]
+                        is_external = False
                         is_online = mount_name in online_mounts
                         # 获取实际的数据率
                         data_rate_str = '0 B/s'
@@ -1297,7 +1334,8 @@ class WebManager:
                             'lon': mount[6] if len(mount) > 6 and mount[6] is not None else 0,
                             'active': is_online,
                             'connections': connection.get_connection_manager().get_mount_connection_count(mount_name) if is_online else 0,
-                            'data_rate': data_rate_str
+                            'data_rate': data_rate_str,
+                            'source_type': 'external' if is_external else 'local'
                         }
                         mount_list.append(mount_dict)
                     
@@ -1379,6 +1417,11 @@ class WebManager:
         @self.require_login
         def api_mount_detail(mount_name):
             """挂载点详情管理API"""
+            # 外部挂载点由 external_caster 管理，禁止从这里误改
+            from . import database as _db
+            if _db.is_external_mount(mount_name):
+                return jsonify({'error': '外部挂载点为只读，请在外部 Caster 设置页修改',
+                                'code': 'external_readonly'}), 400
             if request.method == 'PUT':
                 # 更新挂载点
                 try:
@@ -1555,15 +1598,25 @@ class WebManager:
         def api_mount_online_status(mount_name):
             """检查挂载点是否在线"""
             try:
-                is_online = connection.is_mount_online(mount_name)
+                is_online = connection.is_mount_available(mount_name)
                 mount_info = None
-                if is_online:
+                source_type = 'local'
+                if connection.is_mount_online(mount_name):
                     mount_info = connection.get_connection_manager().get_mount_info(mount_name)
+                elif is_online:
+                    source_type = 'external'
+                    mount_info = {
+                        'mount_name': mount_name,
+                        'status': 'external',
+                        'str_data': connection.get_mount_str_data(mount_name),
+                        'statistics': connection.get_mount_statistics(mount_name),
+                    }
                 
                 return jsonify({
                     'mount_name': mount_name,
                     'online': is_online,
-                    'mount_info': mount_info
+                    'mount_info': mount_info,
+                    'source_type': source_type
                 })
             except Exception as e:
                 log_error(f"检查挂载点在线状态失败: {e}")
@@ -1608,16 +1661,19 @@ class WebManager:
         def api_str_table():
             """获取实时STR表数据"""
             try:
-                # 获取所有在线挂载点的STR数据
+                # 获取所有在线挂载点的STR数据；同时按本机/外部拆分，前端分组展示
                 cm = connection.get_connection_manager()
+                split = cm.get_all_str_data_split()
                 str_data = cm.get_all_str_data()
-                
+
                 # 生成完整的挂载点列表（包括STR表）
                 mount_list = cm.generate_mount_list()
-                
+
                 return jsonify({
                     'success': True,
                     'str_data': str_data,
+                    'local_str_data': split['local'],
+                    'external_str_data': split['external'],
                     'mount_list': mount_list,
                     'timestamp': time.time()
                 })
@@ -1643,8 +1699,29 @@ class WebManager:
                         'basic_info': mount_info,
                         'str_data': cm.get_mount_str_data(mount_name),
                         'statistics': cm.get_mount_statistics(mount_name),
-                        'connection_count': cm.get_mount_connection_count(mount_name)
+                        'connection_count': cm.get_mount_connection_count(mount_name),
+                        'source_type': 'local'
                     }
+
+                # 外部挂载点不进 online_mounts（避免占用判定冲突），
+                # 在这里按同结构补齐，前端无需区分。
+                if config.EXTERNAL_CASTER_ENABLED:
+                    from . import external_caster
+                    for row in external_caster.get_manager().get_fused_rows():
+                        mount_name = row['mount']
+                        if mount_name in detailed_mounts:
+                            continue
+                        detailed_mounts[mount_name] = {
+                            'basic_info': {
+                                'mount_name': mount_name,
+                                'status': 'external',
+                                'source_name': row['source_name'],
+                            },
+                            'str_data': row['str_line'],
+                            'statistics': cm.get_mount_statistics(mount_name),
+                            'connection_count': 0,
+                            'source_type': 'external'
+                        }
                 
                 return jsonify({
                     'success': True,
@@ -1680,6 +1757,167 @@ class WebManager:
             except Exception as e:
                 log_error(f"获取挂载点{mount_name}历史数据失败: {e}")
                 return jsonify({'error': str(e)}), 500
+
+        # ==================== 外部 Caster 配置 API ====================
+        # 总开关关闭时 _enforce_api_login 直接 404，这里不必重复判断。
+        # 写操作自动受 DEMO_ALLOWED_POSTS fail-closed 限制。
+
+        @self.app.route('/api/external-casters', methods=['GET', 'POST'])
+        @self.require_login
+        def api_external_casters():
+            from . import database as _db, external_caster
+            mgr = external_caster.get_manager()
+            if request.method == 'GET':
+                items = _db.list_external_casters()
+                for item in items:
+                    item['password_set'] = bool(item.get('password_enc'))
+                    item['password_enc'] = mgr.mask_secret(item.get('password_enc'))
+                    item['account_count'] = len(
+                        _db.list_external_accounts(item['id']))
+                return jsonify({'success': True, 'sources': items})
+
+            data = request.get_json(silent=True) or {}
+            name = str(data.get('name', '')).strip()
+            host = str(data.get('host', '')).strip()
+            try:
+                port = int(data.get('port', 2101))
+            except (TypeError, ValueError):
+                return jsonify({'error': '端口必须是数字'}), 400
+            if not name or not host or not (1 <= port <= 65535):
+                return jsonify({'error': '名称、地址、端口不合法'}), 400
+            payload = {
+                'name': name, 'host': host, 'port': port,
+                'username': str(data.get('username', '')).strip(),
+                'tls': 1 if data.get('tls') else 0,
+                'enabled': 1 if data.get('enabled', True) else 0,
+                'priority': int(data.get('priority', 20) or 20),
+                'status': 'idle', 'created_at': time.time(), 'updated_at': time.time(),
+            }
+            if data.get('password'):
+                payload['password_enc'] = mgr.encrypt(str(data['password']))
+            ok, source_id = _db.create_external_caster(payload)
+            if not ok:
+                return jsonify({'error': str(source_id)}), 400
+            mgr.reload_config()
+            log_system_event(f'新增外部 Caster: {name} ({host}:{port})')
+            return jsonify({'success': True, 'id': source_id})
+
+        @self.app.route('/api/external-casters/<int:source_id>',
+                        methods=['PUT', 'DELETE'])
+        @self.require_login
+        def api_external_caster_detail(source_id):
+            from . import database as _db, external_caster
+            mgr = external_caster.get_manager()
+            if not _db.get_external_caster(source_id):
+                return jsonify({'error': '外部源不存在'}), 404
+            if request.method == 'DELETE':
+                ok, msg = _db.delete_external_caster(source_id)
+                if not ok:
+                    return jsonify({'error': msg}), 400
+                mgr.shutdown_all()
+                mgr.reload_config()
+                return jsonify({'success': True})
+            data = request.get_json(silent=True) or {}
+            patch = {}
+            for key in ('name', 'host', 'username', 'priority', 'enabled', 'tls'):
+                if key in data:
+                    patch[key] = data[key]
+            if 'port' in data:
+                try:
+                    patch['port'] = int(data['port'])
+                except (TypeError, ValueError):
+                    return jsonify({'error': '端口必须是数字'}), 400
+            if data.get('password'):
+                patch['password_enc'] = mgr.encrypt(str(data['password']))
+            ok, msg = _db.update_external_caster(source_id, patch)
+            if not ok:
+                return jsonify({'error': msg}), 400
+            mgr.reload_config()
+            return jsonify({'success': True})
+
+        @self.app.route('/api/external-casters/<int:source_id>/accounts',
+                        methods=['GET', 'POST'])
+        @self.require_login
+        def api_external_accounts(source_id):
+            from . import database as _db, external_caster
+            mgr = external_caster.get_manager()
+            if not _db.get_external_caster(source_id):
+                return jsonify({'error': '外部源不存在'}), 404
+            if request.method == 'GET':
+                items = _db.list_external_accounts(source_id)
+                for item in items:
+                    item['password_set'] = bool(item.get('password_enc'))
+                    item['password_enc'] = mgr.mask_secret(item.get('password_enc'))
+                return jsonify({'success': True, 'accounts': items})
+            data = request.get_json(silent=True) or {}
+            username = str(data.get('username', '')).strip()
+            if not username:
+                return jsonify({'error': '用户名不能为空'}), 400
+            payload = {
+                'source_id': source_id, 'username': username,
+                'label': str(data.get('label', '')),
+                'priority': int(data.get('priority', 0) or 0),
+                'enabled': 1 if data.get('enabled', True) else 0,
+            }
+            if data.get('password'):
+                payload['password_enc'] = mgr.encrypt(str(data['password']))
+            ok, account_id = _db.create_external_account(payload)
+            return (jsonify({'success': True, 'id': account_id}) if ok
+                    else jsonify({'error': str(account_id)}), 400 if not ok else 200)
+
+        @self.app.route('/api/external-casters/<int:source_id>/accounts/<int:account_id>',
+                        methods=['PUT', 'DELETE'])
+        @self.require_login
+        def api_external_account_detail(source_id, account_id):
+            from . import database as _db, external_caster
+            mgr = external_caster.get_manager()
+            if request.method == 'DELETE':
+                ok, msg = _db.delete_external_account(account_id)
+                return (jsonify({'success': True}) if ok
+                        else jsonify({'error': msg}), 200 if ok else 400)
+            data = request.get_json(silent=True) or {}
+            patch = {k: data[k] for k in ('label', 'priority', 'enabled')
+                     if k in data}
+            if data.get('password'):
+                patch['password_enc'] = mgr.encrypt(str(data['password']))
+            ok, msg = _db.update_external_account(account_id, patch)
+            return (jsonify({'success': True}) if ok
+                    else jsonify({'error': msg}), 200 if ok else 400)
+
+        @self.app.route('/api/external-casters/<int:source_id>/refresh',
+                        methods=['POST'])
+        @self.require_login
+        def api_external_caster_refresh(source_id):
+            from . import external_caster
+            ok = external_caster.get_manager().force_refresh(source_id)
+            return (jsonify({'success': True}) if ok
+                    else jsonify({'error': '刷新进行中，请稍后'}), 200 if ok else 429)
+
+        @self.app.route('/api/external-casters/relay-status', methods=['GET'])
+        @self.require_login
+        def api_external_relay_status():
+            from . import external_caster
+            return jsonify({
+                'success': True,
+                'relays': external_caster.get_manager().get_relay_status(),
+            })
+
+        @self.app.route('/api/external-casters/profiles', methods=['GET'])
+        @self.require_login
+        def api_external_profiles():
+            from . import external_caster
+            return jsonify({
+                'success': True,
+                'profiles': external_caster.get_manager().list_agent_profiles(),
+            })
+
+        @self.app.route('/api/external-casters/profiles/<int:profile_id>/unblock',
+                        methods=['POST'])
+        @self.require_login
+        def api_external_profile_unblock(profile_id):
+            from . import external_caster
+            external_caster.get_manager().unblock_agent_profile(profile_id)
+            return jsonify({'success': True})
 
     
     def _ensure_forwarder_started(self):
@@ -1858,6 +2096,7 @@ class WebManager:
         last_users_sig = None
         last_mounts_sig = None
         last_full_push = 0.0
+        last_relay_sig = None
 
         while self.push_running:
             try:
@@ -1879,10 +2118,35 @@ class WebManager:
                         'mounts': cm.get_online_mounts(),
                         'timestamp': now
                     }
+                    if config.EXTERNAL_CASTER_ENABLED:
+                        from . import external_caster
+                        ext = external_caster.get_manager()
+                        mounts_payload['external_mounts'] = {
+                            row['mount']: {
+                                'mount_name': row['mount'],
+                                'status': 'external',
+                                'source_name': row['source_name'],
+                                'str_data': row['str_line'],
+                                'statistics': cm.get_mount_statistics(row['mount']),
+                            }
+                            for row in ext.get_fused_rows()
+                        }
                     self.socketio.emit('online_mounts_update', mounts_payload, to='data_push')
                     self.socketio.emit('online_mounts_update', mounts_payload, to='data_public')
                     last_users_sig = users_sig
                     last_mounts_sig = mounts_sig
+
+                # 外部 relay 状态只在跳变时推，不每 0.5s 刷屏
+                if config.EXTERNAL_CASTER_ENABLED:
+                    from . import external_caster
+                    relays = external_caster.get_manager().get_relay_status()
+                    sig = tuple(sorted((m, v['state'], v['refs'])
+                                       for m, v in relays.items()))
+                    if sig != last_relay_sig:
+                        self.socketio.emit('external_relay_status', {
+                            'relays': relays, 'timestamp': now
+                        }, to='data_push')
+                        last_relay_sig = sig
 
                 if full_due:
                     last_full_push = now
@@ -1901,9 +2165,11 @@ class WebManager:
                         }, to='data_public')
 
                     # STR 表就是「大家都能看的实时数据」，两个房间都推
-                    str_data = cm.get_all_str_data()
+                    split = cm.get_all_str_data_split()
                     str_payload = {
-                        'str_data': str_data,
+                        'str_data': cm.get_all_str_data(),
+                        'local_str_data': split['local'],
+                        'external_str_data': split['external'],
                         'timestamp': now
                     }
                     self.socketio.emit('str_data_update', str_payload, to='data_push')
